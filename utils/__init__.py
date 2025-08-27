@@ -8,6 +8,9 @@ update：
 
 """
 
+from PyQt5.QtWidgets import QTextBrowser
+from PyQt5.QtCore import QObject, pyqtSignal
+import html
 from logging.handlers import TimedRotatingFileHandler
 import os
 import sys
@@ -18,6 +21,71 @@ ROOT = os.getcwd()
 ASSET = os.path.join(ROOT, "Resources")
 LOGGING_NAME = "VAI_E_LabelTool"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])
+from .dialog import chooseDir, showMessageBox
+
+
+class QTextBrowserLogger(QObject, logging.Handler):
+    """自定义日志处理器，将日志输出到QTextBrowser控件"""
+
+    log_signal = pyqtSignal(str)
+
+    def __init__(self, text_browser: QTextBrowser, max_lines: int = 500):
+        super().__init__()
+        logging.Handler.__init__(self)
+        self.text_browser = text_browser
+        self.max_lines = max_lines
+
+        # 连接信号与槽函数，确保在主线程更新UI
+        self.log_signal.connect(self.append_log)
+
+        # 为不同日志级别设置颜色
+        self.level_colors = {
+            logging.DEBUG: "#000000",  # 黑色
+            logging.INFO: "#0000FF",  # 蓝色
+            logging.WARNING: "#FFA500",  # 橙色
+            logging.ERROR: "#FF0000",  # 红色
+            logging.CRITICAL: "#8B0000",  # 深红色
+        }
+
+    def emit(self, record):
+        """重写emit方法，处理日志记录"""
+        try:
+            # 使用日志记录器的格式化器
+            msg = self.format(record)
+            # 转义HTML特殊字符
+            msg = html.escape(msg)
+            # 获取对应级别的颜色
+            level = record.levelno
+            color = self.level_colors.get(level, "#000000")
+
+            # 构建带颜色的HTML
+            html_msg = f'<span style="color: {color};">{msg}</span><br>'
+
+            # 发送信号到主线程更新UI
+            self.log_signal.emit(html_msg)
+        except Exception:
+            self.handleError(record)
+
+    def append_log(self, html_msg: str):
+        """在QTextBrowser中添加日志，并控制最大行数"""
+        # 添加新日志
+        self.text_browser.insertHtml(html_msg)
+        # 滚动到底部
+        self.text_browser.moveCursor(self.text_browser.textCursor().End)
+
+        # 检查行数并移除旧日志
+        lines = self.text_browser.toPlainText().split("\n")
+        if len(lines) > self.max_lines:
+            # 计算需要删除的行数
+            lines_to_remove = len(lines) - self.max_lines
+            # 删除旧日志
+            cursor = self.text_browser.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.MoveAnchor, lines_to_remove)
+            cursor.movePosition(cursor.Start, cursor.KeepAnchor)
+            cursor.removeSelectedText()
+            # 确保光标在末尾
+            self.text_browser.moveCursor(self.text_browser.textCursor().End)
 
 
 def set_logging(name="LOGGING_NAME"):
@@ -99,6 +167,41 @@ def set_logging(name="LOGGING_NAME"):
     logger.addHandler(file_handler)
     logger.propagate = False
     return logger
+
+
+def add_text_browser_handler(logger_name, text_browser=None, max_lines=500):
+    """
+    延后为日志记录器添加QTextBrowser处理器
+
+    Args:
+        logger_name (str): 日志记录器名称
+        text_browser (QTextBrowser): 前端显示控件
+        max_lines (int): 最大显示行数
+
+    Returns:
+        bool: 添加成功返回True，否则返回False
+    """
+    if not text_browser:
+        return False
+
+    # 获取已存在的日志记录器
+    logger = logging.getLogger(logger_name)
+
+    # 检查是否已添加过QTextBrowser处理器，避免重复添加
+    for handler in logger.handlers:
+        if isinstance(handler, QTextBrowserLogger):
+            return False  # 已存在则返回False
+
+    # 创建并添加前端处理器
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    browser_handler = QTextBrowserLogger(text_browser, max_lines)
+    browser_handler.setFormatter(formatter)
+    browser_handler.setLevel(logging.INFO)
+    logger.addHandler(browser_handler)
+
+    return True
 
 
 # Set logger
