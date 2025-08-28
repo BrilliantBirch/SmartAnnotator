@@ -10,10 +10,12 @@ update：
 
 from enum import Enum
 
-from utils import LOGGER
+from utils import LOGGER, ROOT
 
 __APPNAME__ = "VAI_E_SmartAnnotator"
 __VERSION__ = "1.0.0"
+LABELME_VERSION = "5.4.1"
+RANDOM_SEED = 42
 
 
 class MODE(Enum):
@@ -35,11 +37,10 @@ class ConvertConfig:
         self.sourceFormat = None
         self.classes = []
         self.kpt = []
-        self.visualize = False
-        self.genyaml = False
+        self.visualized = False
         self.annotationFiles = []
         self.imageFiles = []
-
+        self.export = False
         self.inputDir = ""
         self.outputDir = ""
 
@@ -51,6 +52,12 @@ class ConvertConfig:
 
     def setOutputDir(self, dir):
         self.outputDir = dir
+
+    def setVisualize(self, visualize: bool):
+        self.visualized = visualize
+
+    def setExport(self, export: bool):
+        self.export = export
 
 
 class AnnotateConfig:

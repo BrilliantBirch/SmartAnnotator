@@ -21,9 +21,11 @@ ROOT = os.getcwd()
 ASSET = os.path.join(ROOT, "Resources")
 LOGGING_NAME = "VAI_E_LabelTool"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])
-from .qt import chooseDir, showMessageBox, CustomItemWidget
 
+
+from .qt import chooseDir, showMessageBox, CustomItemWidget
 from .files import checkAnnotationFiles
+from .tool import is_point_in_box, is_rect_inside
 
 
 class QTextBrowserLogger(QObject, logging.Handler):
@@ -208,3 +210,23 @@ def add_text_browser_handler(logger_name, text_browser=None, max_lines=500):
 
 # Set logger
 LOGGER = set_logging(LOGGING_NAME)
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def rainbow_fill(size=50):  # simpler way to generate rainbow color
+    cmap = plt.get_cmap("jet")
+    color_list = []
+
+    for n in range(size):
+        color = cmap(n / size)
+        color_list.append(
+            color[:3]
+        )  # might need rounding? (round(x, 3) for x in color)[:3]
+
+    return np.array(color_list)
+
+
+COLORS = rainbow_fill(80).astype(np.float32).reshape(-1, 3)

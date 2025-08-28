@@ -46,6 +46,7 @@ def showMessageBox(messageType: QMessageBox.Icon, message):
 
     msg_box.setText(message)
     msg_box.exec_()
+    return msg_box.result()
 
 
 def chooseDir(dir=None) -> str:

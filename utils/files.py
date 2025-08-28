@@ -55,3 +55,20 @@ def checkAnnotationFiles(dirPath: str) -> tuple:
         imageFiles,
         list(annotation_basenames - image_basenames),
     )
+
+
+def move_files(filelist, splitname, output):
+    for file_name in filelist:
+        try:
+            img_src = file_name
+            lbl_src = os.path.splitext(file_name)[0] + ".txt"
+            lbl_src = lbl_src.replace("images", "labels")
+            file_basename = os.path.basename(file_name)
+            img_dst = os.path.join(output, splitname, "images", file_basename)
+            lbl_dst = os.path.join(
+                output, splitname, "labels", os.path.basename(lbl_src)
+            )
+            shutil.copy(img_src, img_dst)
+            shutil.copy(lbl_src, lbl_dst)
+        except Exception as ex:
+            raise RuntimeError(f"移动文件{file_name}时失败：{str(ex)}")
