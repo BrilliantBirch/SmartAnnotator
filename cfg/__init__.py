@@ -37,11 +37,20 @@ class ConvertConfig:
         self.kpt = []
         self.visualize = False
         self.genyaml = False
+        self.annotationFiles = []
+        self.imageFiles = []
+
         self.inputDir = ""
         self.outputDir = ""
 
     def setSourceFormat(self, format):
         self.sourceFormat = format
+
+    def setInputDir(self, dir):
+        self.inputDir = dir
+
+    def setOutputDir(self, dir):
+        self.outputDir = dir
 
 
 class AnnotateConfig:

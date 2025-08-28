@@ -21,7 +21,9 @@ ROOT = os.getcwd()
 ASSET = os.path.join(ROOT, "Resources")
 LOGGING_NAME = "VAI_E_LabelTool"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])
-from .dialog import chooseDir, showMessageBox
+from .qt import chooseDir, showMessageBox, CustomItemWidget
+
+from .files import checkAnnotationFiles
 
 
 class QTextBrowserLogger(QObject, logging.Handler):

@@ -12,14 +12,22 @@ import argparse
 import sys
 
 from cfg import __APPNAME__, __VERSION__, LOGGER, MODE, SysConfig, TASK
-from utils import add_text_browser_handler, chooseDir, showMessageBox
+from utils import (
+    add_text_browser_handler,
+    chooseDir,
+    showMessageBox,
+    checkAnnotationFiles,
+    CustomItemWidget,
+)
+
 
 from ui import Ui_MainWindow
 
 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QListWidgetItem
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtCore import Qt
+from PyQt5 import QtCore, QtWidgets
 
 
 class MainWindow(QMainWindow):
@@ -67,7 +75,7 @@ class MainWindow(QMainWindow):
         self.name_index_map = self._build_name_index_map()
         self.changePage("welcomePage")
 
-    def initConveter(self):
+    def initConverter(self):
         """
         初始化转换器
         """
@@ -116,16 +124,6 @@ class MainWindow(QMainWindow):
             self.mainWindow.convertOutputBtn.clicked.connect(
                 lambda: self.updateConvertOutputDir()
             )
-            # self.mainWindow.convertInput.textChanged.connect(
-            #     lambda: LOGGER.info(
-            #         f"转换器输入目录更新为：{self.mainWindow.convertInput.text()}"
-            #     )
-            # )
-            # self.mainWindow.convertOutput.textChanged.connect(
-            #     lambda: LOGGER.info(
-            #         f"转换器输出目录更新为：{self.mainWindow.convertOutput.text()}"
-            #     )
-            # )
 
             self.mainWindow.jsonBtn.toggled.connect(
                 lambda: self.sysConfig.convertConfig.setSourceFormat("JSON")
@@ -133,6 +131,10 @@ class MainWindow(QMainWindow):
             self.mainWindow.txtBtn.toggled.connect(
                 lambda: self.sysConfig.convertConfig.setSourceFormat("TXT")
             )
+            self.mainWindow.taskComBox.currentIndexChanged.connect(
+                lambda: self.changeMode()
+            )
+            self.mainWindow.addLabelBtn.clicked.connect(lambda: self.addLabel())
 
             # run
             self.mainWindow.runBtn.clicked.connect(lambda: self.run())
@@ -171,6 +173,16 @@ class MainWindow(QMainWindow):
         """
         if page_name in self.name_index_map:
             index = self.name_index_map[page_name]
+            if page_name == "welcomePage":
+                self.mainWindow.label_5.hide()
+                self.mainWindow.label_6.hide()
+                self.mainWindow.taskComBox.hide()
+                self.mainWindow.runBtn.hide()
+            else:
+                self.mainWindow.runBtn.show()
+                self.mainWindow.label_5.show()
+                self.mainWindow.label_6.show()
+                self.mainWindow.taskComBox.show()
             if page_name == "annotatePage":
                 self.sysConfig.currentTask = TASK.ANNOTATE
 
@@ -217,8 +229,63 @@ class MainWindow(QMainWindow):
         更新转换器的标注目录
         """
         dir = chooseDir(self.sysConfig.convertConfig.inputDir)
+        # if dir == self.sysConfig.convertConfig.inputDir:
+        #     return
         self.mainWindow.convertInput.setText(dir)
         self.sysConfig.convertConfig.inputDir = dir
+        # 获取当前工作目录下的所有标注文件与图像文件
+        if self.sysConfig.convertConfig.sourceFormat == "JSON":
+            self.getConvertSource_Json(dir)
+        elif self.sysConfig.convertConfig.sourceFormat == "TXT":
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                f"暂未实现源未TXT格式！",
+            )
+
+    def getConvertSource_Json(self, dirPath: str):
+        """
+        获取转换目录下的所有JSON文件
+        """
+        try:
+            anotationFiles, imageFiles, lostAnnoFiles = checkAnnotationFiles(dirPath)
+            self.sysConfig.convertConfig.annotationFiles = anotationFiles
+            self.sysConfig.convertConfig.imageFiles = imageFiles
+            LOGGER.info(
+                f"在目录 {dirPath} 下发现 {len(anotationFiles)} 个标注文件，{len(imageFiles)} 个图像文件"
+            )
+            if len(lostAnnoFiles) > 0:
+                showMessageBox(
+                    QMessageBox.Icon.Warning,
+                    f"在目录 {dirPath} 下发现 {len(lostAnnoFiles)} 个标注文件缺少对应的图像文件，请检查！",
+                )
+                LOGGER.warning(
+                    f"在目录 {dirPath} 下发现 {len(lostAnnoFiles)} 个缺少图片的标注文件:\n"
+                    f"{lostAnnoFiles}"
+                )
+            self.mainWindow.annotationFilesNumLabel.setText(
+                f"共{len(anotationFiles)}个标注文件"
+            )
+            dataModel = QtCore.QStringListModel()
+            dataModel.setStringList(anotationFiles)
+            self.mainWindow.annotationFilesView.setModel(dataModel)
+
+        except Exception as e:
+            LOGGER.error(f"获取转换目录下的标注文件失败，错误信息：{e}")
+            showMessageBox(
+                QMessageBox.Icon.Critical,
+                f"获取转换目录下的所有JSON文件失败，错误信息：{e}",
+            )
+
+    def addLabel(self):
+        """
+        添加标签
+        """
+        text = f"label{self.mainWindow.labelListView.count() + 1}"
+        item_widget = CustomItemWidget(text, self.mainWindow.labelListView)
+        item = QListWidgetItem()
+        self.mainWindow.labelListView.addItem(item)
+        self.mainWindow.labelListView.setItemWidget(item, item_widget)
+        item.setSizeHint(item_widget.sizeHint())
 
     def updateConvertOutputDir(self):
         """
@@ -227,6 +294,21 @@ class MainWindow(QMainWindow):
         dir = chooseDir(self.sysConfig.convertConfig.outputDir)
         self.mainWindow.convertOutput.setText(dir)
         self.sysConfig.convertConfig.outputDir = dir
+
+    def changeMode(self):
+        """
+        切换模式
+        """
+        try:
+            mode = MODE(self.mainWindow.taskComBox.currentData())
+            if mode == MODE.POSE:
+                pass
+            else:
+                pass
+            self.sysConfig.currentMode = mode
+        except Exception as e:
+            LOGGER.error(f"模式切换失败，错误信息：{e}")
+            showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
 
     def convert(self):
         """
@@ -249,7 +331,6 @@ def get_main_app(argv=[]):
     """
     app = QApplication(argv)
     app.setApplicationName(__APPNAME__)
-    # app.setWindowIcon(newIcon("app"))
     arg_parser = argparse.ArgumentParser()
     # arg_parser.add_argument("--lang", type=str, default="ch", nargs="?")
 
