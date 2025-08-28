@@ -20,13 +20,13 @@ from utils import (
     CustomItemWidget,
 )
 
-
+from core import ConvertWorker
 from ui import Ui_MainWindow
 
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QListWidgetItem
 from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5 import QtCore, QtWidgets
 
 
@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
         self.currentWorkingDir = ""
         # 当前模式
         self.sysConfig = SysConfig()
+        self.converter = ConvertWorker()
 
     def initLogger(self):
         init = add_text_browser_handler(LOGGER.name, self.mainWindow.logBrowser, 500)
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
         """
         pass
 
+    # region SYS
     def bindEvents(self):
         """
         信号槽绑定事件
@@ -135,6 +137,12 @@ class MainWindow(QMainWindow):
                 lambda: self.changeMode()
             )
             self.mainWindow.addLabelBtn.clicked.connect(lambda: self.addLabel())
+            self.mainWindow.exportBtn.toggled.connect(
+                lambda state: self.sysConfig.convertConfig.setExport(state)
+            )
+            self.mainWindow.visualizeBtn.toggled.connect(
+                lambda state: self.sysConfig.convertConfig.setVisualize(state)
+            )
 
             # run
             self.mainWindow.runBtn.clicked.connect(lambda: self.run())
@@ -213,15 +221,40 @@ class MainWindow(QMainWindow):
                 QMessageBox.Icon.Warning, f"页面切换失败，未找到页面：{page_name}"
             )
 
+    def changeMode(self):
+        """
+        切换模式
+        """
+        try:
+            mode = MODE(self.mainWindow.taskComBox.currentData())
+            if mode == MODE.POSE:
+                pass
+            else:
+                pass
+            self.sysConfig.currentMode = mode
+        except Exception as e:
+            LOGGER.error(f"模式切换失败，错误信息：{e}")
+            showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
+
     def run(self):
         """
         运行
         """
         try:
-            pass
+            if self.sysConfig.currentTask == TASK.CONVERT:
+                self.convert()
+            # elif self.sysConfig.currentTask == TASK.ANNOTATE:
+            #     self.annotate()
+            # elif self.sysConfig.currentTask == TASK.MODIFY:
+            #     self.modify()
+            # elif self.sysConfig.currentTask == TASK.EXPORT:
+            #     self.export()
+
         except Exception as e:
             LOGGER.error(f"运行失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Critical, f"运行失败，错误信息：{e}")
+
+    # endregion SYS
 
     # region 转换
     def updateConvertInputDir(self):
@@ -295,34 +328,54 @@ class MainWindow(QMainWindow):
         self.mainWindow.convertOutput.setText(dir)
         self.sysConfig.convertConfig.outputDir = dir
 
-    def changeMode(self):
+    def checkConvertParams(self):
         """
-        切换模式
+        检查转换参数
         """
-        try:
-            mode = MODE(self.mainWindow.taskComBox.currentData())
-            if mode == MODE.POSE:
-                pass
-            else:
-                pass
-            self.sysConfig.currentMode = mode
-        except Exception as e:
-            LOGGER.error(f"模式切换失败，错误信息：{e}")
-            showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
+        if self.sysConfig.convertConfig.inputDir == "":
+            showMessageBox(QMessageBox.Icon.Warning, "请选择标注目录")
+            return False
+        if self.sysConfig.convertConfig.outputDir == "":
+            reslut = showMessageBox(
+                QMessageBox.Icon.Question,
+                "输出目录为空，不指定则输出到程序执行目录下output目录，是否继续？",
+            )
+            if reslut == QMessageBox.Cancel:
+                return False
+        if not self.sysConfig.convertConfig.classes:
+            showMessageBox(QMessageBox.Icon.Warning, "请添加标签")
+            return False
+        if not self.sysConfig.convertConfig.annotationFiles:
+            showMessageBox(QMessageBox.Icon.Warning, "源目录下没有找到标注文件")
+            return False
+        if not self.sysConfig.convertConfig.imageFiles:
+            showMessageBox(QMessageBox.Icon.Warning, "源目录下没有找到图像文件")
+            return False
+        return True
 
     def convert(self):
         """
         转换
         """
         try:
-            pass
+            if not self.checkConvertParams():
+                return
+
+            if hasattr(self, "converter") and self.converter.isRunning():
+                showMessageBox(QMessageBox.Icon.Information, "转换任务已在运行中")
+                return
+
+            self.converter.progress_updated.connect(self.setProcessValue)
+            self.converter.task_finished.connect(lambda: self.setProcessLabel("未作业"))
+            self.converter.start()
+            self.setProcessLabel("转换中...")
 
         except Exception as e:
             LOGGER.error(f"转换失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Critical, f"转换失败，错误信息：{e}")
 
 
-# endregion
+# endregion 转换
 
 
 def get_main_app(argv=[]):

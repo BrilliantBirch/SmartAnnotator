@@ -36,10 +36,9 @@ class ConvertConfig:
         self.classes = []
         self.kpt = []
         self.visualize = False
-        self.genyaml = False
         self.annotationFiles = []
         self.imageFiles = []
-
+        self.export = False
         self.inputDir = ""
         self.outputDir = ""
 
@@ -51,6 +50,12 @@ class ConvertConfig:
 
     def setOutputDir(self, dir):
         self.outputDir = dir
+
+    def setVisualize(self, visualize: bool):
+        self.visualize = visualize
+
+    def setExport(self, export: bool):
+        self.export = export
 
 
 class AnnotateConfig:
