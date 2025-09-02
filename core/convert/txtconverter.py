@@ -2,7 +2,7 @@
 Description：labelme文件转到txt格式的标签
 Author: Baibinnan
 Date: 2025/3/14
-LastEdit: 2025/3/24
+LastEdit: 2025/9/2
 E-mail: baibinnan@chuanfeng.com
 
 功能说明：
@@ -514,37 +514,6 @@ class YoloPoseConverter(TxtConverter):
                     )
         cv2.imwrite(outputFileName, image)
 
-    def genDataYaml(self):
-        """
-        生成Pose数据集yaml文件
-        """
-        yaml_content = {
-            "path": os.path.abspath(str(self.target)),  # dataset root dir
-            "train": r"train/images",
-            "val": r"val/images",
-            "test": r"test/images",
-            "kpt_shape": [self.kpt_num, 3],
-            "flip_idx": [i for i in range(self.kpt_num)],
-            "names": {self.class_mapping[k]: k for k in self.class_mapping},
-        }
-        if self.yamlName is None or self.yamlName == "":
-            self.yamlName = os.path.basename(self.target)
-        with open(
-            os.path.join(str(self.target), self.yamlName + "Dataset.yaml"),
-            "w",
-            encoding="utf-8",
-        ) as file:
-            yaml.dump(
-                yaml_content,
-                file,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-        LOGGER.info(
-            f"数据集生成完毕：{os.path.join(str(self.target),self.yamlName+'Dataset.yaml')}"
-        )
-
 
 # endregion
 
@@ -636,12 +605,6 @@ class YoloConverter(TxtConverter):
 class YoloSegConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.task = "ToYOLOSeg"
-        self.target = os.path.join(
-            self.target,
-            self.task,
-            f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
-        )
 
     def process(self, path):
         with open(path, "r", encoding="utf-8") as f:
@@ -673,62 +636,88 @@ class YoloSegConverter(TxtConverter):
 
     def visualize(self, imgPath, outputFileName, yololines, infos):
         """可视化多边形标注结果"""
-        # 读取含中文路径的图片
-        image_data = np.fromfile(imgPath, dtype=np.uint8)
-        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
-        if image is None:
+        try:
+            image = Image.open(imgPath).convert("RGB")
+            draw = ImageDraw.Draw(image)
+            width, height = image.size  # Pillow中是宽x高
+            font = ImageFont.load_default()
+
+            for line in yololines:
+                parts = line.strip().split()
+                if len(parts) < 7:
+                    continue
+                # 解析类别ID
+                try:
+                    class_id = int(parts[0])
+                except ValueError:
+                    continue
+                # 解析多边形顶点 - 确保按顺序解析并转换为整数坐标
+                points = []
+                valid_points = True
+                for i in range(1, len(parts), 2):
+                    if i + 1 >= len(parts):
+                        break
+                    try:
+                        x = float(parts[i]) * width
+                        y = float(parts[i + 1]) * height
+                        # 转换为整数坐标，与OpenCV保持一致
+                        points.append((int(round(x)), int(round(y))))
+                    except ValueError:
+                        valid_points = False
+                        break
+
+                if not valid_points or len(points) < 3:
+                    continue
+
+                # 获取颜色
+                if class_id in self.class_color_map:
+                    box_color = tuple(
+                        int(c * 255) for c in self.class_color_map[class_id]
+                    )
+                else:
+                    box_color = (255, 0, 0)
+
+                if points[0] != points[-1]:
+                    # 确保按顺序连接并闭合
+                    ordered_points = points.copy()
+                    # 3. 手动闭合多边形（添加第一个点到末尾）
+                    ordered_points.append(points[0])
+                else:
+                    ordered_points = points
+                # 绘制多边形线条（使用line而非polygon函数，确保按顺序连接）
+                draw.line(ordered_points, fill=box_color, width=2)
+                # 绘制类别标签
+                label = f"{list(self.class_mapping.keys())[class_id]}"
+                # 标签位置
+                label_pos = (points[0][0], points[0][1] - 10)
+
+                # 获取文本尺寸
+                text_bbox = draw.textbbox(label_pos, label, font=font)
+                text_w = text_bbox[2] - text_bbox[0]
+                text_h = text_bbox[3] - text_bbox[1]
+
+                # 调整标签位置，确保不超出图像边界
+                label_x, label_y = label_pos
+                if label_y < 0:
+                    label_y = points[0][1] + 10
+
+                # 绘制标签背景
+                draw.rectangle(
+                    [
+                        (label_x - 2, label_y - text_h - 2),
+                        (label_x + text_w + 2, label_y + 2),
+                    ],
+                    fill=(255, 255, 255),
+                    width=2,
+                )
+
+                # 绘制标签文字
+                draw.text((label_x, label_y - text_h), label, font=font, fill=box_color)
+            image.save(outputFileName)
+
+        except Exception as ex:
+            LOGGER.error(f"Yolo—Seg标签可视化失败：{ex}")
             return
-        height, width = image.shape[:2]  # 获取图像实际高和宽
-
-        for line in yololines:
-            parts = line.strip().split()
-            if (
-                len(parts) < 7
-            ):  # 多边形至少需要3个点（每个点2个坐标）+ 1个class_id，共1+3*2=7个元素
-                continue  # 过滤无效标注
-
-            # 解析类别ID
-            class_id = int(parts[0])
-            # 解析多边形顶点（后续元素为成对的x、y坐标，归一化值）
-            points = []
-            for i in range(1, len(parts), 2):
-                if i + 1 >= len(parts):
-                    break  # 避免索引越界
-                # 归一化坐标转实际像素坐标
-                x = float(parts[i]) * width
-                y = float(parts[i + 1]) * height
-                points.append((int(x), int(y)))  # 转为整数像素坐标
-
-            # 绘制多边形轮廓
-            box_color = tuple(int(c * 255) for c in self.class_color_map[class_id])
-            # 转换为numpy数组用于cv2.polylines
-            points_np = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
-            # 绘制多边形（闭合轮廓，线条粗细2）
-            cv2.polylines(
-                image, [points_np], isClosed=True, color=box_color, thickness=1
-            )
-
-            # 绘制类别标签（放在多边形第一个顶点附近）
-            label = f"{list(self.class_mapping.keys())[class_id]}"
-            # 标签位置：第一个点的左上方10像素处
-            label_pos = (points[0][0], points[0][1] - 10)
-            # 绘制标签背景（避免文字与图像重叠）
-            (text_w, text_h), _ = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
-            )
-            cv2.rectangle(
-                image,
-                (label_pos[0], label_pos[1] - text_h - 5),
-                (label_pos[0] + text_w + 5, label_pos[1] + 5),
-                (255, 255, 255),  # 白色背景
-                -1,  # 填充背景
-            )
-            # 绘制标签文字
-            cv2.putText(
-                image, label, label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2
-            )
-
-        cv2.imwrite(outputFileName, image)
 
 
 # endregion
@@ -738,16 +727,6 @@ class YoloSegConverter(TxtConverter):
 class PPOCRConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.target = kwargs.get(
-            "target",
-            os.path.join(
-                ROOT,
-                "target",
-                "labelme2ppocr",
-                f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            ),
-        )
-        self.task = "ToPPOCR"
 
     def process(self, path):
         ppocr_annotations = []
