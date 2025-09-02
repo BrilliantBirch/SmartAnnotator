@@ -52,11 +52,14 @@ class MainWindow(QMainWindow):
         # 当前模式
         self.sysConfig = SysConfig()
         # convert
+        self.mainWindow.convertCancelBtn.hide()
         self.converter = ConvertWorker()
-        self.converter.progress_updated.connect(self.setProcessValue)
-        self.converter.task_finished.connect(lambda: self.setProcessLabel("转换完成"))
-        self.converter.error_occurred.connect(self.handleConverterError)
-        self.converter.convert_progress_desc.connect(self.setProcessLabel)
+        self.converter.progress_updated.connect(lambda x: self.setProcessValue(x))
+        self.converter.task_finished.connect(lambda: self.handleConvertFinished())
+        self.converter.error_occurred.connect(
+            lambda msg: self.handleConverterError(msg)
+        )
+        self.converter.convert_progress_desc.connect(lambda x: self.setProcessLabel(x))
 
     def initLogger(self):
         init = add_text_browser_handler(LOGGER.name, self.mainWindow.logBrowser, 500)
@@ -151,9 +154,15 @@ class MainWindow(QMainWindow):
             self.mainWindow.visualizeBtn.toggled.connect(
                 lambda state: self.sysConfig.convertConfig.setVisualize(state)
             )
+            self.mainWindow.convertRunBtn.clicked.connect(lambda: self.convert())
+            self.mainWindow.convertCancelBtn.clicked.connect(
+                lambda: self.handleConvertCancel()
+            )
+            # annotate
 
-            # run
-            self.mainWindow.runBtn.clicked.connect(lambda: self.run())
+            # modify
+
+            # export
 
         except Exception as e:
             LOGGER.error(f"事件绑定失败，错误信息：{e}")
@@ -191,14 +200,8 @@ class MainWindow(QMainWindow):
         if page_name in self.name_index_map:
             index = self.name_index_map[page_name]
             if page_name == "welcomePage":
-                self.mainWindow.label_5.hide()
-                self.mainWindow.label_6.hide()
                 self.mainWindow.taskComBox.hide()
-                self.mainWindow.runBtn.hide()
             else:
-                self.mainWindow.runBtn.show()
-                self.mainWindow.label_5.show()
-                self.mainWindow.label_6.show()
                 self.mainWindow.taskComBox.show()
             if page_name == "annotatePage":
                 self.sysConfig.currentTask = TASK.ANNOTATE
@@ -245,33 +248,62 @@ class MainWindow(QMainWindow):
             LOGGER.error(f"模式切换失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
 
-    def run(self):
-        """
-        运行
-        """
-        try:
-            if self.sysConfig.currentTask == TASK.CONVERT:
-                self.convert()
-            # elif self.sysConfig.currentTask == TASK.ANNOTATE:
-            #     self.annotate()
-            # elif self.sysConfig.currentTask == TASK.MODIFY:
-            #     self.modify()
-            # elif self.sysConfig.currentTask == TASK.EXPORT:
-            #     self.export()
+    # def run(self):
+    #     """
+    #     运行
+    #     """
+    #     try:
+    #         if self.sysConfig.currentTask == TASK.CONVERT:
+    #             self.convert()
+    #         # elif self.sysConfig.currentTask == TASK.ANNOTATE:
+    #         #     self.annotate()
+    #         # elif self.sysConfig.currentTask == TASK.MODIFY:
+    #         #     self.modify()
+    #         # elif self.sysConfig.currentTask == TASK.EXPORT:
+    #         #     self.export()
 
-        except Exception as e:
-            LOGGER.error(f"运行失败，错误信息：{e}")
-            showMessageBox(QMessageBox.Icon.Critical, f"运行失败，错误信息：{e}")
+    #     except Exception as e:
+    #         LOGGER.error(f"运行失败，错误信息：{e}")
+    #         showMessageBox(QMessageBox.Icon.Critical, f"运行失败，错误信息：{e}")
 
     # endregion SYS
 
     # region 转换
+    def handleConvertCancel(self):
+        """
+        取消转换
+        """
+        self.converter.stop()
 
     def handleConverterError(self, error_msg):
         """
         处理转换线程中的错误
         """
         showMessageBox(QMessageBox.Icon.Critical, f"转换错误：{error_msg}")
+        self.setProcessLabel("转换错误")
+
+    def handleConvertFinished(self):
+        """
+        转换完成
+        """
+        self.mainWindow.convertCancelBtn.hide()
+        self.mainWindow.convertRunBtn.setText("开始")
+        self.enabelConvertBtn(True)
+
+    def handleConvertPause(self):
+        """
+        转换暂停
+        """
+        self.setProcessLabel("已暂停")
+        self.mainWindow.convertRunBtn.setText("继续")
+        self.converter.pause()
+
+    def handleConvertContinue(self):
+        """
+        转换继续
+        """
+        self.mainWindow.convertRunBtn.setText("暂停")
+        self.converter.resume()
 
     def updateConvertInputDir(self):
         """
@@ -393,6 +425,15 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def enabelConvertBtn(self, enable=True):
+        """
+        失能转换相关配置按钮
+        """
+        self.mainWindow.convertInputBtn.setEnabled(enable)
+        self.mainWindow.convertOutputBtn.setEnabled(enable)
+        self.mainWindow.claearBtnBtn.setEnabled(enable)
+        self.mainWindow.addLabelBtn.setEnabled(enable)
+
     def convert(self):
         """
         转换
@@ -402,8 +443,16 @@ class MainWindow(QMainWindow):
                 return
 
             if hasattr(self, "converter") and self.converter.isRunning():
-                showMessageBox(QMessageBox.Icon.Information, "转换任务已在运行中")
-                return
+                if self.mainWindow.convertRunBtn.text() == "暂停":
+                    self.handleConvertPause()
+                    return
+                elif self.mainWindow.convertRunBtn.text() == "继续":
+                    self.handleConvertContinue()
+                    return
+
+            self.mainWindow.convertCancelBtn.show()
+            self.mainWindow.convertRunBtn.setText("暂停")
+            self.enabelConvertBtn(False)
 
             LOGGER.info(
                 f"开始转换，任务类型：{self.sysConfig.currentMode.name},输出路径：{self.sysConfig.convertConfig.outputDir},标签：{self.sysConfig.convertConfig.classes}"

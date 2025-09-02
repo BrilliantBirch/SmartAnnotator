@@ -55,7 +55,7 @@ class Converter:
                 )
 
     def run(self, run_callback):
-        self.converter.run(run_callback)
+        return self.converter.run(run_callback)
 
 
 # endregion

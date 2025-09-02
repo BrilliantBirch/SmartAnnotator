@@ -1,19 +1,13 @@
-from PyQt5.QtCore import QThread, pyqtSignal
 from cfg import LOGGER, SysConfig
 from .converter import Converter
+from ..baseworker import BaseWorker
+from PyQt5.QtCore import QMutexLocker
 
 
-class ConvertWorker(QThread):
+class ConvertWorker(BaseWorker):
     """
     转换线程--避免阻塞UI线程
     """
-
-    # 定义信号：传递当前进度（0-100）
-    progress_updated = pyqtSignal(float)
-    # 定义信号：任务完成（无参数）
-    task_finished = pyqtSignal()
-    error_occurred = pyqtSignal(str)
-    convert_progress_desc = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -23,23 +17,56 @@ class ConvertWorker(QThread):
         self.config = config
 
     def run(self):
-        """线程执行的核心逻辑：模拟耗时操作（如循环+sleep）"""
+        """线程主逻辑（安全响应暂停/停止）"""
+        converter = None
         try:
+            # 初始检查：配置是否设置 + 是否已被停止
+            with QMutexLocker(self.mutex):
+                if self.config is None:
+                    raise ValueError("转换配置未设置")
+                if self.stopped:
+                    return
 
-            if self.config is None:
-                raise ValueError("转换配置未设置")
+            # 初始化转换器并执行任务
+            converter = Converter(self.config)  # 假设 Converter 已定义
 
-            converter = Converter(self.config)
-            converter.run(self.run_callback)
-            self.task_finished.emit()  # 任务完成，发射结束信号
+            # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
+            continue_running = converter.run(self.run_callback)
+
+            # 任务结束：区分“正常完成”和“被停止”
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.convert_progress_desc.emit("任务手动终止")
+                    self.progress_updated.emit(0.0)
+                elif continue_running:
+                    self.convert_progress_desc.emit("转换任务完成")
+                else:
+                    self.convert_progress_desc.emit("转换任务异常中断")
+
         except Exception as e:
-            # 若任务出错，可新增error信号传递异常（此处简化处理）
-            LOGGER.error(f"线程执行失败：{e}")
-            self.error_occurred.emit(str(e))  # 任务完成，发射结束信号
+            # 异常处理：记录日志 + 通知 UI
+            error_msg = f"线程执行失败：{str(e)}"
+            LOGGER.error(error_msg)
+            self.error_occurred.emit(error_msg)
 
-    # def stop(self):
-    #     self.terminate()
+        finally:
+            self.task_finished.emit()
+            # 清理工作：重置标志位（方便线程复用）
+            with QMutexLocker(self.mutex):
+                self.paused = False
+                self.stopped = False
 
-    def run_callback(self, desc, progress):
-        self.progress_updated.emit(progress)
-        self.convert_progress_desc.emit(desc)
+    # def run(self):
+    #     converter = None
+
+    #     try:
+
+    #         if self.config is None:
+    #             raise ValueError("转换配置未设置")
+    #         converter = Converter(self.config)
+    #         converter.run(self.run_callback)
+    #         self.task_finished.emit()  # 任务完成，发射结束信号
+    #     except Exception as e:
+    #         # 若任务出错，可新增error信号传递异常（此处简化处理）
+    #         LOGGER.error(f"线程执行失败：{e}")
+    #         self.error_occurred.emit(str(e))  # 任务完成，发射结束信号

@@ -43,11 +43,17 @@ class TxtConverter:
         ]
         self.output = Path(config.outputDir)
         self.classes = config.classes
-        # 类别字典续按类别的索引从小到大排序，否则会导致绘图时类别不对应
-        self.class_mapping = [value.lower() for value in self.classes]
-        self.class_mapping = {
-            value: index for index, value in enumerate(self.class_mapping)
-        }
+        # 对类别去重
+        seen = set()
+        unique_classes = []
+        for value in self.classes:
+            lower_val = value.lower()
+            if lower_val not in seen:
+                seen.add(lower_val)
+                unique_classes.append(lower_val)
+            else:
+                LOGGER.warning(f"类别{value}重复，已去重")
+        self.class_mapping = {v: i for i, v in enumerate(unique_classes)}
         self.visualized = config.visualized
         self.export = config.export
         # 默认分割比例训练集：验证集：测试集 8：1：1
@@ -103,6 +109,8 @@ class TxtConverter:
             # 开始转换
             total = len(self.annotationFiles)
             for id, json_path in enumerate(self.annotationFiles):
+                if not prograss_callback("标签转换中", (id + 1) / total):
+                    return False
                 json_path = Path(json_path)
                 # 根据标签获取图片路径
                 img_path = json_path.with_suffix(
@@ -139,7 +147,6 @@ class TxtConverter:
                         )
                 else:
                     LOGGER.warning(f"{json_path}未找到对应的图片文件")
-                prograss_callback("标签转换中", (id + 1) / total)
 
             # 处理背景图片，有两种 一种是空标注 一种是无标注图片(图片列表剩余中未处理的)
             if self.imageFiles or empty_files:
@@ -151,7 +158,10 @@ class TxtConverter:
                 backgroundFolder_label.mkdir(parents=True, exist_ok=True)
                 background_imgFiles = self.imageFiles + empty_files
                 for id, imageFile in enumerate(background_imgFiles):
-                    prograss_callback("背景图片转换中", (id + 1) / background_total)
+                    if not prograss_callback(
+                        "背景图片转换中", (id + 1) / background_total
+                    ):
+                        return False
                     shutil.copy(imageFile, backgroundFolder_img / imageFile.name)
                     # 生成空的txt文件
                     with open(
@@ -161,41 +171,26 @@ class TxtConverter:
 
             # 处理失败转换
             if failed_files:
-                pass
-                # with open(outputdir / "problematic_files.txt", "w") as f:
-                #     f.write("\n".join(problematic_files))
-                # print(
-                #     f"发现 {len(problematic_files)} 个问题文件，详见 problematic_files.txt"
-                # )
+                LOGGER.info(f"发现 {len(failed_files)} 个问题文件")
 
-            # if self.splitDataSet:
-            #     self.splitData()
-            # if self.is_genyaml:
-            #     if not self.splitDataSet:
-            #         if (
-            #             input(f"还未执行数据集分割，是否先进行分割(y/n)?").lower()
-            #             == "y"
-            #         ):
-            #             self.splitData()
-            #             self.genDataYaml()
-            #     else:
-            #         self.genDataYaml()
+            return True
         except Exception as ex:
             LOGGER.error(f"标签转换中错误：{str(ex)}")
-            prograss_callback("标签转换异常终止", 1.0)
+            return False
 
 
 # region ToYOLOPose
 class YoloPoseConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.task = "ToYOLO_Pose"
-        self.kpt = kwargs.get("kpt", [])
-        self.kpt = [kpt.lower() for kpt in self.kpt]
+        self.kpt = [
+            class_name
+            for class_name in self.class_mapping.keys()
+            if str(class_name).contains("_point")
+        ]
         if self.kpt is None:
-            raise ValueError(
-                "缺少关键点信息，使用--kpt参数，如['Guide_plate_0_Point1','Guide_plate_0_Point2','Guide_plate_1_Point1','Guide_plate_1_Point2']"
-            )
+            LOGGER.warning("缺少关键点信息，关键点请用_point1,_point2,_point3...等注明")
+            return
         self.kpt = [
             kpt for kpt in self.kpt if kpt.split("_point")[0] in self.class_mapping
         ]
@@ -206,13 +201,6 @@ class YoloPoseConverter(TxtConverter):
         self.BBoxSize = kwargs.get("BBoxSize", 6)
         # 转换为set 去重
         self.kpt_withoutBBox = set((kpt.lower() for kpt in self.kpt_withoutBBox))
-        self.target = os.path.join(
-            self.target,
-            self.task,
-            f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
-        )
-        selected_colors = random.sample(list(COLORS), self.classNum + self.kpt_num)
-        self.class_color_map = {i: color for i, color in enumerate(selected_colors)}
 
     def process(self, path):
         """处理单个标注文件"""
