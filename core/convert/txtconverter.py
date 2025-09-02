@@ -66,9 +66,6 @@ class TxtConverter:
     ):
         LOGGER.warning(f"当前转换器暂不支持可视化")
 
-    def splitData(self):
-        pass
-
     def genDataYaml(self):
         """
         生成数据集yaml文件
@@ -89,6 +86,13 @@ class TxtConverter:
 
     def run(self, prograss_callback=None):
         try:
+            convertImgFolder = self.output / "images"
+            convertImgFolder.mkdir(parents=True, exist_ok=True)
+            convertLabelFolder = self.output / "labels"
+            convertLabelFolder.mkdir(parents=True, exist_ok=True)
+            if self.visualized:
+                visualizeFolder = self.output / "visualized"
+                visualizeFolder.mkdir(parents=True, exist_ok=True)
             # 获取图片路径及其后缀字典
             imageFiles_dir = {
                 str(Path(imageFile)).split(".")[0]: Path(imageFile).suffix
@@ -96,45 +100,65 @@ class TxtConverter:
             }
             empty_files = []
             failed_files = []
+            # 开始转换
             total = len(self.annotationFiles)
             for id, json_path in enumerate(self.annotationFiles):
                 json_path = Path(json_path)
-                prograss_callback("标签转换中", id / total)
-                # 转换标注
-                yolo_lines, failed, failInfos = self.process(json_path)
-                # 背景空标注
-                if not yolo_lines:
-                    background_count += 1
-                    empty_files.append(json_path)
-                    continue
-                # 转换失败
-                if failed:
-                    failed_files.append(str(json_path))
-                    continue
-
-                # 处理图像 将处理好了的图片移除列表
+                # 根据标签获取图片路径
                 img_path = json_path.with_suffix(
                     imageFiles_dir.get(str(json_path).split(".")[0], "")
                 )
-                if img_path and img_path.exists():
-                    (self.output / "images").mkdir(parents=True, exist_ok=True)
-                    destination = self.output / "images" / img_path.name
+                if img_path in self.imageFiles:
+                    # 标记为已处理
+                    self.imageFiles.remove(img_path)
+                    # 转换标注
+                    yolo_lines, failed, failInfos = self.process(json_path)
+                    # 转换失败
+                    if failed:
+                        failed_files.append(str(json_path))
+                        continue
+                    # 空标注文件
+                    if not yolo_lines:
+                        empty_files.append(img_path)
+                        continue
+                    # 复制图片
+                    destination = convertImgFolder / img_path.name
                     try:
                         shutil.copy(img_path, destination)
-                        self.imageFiles.remove(img_path)
                     except Exception as e:
                         LOGGER.error(f"复制 {img_path} 时出错: {e}")
-                    (self.output / "labels").mkdir(parents=True, exist_ok=True)
-                    txt_path = self.output / "labels" / f"{json_path.stem}.txt"
+                    txt_path = convertLabelFolder / f"{json_path.stem}.txt"
                     # 写入成功转换后的标注
                     with open(txt_path, "w") as f:
                         f.write("\n".join(yolo_lines))
+                    # 可视化转换后的标注文件
+                    if self.visualized:
+                        vis_path = visualizeFolder / img_path.name
+                        self.visualize(
+                            str(img_path), str(vis_path), yolo_lines, failInfos
+                        )
                 else:
                     LOGGER.warning(f"{json_path}未找到对应的图片文件")
+                prograss_callback("标签转换中", (id + 1) / total)
 
-                if self.visualized:
-                    vis_path = self.output / "visualized" / img_path.name
-                    self.visualize(str(img_path), str(vis_path), yolo_lines, failInfos)
+            # 处理背景图片，有两种 一种是空标注 一种是无标注图片(图片列表剩余中未处理的)
+            if self.imageFiles or empty_files:
+                background_total = len(self.imageFiles) + len(empty_files)
+                LOGGER.info(f"开始处理背景图片，共{background_total}张")
+                backgroundFolder_img = self.output / "background" / "images"
+                backgroundFolder_img.mkdir(parents=True, exist_ok=True)
+                backgroundFolder_label = self.output / "background" / "labels"
+                backgroundFolder_label.mkdir(parents=True, exist_ok=True)
+                background_imgFiles = self.imageFiles + empty_files
+                for id, imageFile in enumerate(background_imgFiles):
+                    prograss_callback("背景图片转换中", (id + 1) / background_total)
+                    shutil.copy(imageFile, backgroundFolder_img / imageFile.name)
+                    # 生成空的txt文件
+                    with open(
+                        backgroundFolder_label / f"{imageFile.stem}.txt", "w"
+                    ) as f:
+                        f.write("")
+
             # 处理失败转换
             if failed_files:
                 pass
@@ -143,12 +167,7 @@ class TxtConverter:
                 # print(
                 #     f"发现 {len(problematic_files)} 个问题文件，详见 problematic_files.txt"
                 # )
-            # 处理背景图片，有两种 一种是空标注 一种是无标注图片(图片列表剩余中未处理的)
-            if empty_files:
-                pass
-                # LOGGER.info(
-                #     f"发现{background_count}个空标注文件，移动到背景文件夹{outputdir/'background'}"
-                # )
+
             # if self.splitDataSet:
             #     self.splitData()
             # if self.is_genyaml:
@@ -163,6 +182,7 @@ class TxtConverter:
             #         self.genDataYaml()
         except Exception as ex:
             LOGGER.error(f"标签转换中错误：{str(ex)}")
+            prograss_callback("标签转换异常终止", 1.0)
 
 
 # region ToYOLOPose
@@ -535,28 +555,32 @@ class YoloConverter(TxtConverter):
         super().__init__(*args, **kwargs)
 
     def process(self, path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        yolo_annotations = []
-        image_height = data["imageHeight"]
-        image_width = data["imageWidth"]
-        for shape in data["shapes"]:
-            label = shape["label"].lower()
-            if label not in self.class_mapping:
-                continue
-            if shape["shape_type"] == "rectangle":
-                points = shape["points"]
-                # convert to YOLO format
-                (xmin, ymin), (xmax, ymax) = points
-                x_center = (xmin + xmax) / 2.0 / image_width
-                y_center = (ymin + ymax) / 2.0 / image_height
-                width = abs((xmax - xmin) / image_width)
-                height = abs((ymax - ymin) / image_height)
-                class_id = self.class_mapping[label]
-                yolo_annotations.append(
-                    f"{class_id} {x_center} {y_center} {width} {height}"
-                )
-        return yolo_annotations, False, set()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            yolo_annotations = []
+            image_height = data["imageHeight"]
+            image_width = data["imageWidth"]
+            for shape in data["shapes"]:
+                label = shape["label"].lower()
+                if label not in self.class_mapping:
+                    continue
+                if shape["shape_type"] == "rectangle":
+                    points = shape["points"]
+                    # convert to YOLO format
+                    (xmin, ymin), (xmax, ymax) = points
+                    x_center = (xmin + xmax) / 2.0 / image_width
+                    y_center = (ymin + ymax) / 2.0 / image_height
+                    width = abs((xmax - xmin) / image_width)
+                    height = abs((ymax - ymin) / image_height)
+                    class_id = self.class_mapping[label]
+                    yolo_annotations.append(
+                        f"{class_id} {x_center} {y_center} {width} {height}"
+                    )
+            return yolo_annotations, False, set()
+        except Exception as ex:
+            LOGGER.error(f"{path}标签转换失败：{ex}")
+            return None, True, set()
 
     def visualize(self, imgPath, outputFileName, yololines, infos=None):
         """可视化标注结果"""

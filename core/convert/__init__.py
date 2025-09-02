@@ -9,7 +9,7 @@ class ConvertWorker(QThread):
     """
 
     # 定义信号：传递当前进度（0-100）
-    progress_updated = pyqtSignal(int)
+    progress_updated = pyqtSignal(float)
     # 定义信号：任务完成（无参数）
     task_finished = pyqtSignal()
     error_occurred = pyqtSignal(str)

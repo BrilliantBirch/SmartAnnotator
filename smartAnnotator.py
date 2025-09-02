@@ -180,8 +180,9 @@ class MainWindow(QMainWindow):
         """
         设置进度条的值
         """
-        if value <= 100.0 and value >= 0.0:
-            self.mainWindow.progressBar.setValue(value)
+        if 0.0 <= value <= 100.0:
+            self.mainWindow.progressBar.setValue(int(100 * value))  # 进度条用整数近似
+            # self.mainWindow.progressBar.text = f"{value:.2f}%"  # 标签显示精确浮点数
 
     def changePage(self, page_name):
         """
@@ -404,9 +405,11 @@ class MainWindow(QMainWindow):
                 showMessageBox(QMessageBox.Icon.Information, "转换任务已在运行中")
                 return
 
-            LOGGER.info(f"开始转换，任务类型：{self.sysConfig.currentMode}")
+            LOGGER.info(
+                f"开始转换，任务类型：{self.sysConfig.currentMode.name},输出路径：{self.sysConfig.convertConfig.outputDir},标签：{self.sysConfig.convertConfig.classes}"
+            )
             self.converter.setConfig(self.sysConfig)
-            self.converter.run()
+            self.converter.start()
             self.setProcessLabel("转换中...")
 
         except Exception as e:
