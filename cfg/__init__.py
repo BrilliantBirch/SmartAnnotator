@@ -36,13 +36,16 @@ class ConvertConfig:
     def __init__(self):
         self.sourceFormat = None
         self.classes = []
-        self.kpt = []
+        self.kpt = {}
         self.visualized = False
         self.annotationFiles = []
         self.imageFiles = []
         self.export = False
         self.inputDir = ""
         self.outputDir = ""
+        self.trainRatio = 0.8
+        self.valRatio = 0.1
+        self.testRatio = 0.1
 
     def setSourceFormat(self, format):
         self.sourceFormat = format

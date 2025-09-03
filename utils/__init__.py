@@ -25,7 +25,7 @@ MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Wi
 
 from .qt import chooseDir, showMessageBox, CustomItemWidget
 from .files import checkAnnotationFiles
-from .tool import is_point_in_box, is_rect_inside
+from .tool import is_point_in_box, is_rect_inside, export
 
 
 class QTextBrowserLogger(QObject, logging.Handler):

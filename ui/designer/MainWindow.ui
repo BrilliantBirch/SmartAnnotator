@@ -155,383 +155,400 @@
       <widget class="QWidget" name="convertPage">
        <layout class="QGridLayout" name="gridLayout_3">
         <item row="0" column="0">
-         <layout class="QVBoxLayout" name="verticalLayout">
+         <widget class="QLabel" name="label_3">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="font">
+           <font>
+            <family>Agency FB</family>
+            <pointsize>12</pointsize>
+           </font>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">color: rgb(255, 0, 0);</string>
+          </property>
+          <property name="text">
+           <string>Labelme格式转换时，图片应与json文件在同一路径；Yolo格式转换时，图片应在上层目录与labels目录对应的images路径下</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <layout class="QHBoxLayout" name="horizontalLayout_4">
+          <property name="spacing">
+           <number>0</number>
+          </property>
           <property name="sizeConstraint">
            <enum>QLayout::SetNoConstraint</enum>
           </property>
           <item>
-           <widget class="QLabel" name="label_3">
+           <widget class="QLabel" name="label_4">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="font">
-             <font>
-              <family>Agency FB</family>
-              <pointsize>12</pointsize>
-             </font>
+            <property name="minimumSize">
+             <size>
+              <width>80</width>
+              <height>0</height>
+             </size>
             </property>
-            <property name="styleSheet">
-             <string notr="true">color: rgb(255, 0, 0);</string>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
             </property>
             <property name="text">
-             <string>Labelme格式转换时，图片应与json文件在同一路径；Yolo格式转换时，图片应在上层目录与labels目录对应的images路径下</string>
+             <string>      源格式</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
             </property>
            </widget>
           </item>
           <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_4">
-            <property name="spacing">
-             <number>0</number>
+           <widget class="QRadioButton" name="jsonBtn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
             </property>
-            <property name="sizeConstraint">
-             <enum>QLayout::SetNoConstraint</enum>
+            <property name="maximumSize">
+             <size>
+              <width>60</width>
+              <height>16777215</height>
+             </size>
             </property>
-            <item>
-             <widget class="QLabel" name="label_4">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumSize">
-               <size>
-                <width>80</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>      源格式</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QRadioButton" name="jsonBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>60</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>json</string>
-              </property>
-              <property name="checked">
-               <bool>true</bool>
-              </property>
-              <attribute name="buttonGroup">
-               <string notr="true">buttonGroup</string>
-              </attribute>
-             </widget>
-            </item>
-            <item>
-             <widget class="QRadioButton" name="txtBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="text">
-               <string>txt</string>
-              </property>
-              <attribute name="buttonGroup">
-               <string notr="true">buttonGroup</string>
-              </attribute>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLabel" name="label_8">
-              <property name="text">
-               <string/>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QCheckBox" name="exportBtn">
-              <property name="minimumSize">
-               <size>
-                <width>80</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>是否导出</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QCheckBox" name="visualizeBtn">
-              <property name="maximumSize">
-               <size>
-                <width>100</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>  是否可视化</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
+            <property name="text">
+             <string>json</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+            <attribute name="buttonGroup">
+             <string notr="true">buttonGroup</string>
+            </attribute>
+           </widget>
           </item>
           <item>
-           <layout class="QGridLayout" name="gridLayout_4">
-            <property name="sizeConstraint">
-             <enum>QLayout::SetNoConstraint</enum>
+           <widget class="QRadioButton" name="txtBtn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
             </property>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label">
-              <property name="minimumSize">
-               <size>
-                <width>80</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>标注文档路径</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QLineEdit" name="convertInput">
-              <property name="readOnly">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="2">
-             <widget class="QPushButton" name="convertInputBtn">
-              <property name="text">
-               <string>浏览</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>txt</string>
+            </property>
+            <attribute name="buttonGroup">
+             <string notr="true">buttonGroup</string>
+            </attribute>
+           </widget>
           </item>
           <item>
-           <layout class="QGridLayout" name="gridLayout_5">
-            <property name="sizeConstraint">
-             <enum>QLayout::SetNoConstraint</enum>
+           <widget class="QLabel" name="label_8">
+            <property name="maximumSize">
+             <size>
+              <width>100</width>
+              <height>16777215</height>
+             </size>
             </property>
-            <item row="0" column="1">
-             <widget class="QLineEdit" name="convertOutput">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="readOnly">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_2">
-              <property name="minimumSize">
-               <size>
-                <width>80</width>
-                <height>0</height>
-               </size>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>    输出路径</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="2">
-             <widget class="QPushButton" name="convertOutputBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="text">
-               <string>浏览</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>数据集比例分配：</string>
+            </property>
+           </widget>
           </item>
           <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_3">
-            <property name="sizeConstraint">
-             <enum>QLayout::SetNoConstraint</enum>
+           <widget class="QLineEdit" name="trainRatio">
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
             </property>
+            <property name="text">
+             <string>0.8</string>
+            </property>
+            <property name="placeholderText">
+             <string>训练集比例</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="valRatio">
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>0.1</string>
+            </property>
+            <property name="placeholderText">
+             <string>测试集比例</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="testRatio">
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>0.1</string>
+            </property>
+            <property name="placeholderText">
+             <string>验证集比例</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="exportBtn">
+            <property name="minimumSize">
+             <size>
+              <width>80</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>是否导出</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="visualizeBtn">
+            <property name="maximumSize">
+             <size>
+              <width>100</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>  是否可视化</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="2" column="0">
+         <layout class="QGridLayout" name="gridLayout_4">
+          <property name="sizeConstraint">
+           <enum>QLayout::SetNoConstraint</enum>
+          </property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label">
+            <property name="minimumSize">
+             <size>
+              <width>80</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>标注文档路径</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="convertInput">
+            <property name="readOnly">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QPushButton" name="convertInputBtn">
+            <property name="text">
+             <string>浏览</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="3" column="0">
+         <layout class="QGridLayout" name="gridLayout_5">
+          <property name="sizeConstraint">
+           <enum>QLayout::SetNoConstraint</enum>
+          </property>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="convertOutput">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="readOnly">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="label_2">
+            <property name="minimumSize">
+             <size>
+              <width>80</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>    输出路径</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QPushButton" name="convertOutputBtn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>浏览</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="4" column="0">
+         <layout class="QHBoxLayout" name="horizontalLayout_8">
+          <item>
+           <layout class="QVBoxLayout" name="verticalLayout_2">
             <item>
-             <layout class="QVBoxLayout" name="verticalLayout_2">
-              <item>
-               <widget class="QLabel" name="labelListLabel">
-                <property name="text">
-                 <string>标签列表</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QListWidget" name="labelListView"/>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayout_6">
-                <property name="sizeConstraint">
-                 <enum>QLayout::SetNoConstraint</enum>
-                </property>
-                <item>
-                 <widget class="QLabel" name="label_7">
-                  <property name="text">
-                   <string/>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="addLabelBtn">
-                  <property name="sizePolicy">
-                   <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                    <horstretch>0</horstretch>
-                    <verstretch>0</verstretch>
-                   </sizepolicy>
-                  </property>
-                  <property name="minimumSize">
-                   <size>
-                    <width>80</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="maximumSize">
-                   <size>
-                    <width>80</width>
-                    <height>16777215</height>
-                   </size>
-                  </property>
-                  <property name="layoutDirection">
-                   <enum>Qt::RightToLeft</enum>
-                  </property>
-                  <property name="text">
-                   <string>添加</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="claearBtnBtn">
-                  <property name="sizePolicy">
-                   <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                    <horstretch>0</horstretch>
-                    <verstretch>0</verstretch>
-                   </sizepolicy>
-                  </property>
-                  <property name="minimumSize">
-                   <size>
-                    <width>80</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="maximumSize">
-                   <size>
-                    <width>80</width>
-                    <height>16777215</height>
-                   </size>
-                  </property>
-                  <property name="layoutDirection">
-                   <enum>Qt::RightToLeft</enum>
-                  </property>
-                  <property name="text">
-                   <string>清空</string>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-             </layout>
+             <widget class="QLabel" name="labelListLabel">
+              <property name="text">
+               <string>标签列表</string>
+              </property>
+             </widget>
             </item>
             <item>
-             <layout class="QVBoxLayout" name="verticalLayout_4">
+             <widget class="QListWidget" name="labelListView"/>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_6">
+              <property name="sizeConstraint">
+               <enum>QLayout::SetNoConstraint</enum>
+              </property>
               <item>
-               <widget class="QLabel" name="annotationFilesLabel">
-                <property name="text">
-                 <string>标注文件预览</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QListView" name="annotationFilesView"/>
-              </item>
-              <item>
-               <widget class="QLabel" name="annotationFilesNumLabel">
-                <property name="minimumSize">
-                 <size>
-                  <width>0</width>
-                  <height>23</height>
-                 </size>
-                </property>
+               <widget class="QLabel" name="label_7">
                 <property name="text">
                  <string/>
                 </property>
-                <property name="alignment">
-                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="addLabelBtn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>80</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="layoutDirection">
+                 <enum>Qt::RightToLeft</enum>
+                </property>
+                <property name="text">
+                 <string>添加</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="clearLabelBtn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>80</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="layoutDirection">
+                 <enum>Qt::RightToLeft</enum>
+                </property>
+                <property name="text">
+                 <string>清空</string>
                 </property>
                </widget>
               </item>
@@ -540,55 +557,99 @@
            </layout>
           </item>
           <item>
-           <layout class="QHBoxLayout" name="horizontalLayout_7">
+           <layout class="QVBoxLayout" name="verticalLayout">
             <item>
-             <widget class="QLabel" name="label_11">
+             <widget class="QLabel" name="kptLabel">
+              <property name="text">
+               <string>关键点列表</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QListWidget" name="kptListView"/>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayout_3">
+              <item>
+               <widget class="QLabel" name="label_9">
+                <property name="text">
+                 <string/>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="addKptBtn">
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>80</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="layoutDirection">
+                 <enum>Qt::RightToLeft</enum>
+                </property>
+                <property name="text">
+                 <string>添加</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="clearKptBtn">
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>0</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>80</width>
+                  <height>16777215</height>
+                 </size>
+                </property>
+                <property name="layoutDirection">
+                 <enum>Qt::RightToLeft</enum>
+                </property>
+                <property name="text">
+                 <string>清空</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="verticalLayout_4">
+            <item>
+             <widget class="QLabel" name="annotationFilesLabel">
+              <property name="text">
+               <string>标注文件预览</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QListView" name="annotationFilesView"/>
+            </item>
+            <item>
+             <widget class="QLabel" name="annotationFilesNumLabel">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>23</height>
+               </size>
+              </property>
               <property name="text">
                <string/>
               </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="convertRunBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>开始</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="convertCancelBtn">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>80</width>
-                <height>16777215</height>
-               </size>
-              </property>
-              <property name="layoutDirection">
-               <enum>Qt::RightToLeft</enum>
-              </property>
-              <property name="text">
-               <string>终止</string>
+              <property name="alignment">
+               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
               </property>
              </widget>
             </item>
@@ -596,7 +657,62 @@
           </item>
          </layout>
         </item>
-        <item row="1" column="0">
+        <item row="5" column="0">
+         <layout class="QHBoxLayout" name="horizontalLayout_7">
+          <item>
+           <widget class="QLabel" name="label_11">
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="convertRunBtn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>开始</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="convertCancelBtn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>80</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="layoutDirection">
+             <enum>Qt::RightToLeft</enum>
+            </property>
+            <property name="text">
+             <string>终止</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item row="6" column="0">
          <layout class="QHBoxLayout" name="horizontalLayout">
           <item>
            <widget class="QLabel" name="convertStatusLabel">
@@ -657,9 +773,218 @@
        </layout>
       </widget>
       <widget class="QWidget" name="annotatePage">
-       <layout class="QGridLayout" name="gridLayout"/>
+       <widget class="QWidget" name="layoutWidget">
+        <property name="geometry">
+         <rect>
+          <x>9</x>
+          <y>9</y>
+          <width>562</width>
+          <height>82</height>
+         </rect>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_5">
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_12">
+           <item>
+            <widget class="QRadioButton" name="cpuBtn">
+             <property name="text">
+              <string>cpu</string>
+             </property>
+             <property name="checked">
+              <bool>false</bool>
+             </property>
+             <attribute name="buttonGroup">
+              <string notr="true">buttonGroup_2</string>
+             </attribute>
+            </widget>
+           </item>
+           <item>
+            <widget class="QRadioButton" name="gpuBtn">
+             <property name="text">
+              <string>gpu</string>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+             <attribute name="buttonGroup">
+              <string notr="true">buttonGroup_2</string>
+             </attribute>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_10">
+           <property name="sizeConstraint">
+            <enum>QLayout::SetNoConstraint</enum>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_13">
+             <property name="minimumSize">
+              <size>
+               <width>120</width>
+               <height>0</height>
+              </size>
+             </property>
+             <property name="maximumSize">
+              <size>
+               <width>120</width>
+               <height>16777215</height>
+              </size>
+             </property>
+             <property name="layoutDirection">
+              <enum>Qt::RightToLeft</enum>
+             </property>
+             <property name="text">
+              <string>模型路径</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="modelInput">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="modelInputBtn">
+             <property name="text">
+              <string>浏览</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_11">
+           <property name="sizeConstraint">
+            <enum>QLayout::SetNoConstraint</enum>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_14">
+             <property name="minimumSize">
+              <size>
+               <width>120</width>
+               <height>0</height>
+              </size>
+             </property>
+             <property name="maximumSize">
+              <size>
+               <width>120</width>
+               <height>16777215</height>
+              </size>
+             </property>
+             <property name="layoutDirection">
+              <enum>Qt::RightToLeft</enum>
+             </property>
+             <property name="text">
+              <string>数据集生成路径</string>
+             </property>
+             <property name="alignment">
+              <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="modelInput_2">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="modelInputBtn_2">
+             <property name="text">
+              <string>浏览</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="layoutWidget">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>215</y>
+          <width>302</width>
+          <height>22</height>
+         </rect>
+        </property>
+        <layout class="QHBoxLayout" name="horizontalLayout_9">
+         <item>
+          <widget class="QLabel" name="annotateStatusLabel_2">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>80</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>200</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>无作业</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QProgressBar" name="annotateProgressBar">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="value">
+            <number>0</number>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_12">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="minimumSize">
+            <size>
+             <width>100</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
       </widget>
-      <widget class="QWidget" name="modifyPage"/>
+      <widget class="QWidget" name="modifyPage">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+      </widget>
       <widget class="QWidget" name="exportPage"/>
      </widget>
     </item>
@@ -752,6 +1077,9 @@
    </property>
   </action>
   <action name="actionModify">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="text">
     <string>修改</string>
    </property>
@@ -762,6 +1090,9 @@
    </property>
   </action>
   <action name="actionexport">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="text">
     <string>导出</string>
    </property>
@@ -771,5 +1102,6 @@
  <connections/>
  <buttongroups>
   <buttongroup name="buttonGroup"/>
+  <buttongroup name="buttonGroup_2"/>
  </buttongroups>
 </ui>

@@ -17,8 +17,8 @@ update:
 3.2025/5/08:新增补充单点标注的标注框
 """
 
-from cfg import LOGGER, LABELME_VERSION, ROOT, RANDOM_SEED, ConvertConfig
-from utils import COLORS, is_rect_inside, is_point_in_box
+from cfg import LOGGER, RANDOM_SEED, ConvertConfig, MODE
+from utils import COLORS, is_point_in_box, export
 
 
 from typing import List, Tuple, Set
@@ -26,10 +26,9 @@ from pathlib import Path
 import random
 import shutil
 import json
-from datetime import datetime
 import yaml
-from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 
 # region labelme2txt
@@ -43,6 +42,8 @@ class TxtConverter:
         ]
         self.output = Path(config.outputDir)
         self.classes = config.classes
+        self.kpt = config.kpt
+        self.splitRatio = (config.trainRatio, config.valRatio, config.testRatio)
         # 对类别去重
         seen = set()
         unique_classes = []
@@ -71,24 +72,6 @@ class TxtConverter:
         self, imgPath: str, outputFileName: str, yololines: List[str], infos: Set[int]
     ):
         LOGGER.warning(f"当前转换器暂不支持可视化")
-
-    def genDataYaml(self):
-        """
-        生成数据集yaml文件
-        """
-        yaml_content = {
-            "path": self.output.absolute().as_posix(),  # dataset root dir
-            "train": r"train/images",
-            "val": r"val/images",
-            "test": r"test/images",
-            "nc": len(self.classes),
-            "names": self.class_mapping,
-        }
-        if self.yamlName is None or self.yamlName == "":
-            self.yamlName = self.output.name
-        with open(self.output / self.yamlName / "Dataset.yaml", "w") as file:
-            yaml.dump(yaml_content, file, default_flow_style=False, sort_keys=False)
-        LOGGER.info(f"数据集生成完毕：{self.output / self.yamlName / 'Dataset.yaml'}")
 
     def run(self, prograss_callback=None):
         try:
@@ -123,7 +106,7 @@ class TxtConverter:
                     yolo_lines, failed, failInfos = self.process(json_path)
                     # 转换失败
                     if failed:
-                        failed_files.append(str(json_path))
+                        failed_files.append((json_path, img_path, failInfos))
                         continue
                     # 空标注文件
                     if not yolo_lines:
@@ -151,7 +134,9 @@ class TxtConverter:
             # 处理背景图片，有两种 一种是空标注 一种是无标注图片(图片列表剩余中未处理的)
             if self.imageFiles or empty_files:
                 background_total = len(self.imageFiles) + len(empty_files)
-                LOGGER.info(f"开始处理背景图片，共{background_total}张")
+                LOGGER.info(
+                    f"开始处理背景图片，共{background_total}张，复制到{self.output / 'background'}"
+                )
                 backgroundFolder_img = self.output / "background" / "images"
                 backgroundFolder_img.mkdir(parents=True, exist_ok=True)
                 backgroundFolder_label = self.output / "background" / "labels"
@@ -171,7 +156,35 @@ class TxtConverter:
 
             # 处理失败转换
             if failed_files:
-                LOGGER.info(f"发现 {len(failed_files)} 个问题文件")
+                failedFolder = self.output / "failed"
+                failedFolder.mkdir(parents=True, exist_ok=True)
+                for json_path, img_path, infos in failed_files:
+                    shutil.copy(json_path, failedFolder / json_path.name)
+                    shutil.copy(img_path, failedFolder / img_path.name)
+                    self.visualize(
+                        str(img_path),
+                        str(failedFolder / img_path.stem) + "_failed.jpg",
+                        [],
+                        infos=infos,
+                    )
+                LOGGER.info(
+                    f"发现 {len(failed_files)} 个转换失败文件，输出到{failedFolder}"
+                )
+
+            if self.export:
+                LOGGER.info(f"开始导出数据集")
+
+                def exportcallback(desc, process):
+                    prograss_callback(desc, process)
+
+                export(
+                    self.output,
+                    self.class_mapping,
+                    self.kpt,
+                    self.splitRatio,
+                    exportcallback,
+                )
+                LOGGER.info(f"导出数据集完成")
 
             return True
         except Exception as ex:
@@ -181,26 +194,26 @@ class TxtConverter:
 
 # region ToYOLOPose
 class YoloPoseConverter(TxtConverter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.kpt = [
-            class_name
-            for class_name in self.class_mapping.keys()
-            if str(class_name).contains("_point")
-        ]
-        if self.kpt is None:
-            LOGGER.warning("缺少关键点信息，关键点请用_point1,_point2,_point3...等注明")
-            return
-        self.kpt = [
-            kpt for kpt in self.kpt if kpt.split("_point")[0] in self.class_mapping
-        ]
-        self.kpt_num = len(self.kpt)
+    def __init__(self, config: ConvertConfig, **kwargs):
+        super().__init__(config, **kwargs)
+        self.mode = MODE.POSE
         # 获取要补充框的点
-        self.kpt_withoutBBox = kwargs.get("kpt_withoutBBox", [])
-        # 需要补充框的大小
-        self.BBoxSize = kwargs.get("BBoxSize", 6)
-        # 转换为set 去重
-        self.kpt_withoutBBox = set((kpt.lower() for kpt in self.kpt_withoutBBox))
+        kpt_withoutBBox = []
+        kpt_type = []
+        for k in config.kpt:
+            if k.split("_point")[0] not in self.class_mapping:
+                LOGGER.warning(f"关键点{k}未找到对应的类别")
+                raise ValueError(f"关键点{k}未找到对应的类别")
+            if config.kpt[k].get("isChecked"):
+                kpt_withoutBBox.append(k)
+            kpt_type.append(k)
+        self.kpt = config.kpt
+        self.kpt_type = kpt_type
+        self.classnum = len(self.class_mapping)
+        self.kpt_num = len(self.kpt)
+        selected_colors = random.sample(list(COLORS), self.classnum + self.kpt_num)
+        self.class_color_map = {i: color for i, color in enumerate(selected_colors)}
+        self.kpt_withoutBBox = kpt_withoutBBox
 
     def process(self, path):
         """处理单个标注文件"""
@@ -266,11 +279,12 @@ class YoloPoseConverter(TxtConverter):
                         continue
                     for points, visible in points_set:
                         # 补充框
+                        bboxSize = int(self.kpt[kpt_type].get("bbox_size"))
                         x, y = points
-                        x1 = max(0, x - self.BBoxSize)
-                        y1 = max(0, y - self.BBoxSize)
-                        x2 = min(image_width - 1, x + self.BBoxSize)
-                        y2 = min(image_height - 1, y + self.BBoxSize)
+                        x1 = max(0, x - bboxSize)
+                        y1 = max(0, y - bboxSize)
+                        x2 = min(image_width - 1, x + bboxSize)
+                        y2 = min(image_height - 1, y + bboxSize)
                         box_points = [(x1, y1), (x2, y2)]
                         boxes.append({"label": label, "points": box_points})
 
@@ -410,97 +424,160 @@ class YoloPoseConverter(TxtConverter):
                         infos.add((normalized_x, normalized_y))
             return yolo_lines, has_problem, infos
         except Exception as ex:
-            LOGGER.error(f"处理标注文件时出错：{str(ex)}")
-            with open(os.path.join(self.target, "problematic_files.txt"), "a") as f:
+            LOGGER.error(f"处理标注文件时出错：{str(ex)},记录到errorConvert.txt中")
+            with open(self.output / "errorConvert.txt", "a") as f:
                 f.write(f"{path}错误原因:{str(ex)}\n")
-            return [], True, set
+            return [], True, set()
 
     def visualize(
         self,
         imgPath: str,
         outputFileName: str,
         annotations: List[str],
-        infos: Set[int] = set(),
+        infos: Set[Tuple[float, float]] = set(),
     ):
-        """可视化标注结果"""
-        if annotations is None or len(annotations) == 0:
+        """
+        :param imgPath: 输入图片路径（支持中文）
+        :param outputFileName: 输出图片路径（支持中文）
+        :param annotations: YOLO格式标注列表（每行：class_id + 框坐标 + 关键点坐标）
+        :param infos: 错误关键点坐标集合（格式：{(x1,y1), (x2,y2), ...}，归一化坐标）
+        """
+
+        if not annotations or len(annotations) == 0:
+            if not infos or len(infos) == 0:
+                return
+        try:
+            # 转为RGB通道（统一格式，避免RGBA/灰度图问题）
+            image = Image.open(imgPath).convert("RGB")
+        except Exception as e:
+            LOGGER.error(f"读取图片失败：{imgPath}，错误：{str(e)}")
             return
-        image_data = np.fromfile(imgPath, dtype=np.uint8)
-        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
-        if image is None:
-            return
-        height, width = image.shape[:2]
-        for line in annotations:
-            parts = line.strip().split()
-            if len(parts) < 5:
-                continue
-            # 解析基础信息
-            class_id = int(parts[0])
-            center_x = float(parts[1]) * width
-            center_y = float(parts[2]) * height
-            box_w = float(parts[3]) * width
-            box_h = float(parts[4]) * height
+        draw = ImageDraw.Draw(image)  # 初始化绘图对象
+        width, height = image.size
 
-            # 计算边界框坐标
-            x1 = int(center_x - box_w / 2)
-            y1 = int(center_y - box_h / 2)
-            x2 = int(center_x + box_w / 2)
-            y2 = int(center_y + box_h / 2)
+        font = ImageFont.load_default()
+        if annotations:
+            # 遍历标注，绘制每一个目标
+            for line in annotations:
+                parts = line.strip().split()
+                # 校验标注格式：至少包含 class_id + 4个框坐标（共5个元素）
+                if len(parts) < 5:
+                    continue
+                try:
+                    class_id = int(parts[0])
+                    # 归一化坐标 → 实际像素坐标（center_x, center_y, box_w, box_h）
+                    center_x = float(parts[1]) * width
+                    center_y = float(parts[2]) * height
+                    box_w = float(parts[3]) * width
+                    box_h = float(parts[4]) * height
+                    # 计算边界框对角坐标（左上角x1,y1，右下角x2,y2）
+                    x1 = int(center_x - box_w / 2)
+                    y1 = int(center_y - box_h / 2)
+                    x2 = int(center_x + box_w / 2)
+                    y2 = int(center_y + box_h / 2)
 
-            # 绘制边界框
-            box_color = tuple(int(c * 255) for c in self.class_color_map[class_id])
-            cv2.rectangle(image, (x1, y1), (x2, y2), box_color, 2)
-
-            # 添加类别标签
-            label = f"{list(self.class_mapping.keys())[class_id]}"
-
-            cv2.putText(
-                image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2
-            )
-
-            # 解析关键点
-            keypoints = np.array([float(x) for x in parts[5:]]).reshape(-1, 3)
-
-            # 绘制关键点
-            for idx, kp in enumerate(keypoints):
-                kp_x = int(kp[0] * width)
-                kp_y = int(kp[1] * height)
-                point_color = tuple(
-                    int(c * 255) for c in self.class_color_map[self.classNum + idx]
-                )
-                label = self.kpt[idx]
-                # 绘制关键点
-                cv2.circle(image, (kp_x, kp_y), 6, point_color, -1)
-                # 添加关键点标签
-                cv2.putText(
-                    image,
-                    label,
-                    (kp_x + 10, kp_y - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    point_color,
-                    1,
-                )
-
-            if infos:
-                # 有错的
-                color = (0, 0, 255)
-                for points in infos:
-                    kp_x = int(points[0] * width)
-                    kp_y = int(points[1] * height)
-                    # 绘制关键点
-                    cv2.circle(image, (kp_x, kp_y), 6, color, -1)
-                    # 添加关键点标签
-                    cv2.putText(
-                        image,
-                        "wrong_point",
-                        (kp_x + 10, kp_y - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        2.0,
-                        color,
-                        2,
+                    box_color = tuple(
+                        int(c * 255) for c in self.class_color_map[class_id]
                     )
-        cv2.imwrite(outputFileName, image)
+                    draw.rectangle(
+                        xy=[x1, y1, x2, y2],  # 矩形对角坐标
+                        outline=box_color,  # 边框颜色
+                        width=2,
+                    )
+
+                    # 绘制类别标签（对应OpenCV cv2.putText）
+                    label = f"{list(self.class_mapping.keys())[class_id]}"
+                    # 标签位置：边界框左上角上方10像素（避免超出图片顶部）
+                    label_x = x1
+                    label_y = max(y1 - 10, 10)  # 防止标签超出图片顶部
+                    # 绘制标签文字
+                    draw.text(
+                        xy=(label_x, label_y),
+                        text=label,
+                        font=font,
+                        fill=box_color,  # 文字颜色与边框一致
+                    )
+
+                    # 解析并绘制关键点（每个关键点含x,y,可见性，共3个值）
+                    if len(parts) >= 8:  # 至少1个关键点（3个值）+ 5个基础参数
+                        keypoints = np.array([float(x) for x in parts[5:]]).reshape(
+                            -1, 3
+                        )
+                        for idx, kp in enumerate(keypoints):
+                            kp_x = int(kp[0] * width)  # 关键点x坐标
+                            kp_y = int(kp[1] * height)  # 关键点y坐标
+                            point_color = tuple(
+                                int(c * 255)
+                                for c in self.class_color_map[self.classnum + idx]
+                            )
+
+                            # 绘制关键点
+                            circle_radius = 2
+                            draw.ellipse(
+                                xy=[
+                                    kp_x - circle_radius,
+                                    kp_y - circle_radius,
+                                    kp_x + circle_radius,
+                                    kp_y + circle_radius,
+                                ],
+                                fill=point_color,  # 圆形填充颜色（-1表示填充）
+                            )
+
+                            # 绘制关键点标签
+                            kp_label = self.kpt_type[idx]
+                            # 标签位置：关键点右侧10像素、上方5像素
+                            kp_label_x = kp_x + 10
+                            kp_label_y = kp_y - 5
+                            draw.text(
+                                xy=(kp_label_x, kp_label_y),
+                                text=kp_label,
+                                font=font,
+                                fill=point_color,
+                            )
+
+                except Exception as e:
+                    LOGGER.error(f"解析标注失败：{line}，错误：{str(e)}")
+                    continue
+
+        # 绘制错误关键点（infos中的坐标）
+        if infos:
+            wrong_color = (255, 0, 0)
+            for point in infos:
+                try:
+                    # 错误关键点：归一化坐标 → 实际像素坐标
+                    kp_x = int(point[0] * width)
+                    kp_y = int(point[1] * height)
+
+                    # 绘制错误关键点（圆形，直径6，红色填充）
+                    circle_radius = 2
+                    draw.ellipse(
+                        xy=[
+                            kp_x - circle_radius,
+                            kp_y - circle_radius,
+                            kp_x + circle_radius,
+                            kp_y + circle_radius,
+                        ],
+                        fill=wrong_color,
+                    )
+                    wrong_label = "wrong_point"
+                    wrong_label_x = kp_x + 20
+                    wrong_label_y = kp_y - 20
+                    draw.text(
+                        xy=(wrong_label_x, wrong_label_y),
+                        text=wrong_label,
+                        font=font,
+                        fill=wrong_color,
+                        stroke_width=15,
+                    )
+                except Exception as e:
+                    LOGGER.error(f"绘制错误关键点失败：{point}，错误：{str(e)}")
+                    continue
+
+        # 保存可视化结果（
+        try:
+            image.save(outputFileName)
+        except Exception as e:
+            LOGGER.error(f"保存图片失败：{outputFileName}，错误：{str(e)}")
 
 
 # endregion
@@ -510,6 +587,7 @@ class YoloPoseConverter(TxtConverter):
 class YoloConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.mode = MODE.DETECT
 
     def process(self, path):
         try:
@@ -593,6 +671,7 @@ class YoloConverter(TxtConverter):
 class YoloSegConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.mode = MODE.SEGMENT
 
     def process(self, path):
         with open(path, "r", encoding="utf-8") as f:
@@ -715,6 +794,7 @@ class YoloSegConverter(TxtConverter):
 class PPOCRConverter(TxtConverter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.mode = MODE.OCR
 
     def process(self, path):
         ppocr_annotations = []
@@ -769,9 +849,6 @@ class PPOCRConverter(TxtConverter):
 
     def visualize(self, imgPath, outputFileName, yololines, infos):
         LOGGER.info(f"此任务:{self.task}暂不支持可视化，可使用PPOCRLabel查看转换结果")
-
-    def genDataYaml(self):
-        LOGGER.info(f"此任务:{self.task}不支持生成yaml数据集配置")
 
 
 # endregion
