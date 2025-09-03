@@ -5,12 +5,23 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}"
+            ],
+            "name": "启动扩展",
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "preLaunchTask": "npm",
+            "request": "launch",
+            "type": "extensionHost"
+        },
+        {
             "name": "Python 调试程序: 当前文件",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal",
-            "subProcess": true // 关键：开启子线程调试
+            "console": "integratedTerminal"
         }
     ]
 }

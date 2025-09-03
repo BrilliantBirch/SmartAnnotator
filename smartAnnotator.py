@@ -183,14 +183,16 @@ class MainWindow(QMainWindow):
         """
         设置进度条的标签
         """
-        self.mainWindow.statusLabel.setText(text)
+        self.mainWindow.convertStatusLabel.setText(text)
 
     def setProcessValue(self, value):
         """
         设置进度条的值
         """
         if 0.0 <= value <= 100.0:
-            self.mainWindow.progressBar.setValue(int(100 * value))  # 进度条用整数近似
+            self.mainWindow.convertProgressBar.setValue(
+                int(100 * value)
+            )  # 进度条用整数近似
             # self.mainWindow.progressBar.text = f"{value:.2f}%"  # 标签显示精确浮点数
 
     def changePage(self, page_name):
