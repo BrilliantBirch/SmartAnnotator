@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
             self.mainWindow.taskComBox.addItem(mode.name, mode.value)
         self.name_index_map = self._build_name_index_map()
         self.changePage("welcomePage")
+        self.showkptConfig(False)
 
     def initConverter(self):
         """
@@ -130,6 +131,9 @@ class MainWindow(QMainWindow):
             self.mainWindow.actionexport.triggered.connect(
                 lambda: self.changePage("exportPage")
             )
+            self.mainWindow.taskComBox.currentIndexChanged.connect(
+                lambda: self.changeMode()
+            )
             # converter
             self.mainWindow.convertInputBtn.clicked.connect(
                 lambda: self.updateConvertInputDir()
@@ -144,10 +148,11 @@ class MainWindow(QMainWindow):
             self.mainWindow.txtBtn.toggled.connect(
                 lambda: self.sysConfig.convertConfig.setSourceFormat("TXT")
             )
-            self.mainWindow.taskComBox.currentIndexChanged.connect(
-                lambda: self.changeMode()
-            )
+
             self.mainWindow.addLabelBtn.clicked.connect(lambda: self.addLabel())
+            self.mainWindow.clearLabelBtn.clicked.connect(lambda: self.clearLabel())
+            self.mainWindow.addKptBtn.clicked.connect(lambda: self.addKpt())
+            self.mainWindow.clearKptBtn.clicked.connect(lambda: self.clearkpt())
             self.mainWindow.exportBtn.toggled.connect(
                 lambda state: self.sysConfig.convertConfig.setExport(state)
             )
@@ -242,35 +247,35 @@ class MainWindow(QMainWindow):
         try:
             mode = MODE(self.mainWindow.taskComBox.currentData())
             if mode == MODE.POSE:
-                pass
+                self.showkptConfig(True)
             else:
-                pass
+                self.showkptConfig(False)
+
             self.sysConfig.currentMode = mode
         except Exception as e:
             LOGGER.error(f"模式切换失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
 
-    # def run(self):
-    #     """
-    #     运行
-    #     """
-    #     try:
-    #         if self.sysConfig.currentTask == TASK.CONVERT:
-    #             self.convert()
-    #         # elif self.sysConfig.currentTask == TASK.ANNOTATE:
-    #         #     self.annotate()
-    #         # elif self.sysConfig.currentTask == TASK.MODIFY:
-    #         #     self.modify()
-    #         # elif self.sysConfig.currentTask == TASK.EXPORT:
-    #         #     self.export()
-
-    #     except Exception as e:
-    #         LOGGER.error(f"运行失败，错误信息：{e}")
-    #         showMessageBox(QMessageBox.Icon.Critical, f"运行失败，错误信息：{e}")
-
     # endregion SYS
 
     # region 转换
+    def showkptConfig(self, show):
+        """
+        显示关键点配置
+        """
+        if show:
+            self.mainWindow.addKptBtn.show()
+            self.mainWindow.clearKptBtn.show()
+            self.mainWindow.kptListView.show()
+            self.mainWindow.label_9.show()
+            self.mainWindow.kptLabel.show()
+        else:
+            self.mainWindow.kptListView.hide()
+            self.mainWindow.addKptBtn.hide()
+            self.mainWindow.clearKptBtn.hide()
+            self.mainWindow.label_9.hide()
+            self.mainWindow.kptLabel.hide()
+
     def handleConvertCancel(self):
         """
         取消转换
@@ -370,6 +375,27 @@ class MainWindow(QMainWindow):
         self.mainWindow.labelListView.setItemWidget(item, item_widget)
         item.setSizeHint(item_widget.sizeHint())
 
+    def clearLabel(self):
+        """
+        清空标签
+        """
+        self.mainWindow.labelListView.clear()
+
+    def addKpt(self):
+        """
+        添加关键点
+        """
+        text = f"kpt_point{self.mainWindow.kptListView.count() + 1}"
+        item_widget = CustomItemWidget(text, self.mainWindow.kptListView, check=True)
+        item = QListWidgetItem()
+        self.mainWindow.kptListView.addItem(item)
+        self.mainWindow.kptListView.setItemWidget(item, item_widget)
+        item.setSizeHint(item_widget.sizeHint())
+
+    def clearkpt(self):
+        """清空关键点"""
+        self.mainWindow.kptListView.clear()
+
     def updateConvertOutputDir(self):
         """
         更新转换器的输出目录
@@ -387,8 +413,30 @@ class MainWindow(QMainWindow):
             item = self.mainWindow.labelListView.item(i)
             widget = self.mainWindow.labelListView.itemWidget(item)
             if isinstance(widget, CustomItemWidget):
-                items_text.append(widget.get_text())
+                items_text.append(widget.get_text().lower())
         return items_text
+
+    def getconvertKpt(self):
+        """
+        获取关键点
+        """
+        items = {}
+        for i in range(self.mainWindow.kptListView.count()):
+            item = self.mainWindow.kptListView.item(i)
+            widget = self.mainWindow.kptListView.itemWidget(item)
+            if isinstance(widget, CustomItemWidget):
+                kpt = widget.get_text().lower()
+                isChecked = widget.get_check_status()
+                bbox_size = widget.get_check_size()
+                if kpt not in items:
+                    items[kpt] = {
+                        "isChecked": isChecked,
+                        "bbox_size": bbox_size,
+                    }
+                else:
+                    LOGGER.warning(f"{kpt}重复，请检查")
+                    showMessageBox(QMessageBox.Icon.Warning, f"{kpt}重复，请检查")
+        return items
 
     def checkConvertParams(self):
         """
@@ -416,9 +464,15 @@ class MainWindow(QMainWindow):
                 )
 
         self.sysConfig.convertConfig.classes = self.getconvertLabels()
+
         if not self.sysConfig.convertConfig.classes:
             showMessageBox(QMessageBox.Icon.Warning, "请添加标签")
             return False
+        if self.sysConfig.currentMode == MODE.POSE:
+            self.sysConfig.convertConfig.kpt = self.getconvertKpt()
+            if not self.sysConfig.convertConfig.kpt:
+                showMessageBox(QMessageBox.Icon.Warning, "请添加关键点")
+                return False
         if not self.sysConfig.convertConfig.annotationFiles:
             showMessageBox(QMessageBox.Icon.Warning, "源目录下没有找到标注文件")
             return False
@@ -433,7 +487,7 @@ class MainWindow(QMainWindow):
         """
         self.mainWindow.convertInputBtn.setEnabled(enable)
         self.mainWindow.convertOutputBtn.setEnabled(enable)
-        self.mainWindow.claearBtnBtn.setEnabled(enable)
+        self.mainWindow.clearLabelBtn.setEnabled(enable)
         self.mainWindow.addLabelBtn.setEnabled(enable)
 
     def convert(self):
@@ -460,7 +514,7 @@ class MainWindow(QMainWindow):
                 f"开始转换，任务类型：{self.sysConfig.currentMode.name},输出路径：{self.sysConfig.convertConfig.outputDir},标签：{self.sysConfig.convertConfig.classes}"
             )
             self.converter.setConfig(self.sysConfig)
-            self.converter.start()
+            self.converter.run()
             self.setProcessLabel("转换中...")
 
         except Exception as e:

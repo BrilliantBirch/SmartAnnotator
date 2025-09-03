@@ -28,8 +28,7 @@ class ConvertWorker(BaseWorker):
                     return
 
             # 初始化转换器并执行任务
-            converter = Converter(self.config)  # 假设 Converter 已定义
-
+            converter = Converter(self.config)
             # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
             continue_running = converter.run(self.run_callback)
 

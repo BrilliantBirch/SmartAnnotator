@@ -36,7 +36,7 @@ class ConvertConfig:
     def __init__(self):
         self.sourceFormat = None
         self.classes = []
-        self.kpt = []
+        self.kpt = {}
         self.visualized = False
         self.annotationFiles = []
         self.imageFiles = []

@@ -15,16 +15,22 @@ class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(831, 678)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(MainWindow.sizePolicy().hasHeightForWidth())
         MainWindow.setSizePolicy(sizePolicy)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.centralwidget.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.centralwidget.sizePolicy().hasHeightForWidth()
+        )
         self.centralwidget.setSizePolicy(sizePolicy)
         self.centralwidget.setObjectName("centralwidget")
         self.gridLayout_2 = QtWidgets.QGridLayout(self.centralwidget)
@@ -34,15 +40,21 @@ class Ui_MainWindow(object):
         self.logBrowser.setObjectName("logBrowser")
         self.gridLayout_2.addWidget(self.logBrowser, 2, 0, 1, 1)
         self.stackedWidget = QtWidgets.QStackedWidget(self.centralwidget)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.stackedWidget.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.stackedWidget.sizePolicy().hasHeightForWidth()
+        )
         self.stackedWidget.setSizePolicy(sizePolicy)
         self.stackedWidget.setMinimumSize(QtCore.QSize(0, 400))
         self.stackedWidget.setObjectName("stackedWidget")
         self.welcomePage = QtWidgets.QWidget()
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.welcomePage.sizePolicy().hasHeightForWidth())
@@ -56,7 +68,9 @@ class Ui_MainWindow(object):
         self.verticalLayout_3.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         self.verticalLayout_3.setObjectName("verticalLayout_3")
         self.welcomeLabel = QtWidgets.QLabel(self.welcomePage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.welcomeLabel.sizePolicy().hasHeightForWidth())
@@ -70,24 +84,34 @@ class Ui_MainWindow(object):
         self.welcomeLabel.setObjectName("welcomeLabel")
         self.verticalLayout_3.addWidget(self.welcomeLabel)
         self.welcomeLabel2 = QtWidgets.QLabel(self.welcomePage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.welcomeLabel2.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.welcomeLabel2.sizePolicy().hasHeightForWidth()
+        )
         self.welcomeLabel2.setSizePolicy(sizePolicy)
         font = QtGui.QFont()
         font.setFamily("宋体")
         font.setPointSize(12)
         self.welcomeLabel2.setFont(font)
         self.welcomeLabel2.setScaledContents(True)
-        self.welcomeLabel2.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
+        self.welcomeLabel2.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignTrailing | QtCore.Qt.AlignVCenter
+        )
         self.welcomeLabel2.setObjectName("welcomeLabel2")
         self.verticalLayout_3.addWidget(self.welcomeLabel2)
         self.welcomeImageLabel = QtWidgets.QLabel(self.welcomePage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.welcomeImageLabel.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.welcomeImageLabel.sizePolicy().hasHeightForWidth()
+        )
         self.welcomeImageLabel.setSizePolicy(sizePolicy)
         self.welcomeImageLabel.setMinimumSize(QtCore.QSize(80, 80))
         self.welcomeImageLabel.setText("")
@@ -101,11 +125,10 @@ class Ui_MainWindow(object):
         self.convertPage.setObjectName("convertPage")
         self.gridLayout_3 = QtWidgets.QGridLayout(self.convertPage)
         self.gridLayout_3.setObjectName("gridLayout_3")
-        self.verticalLayout = QtWidgets.QVBoxLayout()
-        self.verticalLayout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
-        self.verticalLayout.setObjectName("verticalLayout")
         self.label_3 = QtWidgets.QLabel(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.label_3.sizePolicy().hasHeightForWidth())
@@ -116,13 +139,15 @@ class Ui_MainWindow(object):
         self.label_3.setFont(font)
         self.label_3.setStyleSheet("color: rgb(255, 0, 0);")
         self.label_3.setObjectName("label_3")
-        self.verticalLayout.addWidget(self.label_3)
+        self.gridLayout_3.addWidget(self.label_3, 0, 0, 1, 1)
         self.horizontalLayout_4 = QtWidgets.QHBoxLayout()
         self.horizontalLayout_4.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         self.horizontalLayout_4.setSpacing(0)
         self.horizontalLayout_4.setObjectName("horizontalLayout_4")
         self.label_4 = QtWidgets.QLabel(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.label_4.sizePolicy().hasHeightForWidth())
@@ -130,11 +155,15 @@ class Ui_MainWindow(object):
         self.label_4.setMinimumSize(QtCore.QSize(80, 0))
         self.label_4.setMaximumSize(QtCore.QSize(80, 16777215))
         self.label_4.setLayoutDirection(QtCore.Qt.RightToLeft)
-        self.label_4.setAlignment(QtCore.Qt.AlignLeading|QtCore.Qt.AlignLeft|QtCore.Qt.AlignVCenter)
+        self.label_4.setAlignment(
+            QtCore.Qt.AlignLeading | QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+        )
         self.label_4.setObjectName("label_4")
         self.horizontalLayout_4.addWidget(self.label_4)
         self.jsonBtn = QtWidgets.QRadioButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.jsonBtn.sizePolicy().hasHeightForWidth())
@@ -147,7 +176,9 @@ class Ui_MainWindow(object):
         self.buttonGroup.addButton(self.jsonBtn)
         self.horizontalLayout_4.addWidget(self.jsonBtn)
         self.txtBtn = QtWidgets.QRadioButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.txtBtn.sizePolicy().hasHeightForWidth())
@@ -171,7 +202,7 @@ class Ui_MainWindow(object):
         self.visualizeBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
         self.visualizeBtn.setObjectName("visualizeBtn")
         self.horizontalLayout_4.addWidget(self.visualizeBtn)
-        self.verticalLayout.addLayout(self.horizontalLayout_4)
+        self.gridLayout_3.addLayout(self.horizontalLayout_4, 1, 0, 1, 1)
         self.gridLayout_4 = QtWidgets.QGridLayout()
         self.gridLayout_4.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         self.gridLayout_4.setObjectName("gridLayout_4")
@@ -179,7 +210,9 @@ class Ui_MainWindow(object):
         self.label.setMinimumSize(QtCore.QSize(80, 0))
         self.label.setMaximumSize(QtCore.QSize(80, 16777215))
         self.label.setLayoutDirection(QtCore.Qt.RightToLeft)
-        self.label.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
+        self.label.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignTrailing | QtCore.Qt.AlignVCenter
+        )
         self.label.setObjectName("label")
         self.gridLayout_4.addWidget(self.label, 0, 0, 1, 1)
         self.convertInput = QtWidgets.QLineEdit(self.convertPage)
@@ -189,15 +222,19 @@ class Ui_MainWindow(object):
         self.convertInputBtn = QtWidgets.QPushButton(self.convertPage)
         self.convertInputBtn.setObjectName("convertInputBtn")
         self.gridLayout_4.addWidget(self.convertInputBtn, 0, 2, 1, 1)
-        self.verticalLayout.addLayout(self.gridLayout_4)
+        self.gridLayout_3.addLayout(self.gridLayout_4, 2, 0, 1, 1)
         self.gridLayout_5 = QtWidgets.QGridLayout()
         self.gridLayout_5.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         self.gridLayout_5.setObjectName("gridLayout_5")
         self.convertOutput = QtWidgets.QLineEdit(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertOutput.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertOutput.sizePolicy().hasHeightForWidth()
+        )
         self.convertOutput.setSizePolicy(sizePolicy)
         self.convertOutput.setReadOnly(True)
         self.convertOutput.setObjectName("convertOutput")
@@ -206,21 +243,26 @@ class Ui_MainWindow(object):
         self.label_2.setMinimumSize(QtCore.QSize(80, 0))
         self.label_2.setMaximumSize(QtCore.QSize(80, 16777215))
         self.label_2.setLayoutDirection(QtCore.Qt.RightToLeft)
-        self.label_2.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
+        self.label_2.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignTrailing | QtCore.Qt.AlignVCenter
+        )
         self.label_2.setObjectName("label_2")
         self.gridLayout_5.addWidget(self.label_2, 0, 0, 1, 1)
         self.convertOutputBtn = QtWidgets.QPushButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertOutputBtn.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertOutputBtn.sizePolicy().hasHeightForWidth()
+        )
         self.convertOutputBtn.setSizePolicy(sizePolicy)
         self.convertOutputBtn.setObjectName("convertOutputBtn")
         self.gridLayout_5.addWidget(self.convertOutputBtn, 0, 2, 1, 1)
-        self.verticalLayout.addLayout(self.gridLayout_5)
-        self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
-        self.horizontalLayout_3.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
-        self.horizontalLayout_3.setObjectName("horizontalLayout_3")
+        self.gridLayout_3.addLayout(self.gridLayout_5, 3, 0, 1, 1)
+        self.horizontalLayout_8 = QtWidgets.QHBoxLayout()
+        self.horizontalLayout_8.setObjectName("horizontalLayout_8")
         self.verticalLayout_2 = QtWidgets.QVBoxLayout()
         self.verticalLayout_2.setObjectName("verticalLayout_2")
         self.labelListLabel = QtWidgets.QLabel(self.convertPage)
@@ -237,7 +279,9 @@ class Ui_MainWindow(object):
         self.label_7.setObjectName("label_7")
         self.horizontalLayout_6.addWidget(self.label_7)
         self.addLabelBtn = QtWidgets.QPushButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.addLabelBtn.sizePolicy().hasHeightForWidth())
@@ -247,19 +291,51 @@ class Ui_MainWindow(object):
         self.addLabelBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
         self.addLabelBtn.setObjectName("addLabelBtn")
         self.horizontalLayout_6.addWidget(self.addLabelBtn)
-        self.claearBtnBtn = QtWidgets.QPushButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        self.clearLabelBtn = QtWidgets.QPushButton(self.convertPage)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.claearBtnBtn.sizePolicy().hasHeightForWidth())
-        self.claearBtnBtn.setSizePolicy(sizePolicy)
-        self.claearBtnBtn.setMinimumSize(QtCore.QSize(80, 0))
-        self.claearBtnBtn.setMaximumSize(QtCore.QSize(80, 16777215))
-        self.claearBtnBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
-        self.claearBtnBtn.setObjectName("claearBtnBtn")
-        self.horizontalLayout_6.addWidget(self.claearBtnBtn)
+        sizePolicy.setHeightForWidth(
+            self.clearLabelBtn.sizePolicy().hasHeightForWidth()
+        )
+        self.clearLabelBtn.setSizePolicy(sizePolicy)
+        self.clearLabelBtn.setMinimumSize(QtCore.QSize(80, 0))
+        self.clearLabelBtn.setMaximumSize(QtCore.QSize(80, 16777215))
+        self.clearLabelBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
+        self.clearLabelBtn.setObjectName("claearLabelBtn")
+        self.horizontalLayout_6.addWidget(self.clearLabelBtn)
         self.verticalLayout_2.addLayout(self.horizontalLayout_6)
-        self.horizontalLayout_3.addLayout(self.verticalLayout_2)
+        self.horizontalLayout_8.addLayout(self.verticalLayout_2)
+        self.verticalLayout = QtWidgets.QVBoxLayout()
+        self.verticalLayout.setObjectName("verticalLayout")
+        self.kptLabel = QtWidgets.QLabel(self.convertPage)
+        self.kptLabel.setObjectName("kptLabel")
+        self.verticalLayout.addWidget(self.kptLabel)
+        self.kptListView = QtWidgets.QListWidget(self.convertPage)
+        self.kptListView.setObjectName("kptListView")
+        self.verticalLayout.addWidget(self.kptListView)
+        self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
+        self.horizontalLayout_3.setObjectName("horizontalLayout_3")
+        self.label_9 = QtWidgets.QLabel(self.convertPage)
+        self.label_9.setText("")
+        self.label_9.setObjectName("label_9")
+        self.horizontalLayout_3.addWidget(self.label_9)
+        self.addKptBtn = QtWidgets.QPushButton(self.convertPage)
+        self.addKptBtn.setMinimumSize(QtCore.QSize(80, 0))
+        self.addKptBtn.setMaximumSize(QtCore.QSize(80, 16777215))
+        self.addKptBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
+        self.addKptBtn.setObjectName("addKptBtn")
+        self.horizontalLayout_3.addWidget(self.addKptBtn)
+        self.clearKptBtn = QtWidgets.QPushButton(self.convertPage)
+        self.clearKptBtn.setMinimumSize(QtCore.QSize(80, 0))
+        self.clearKptBtn.setMaximumSize(QtCore.QSize(80, 16777215))
+        self.clearKptBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
+        self.clearKptBtn.setObjectName("clearKptBtn")
+        self.horizontalLayout_3.addWidget(self.clearKptBtn)
+        self.verticalLayout.addLayout(self.horizontalLayout_3)
+        self.horizontalLayout_8.addLayout(self.verticalLayout)
         self.verticalLayout_4 = QtWidgets.QVBoxLayout()
         self.verticalLayout_4.setObjectName("verticalLayout_4")
         self.annotationFilesLabel = QtWidgets.QLabel(self.convertPage)
@@ -271,11 +347,13 @@ class Ui_MainWindow(object):
         self.annotationFilesNumLabel = QtWidgets.QLabel(self.convertPage)
         self.annotationFilesNumLabel.setMinimumSize(QtCore.QSize(0, 23))
         self.annotationFilesNumLabel.setText("")
-        self.annotationFilesNumLabel.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
+        self.annotationFilesNumLabel.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignTrailing | QtCore.Qt.AlignVCenter
+        )
         self.annotationFilesNumLabel.setObjectName("annotationFilesNumLabel")
         self.verticalLayout_4.addWidget(self.annotationFilesNumLabel)
-        self.horizontalLayout_3.addLayout(self.verticalLayout_4)
-        self.verticalLayout.addLayout(self.horizontalLayout_3)
+        self.horizontalLayout_8.addLayout(self.verticalLayout_4)
+        self.gridLayout_3.addLayout(self.horizontalLayout_8, 4, 0, 1, 1)
         self.horizontalLayout_7 = QtWidgets.QHBoxLayout()
         self.horizontalLayout_7.setObjectName("horizontalLayout_7")
         self.label_11 = QtWidgets.QLabel(self.convertPage)
@@ -283,45 +361,62 @@ class Ui_MainWindow(object):
         self.label_11.setObjectName("label_11")
         self.horizontalLayout_7.addWidget(self.label_11)
         self.convertRunBtn = QtWidgets.QPushButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertRunBtn.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertRunBtn.sizePolicy().hasHeightForWidth()
+        )
         self.convertRunBtn.setSizePolicy(sizePolicy)
         self.convertRunBtn.setMaximumSize(QtCore.QSize(80, 16777215))
         self.convertRunBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
         self.convertRunBtn.setObjectName("convertRunBtn")
         self.horizontalLayout_7.addWidget(self.convertRunBtn)
         self.convertCancelBtn = QtWidgets.QPushButton(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertCancelBtn.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertCancelBtn.sizePolicy().hasHeightForWidth()
+        )
         self.convertCancelBtn.setSizePolicy(sizePolicy)
         self.convertCancelBtn.setMaximumSize(QtCore.QSize(80, 16777215))
         self.convertCancelBtn.setLayoutDirection(QtCore.Qt.RightToLeft)
         self.convertCancelBtn.setObjectName("convertCancelBtn")
         self.horizontalLayout_7.addWidget(self.convertCancelBtn)
-        self.verticalLayout.addLayout(self.horizontalLayout_7)
-        self.gridLayout_3.addLayout(self.verticalLayout, 0, 0, 1, 1)
+        self.gridLayout_3.addLayout(self.horizontalLayout_7, 5, 0, 1, 1)
         self.horizontalLayout = QtWidgets.QHBoxLayout()
         self.horizontalLayout.setObjectName("horizontalLayout")
         self.convertStatusLabel = QtWidgets.QLabel(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertStatusLabel.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertStatusLabel.sizePolicy().hasHeightForWidth()
+        )
         self.convertStatusLabel.setSizePolicy(sizePolicy)
         self.convertStatusLabel.setMinimumSize(QtCore.QSize(80, 0))
         self.convertStatusLabel.setMaximumSize(QtCore.QSize(200, 16777215))
-        self.convertStatusLabel.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignTrailing|QtCore.Qt.AlignVCenter)
+        self.convertStatusLabel.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignTrailing | QtCore.Qt.AlignVCenter
+        )
         self.convertStatusLabel.setObjectName("convertStatusLabel")
         self.horizontalLayout.addWidget(self.convertStatusLabel)
         self.convertProgressBar = QtWidgets.QProgressBar(self.convertPage)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.convertProgressBar.sizePolicy().hasHeightForWidth())
+        sizePolicy.setHeightForWidth(
+            self.convertProgressBar.sizePolicy().hasHeightForWidth()
+        )
         self.convertProgressBar.setSizePolicy(sizePolicy)
         self.convertProgressBar.setProperty("value", 0)
         self.convertProgressBar.setObjectName("convertProgressBar")
@@ -331,7 +426,7 @@ class Ui_MainWindow(object):
         self.label_10.setText("")
         self.label_10.setObjectName("label_10")
         self.horizontalLayout.addWidget(self.label_10)
-        self.gridLayout_3.addLayout(self.horizontalLayout, 1, 0, 1, 1)
+        self.gridLayout_3.addLayout(self.horizontalLayout, 6, 0, 1, 1)
         self.stackedWidget.addWidget(self.convertPage)
         self.annotatePage = QtWidgets.QWidget()
         self.annotatePage.setObjectName("annotatePage")
@@ -349,7 +444,9 @@ class Ui_MainWindow(object):
         self.horizontalLayout_5.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         self.horizontalLayout_5.setObjectName("horizontalLayout_5")
         self.label_5 = QtWidgets.QLabel(self.centralwidget)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.label_5.sizePolicy().hasHeightForWidth())
@@ -357,11 +454,15 @@ class Ui_MainWindow(object):
         self.label_5.setMinimumSize(QtCore.QSize(80, 0))
         self.label_5.setMaximumSize(QtCore.QSize(80, 16777215))
         self.label_5.setLayoutDirection(QtCore.Qt.RightToLeft)
-        self.label_5.setAlignment(QtCore.Qt.AlignLeading|QtCore.Qt.AlignLeft|QtCore.Qt.AlignVCenter)
+        self.label_5.setAlignment(
+            QtCore.Qt.AlignLeading | QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+        )
         self.label_5.setObjectName("label_5")
         self.horizontalLayout_5.addWidget(self.label_5)
         self.taskComBox = QtWidgets.QComboBox(self.centralwidget)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.taskComBox.sizePolicy().hasHeightForWidth())
@@ -404,7 +505,12 @@ class Ui_MainWindow(object):
         MainWindow.setWindowTitle(_translate("MainWindow", "VAI_E_SmartAnnotator"))
         self.welcomeLabel.setText(_translate("MainWindow", "欢迎使用智能标注工具"))
         self.welcomeLabel2.setText(_translate("MainWindow", "__研发中心倾情钜献   "))
-        self.label_3.setText(_translate("MainWindow", "Labelme格式转换时，图片应与json文件在同一路径；Yolo格式转换时，图片应在上层目录与labels目录对应的images路径下"))
+        self.label_3.setText(
+            _translate(
+                "MainWindow",
+                "Labelme格式转换时，图片应与json文件在同一路径；Yolo格式转换时，图片应在上层目录与labels目录对应的images路径下",
+            )
+        )
         self.label_4.setText(_translate("MainWindow", "      源格式"))
         self.jsonBtn.setText(_translate("MainWindow", "json"))
         self.txtBtn.setText(_translate("MainWindow", "txt"))
@@ -416,7 +522,10 @@ class Ui_MainWindow(object):
         self.convertOutputBtn.setText(_translate("MainWindow", "浏览"))
         self.labelListLabel.setText(_translate("MainWindow", "标签列表"))
         self.addLabelBtn.setText(_translate("MainWindow", "添加"))
-        self.claearBtnBtn.setText(_translate("MainWindow", "清空"))
+        self.clearLabelBtn.setText(_translate("MainWindow", "清空"))
+        self.kptLabel.setText(_translate("MainWindow", "关键点列表"))
+        self.addKptBtn.setText(_translate("MainWindow", "添加"))
+        self.clearKptBtn.setText(_translate("MainWindow", "清空"))
         self.annotationFilesLabel.setText(_translate("MainWindow", "标注文件预览"))
         self.convertRunBtn.setText(_translate("MainWindow", "开始"))
         self.convertCancelBtn.setText(_translate("MainWindow", "终止"))
