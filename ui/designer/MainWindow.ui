@@ -773,7 +773,11 @@
        </layout>
       </widget>
       <widget class="QWidget" name="annotatePage">
+<<<<<<< HEAD
        <widget class="QWidget" name="layoutWidget">
+=======
+       <widget class="QWidget" name="">
+>>>>>>> 9dff233df7615ec67a786ef6f29533a3df0d63e6
         <property name="geometry">
          <rect>
           <x>9</x>
@@ -907,7 +911,11 @@
          </item>
         </layout>
        </widget>
+<<<<<<< HEAD
        <widget class="QWidget" name="layoutWidget">
+=======
+       <widget class="QWidget" name="">
+>>>>>>> 9dff233df7615ec67a786ef6f29533a3df0d63e6
         <property name="geometry">
          <rect>
           <x>10</x>
