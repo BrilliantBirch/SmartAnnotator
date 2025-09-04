@@ -536,7 +536,7 @@ class MainWindow(QMainWindow):
                 f"开始转换，任务类型：{self.sysConfig.currentMode.name},输出路径：{self.sysConfig.convertConfig.outputDir},标签：{self.sysConfig.convertConfig.classes}"
             )
             self.converter.setConfig(self.sysConfig)
-            self.converter.run()
+            self.converter.start()
             self.setProcessLabel("转换中...")
 
         except Exception as e:

@@ -456,6 +456,7 @@ class YoloPoseConverter(TxtConverter):
         width, height = image.size
 
         font = ImageFont.load_default()
+        errorFont = ImageFont.load_default().font_variant(size=20)
         if annotations:
             # 遍历标注，绘制每一个目标
             for line in annotations:
@@ -549,7 +550,7 @@ class YoloPoseConverter(TxtConverter):
                     kp_y = int(point[1] * height)
 
                     # 绘制错误关键点（圆形，直径6，红色填充）
-                    circle_radius = 2
+                    circle_radius = 5
                     draw.ellipse(
                         xy=[
                             kp_x - circle_radius,
@@ -565,9 +566,9 @@ class YoloPoseConverter(TxtConverter):
                     draw.text(
                         xy=(wrong_label_x, wrong_label_y),
                         text=wrong_label,
-                        font=font,
+                        font=errorFont,
                         fill=wrong_color,
-                        stroke_width=15,
+                        stroke_width=2,
                     )
                 except Exception as e:
                     LOGGER.error(f"绘制错误关键点失败：{point}，错误：{str(e)}")
