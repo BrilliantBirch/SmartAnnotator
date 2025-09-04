@@ -64,6 +64,14 @@ class MainWindow(QMainWindow):
         self.converter.convert_progress_desc.connect(
             lambda x: self.setConvertProcessLabel(x)
         )
+        # 初始化转换源
+        if self.mainWindow.jsonBtn.isChecked():
+            self.sysConfig.convertConfig.setSourceFormat("JSON")
+        elif self.mainWindow.txtBtn.isChecked():
+            self.sysConfig.convertConfig.setSourceFormat("TXT")
+        else:
+            self.mainWindow.jsonBtn.setChecked(True)
+            self.sysConfig.convertConfig.setSourceFormat("JSON")
 
     def initLogger(self):
         init = add_text_browser_handler(LOGGER.name, self.mainWindow.logBrowser, 500)
@@ -231,14 +239,6 @@ class MainWindow(QMainWindow):
             # 切换到转换页面时，设置当前模式和格式
             elif page_name == "convertPage":
                 self.sysConfig.currentTask = TASK.CONVERT
-
-                if self.mainWindow.jsonBtn.isChecked():
-                    self.sysConfig.convertConfig.setSourceFormat("JSON")
-                elif self.mainWindow.txtBtn.isChecked():
-                    self.sysConfig.convertConfig.setSourceFormat("TXT")
-                else:
-                    self.mainWindow.jsonBtn.setChecked(True)
-                    self.sysConfig.convertConfig.setSourceFormat("JSON")
 
             elif page_name == "modifyPage":
                 self.sysConfig.currentTask = TASK.MODIFY
