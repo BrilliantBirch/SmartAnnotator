@@ -48,18 +48,22 @@ class MainWindow(QMainWindow):
         """
         初始化系统相关设置
         """
-        self.currentWorkingDir = ""
         # 当前模式
         self.sysConfig = SysConfig()
-        # convert
+        self.sysConfig.currentMode = MODE(self.mainWindow.taskComBox.currentData())
+        # convert 初始化
         self.mainWindow.convertCancelBtn.hide()
         self.converter = ConvertWorker()
-        self.converter.progress_updated.connect(lambda x: self.setProcessValue(x))
+        self.converter.progress_updated.connect(
+            lambda x: self.setConvertProcessValue(x)
+        )
         self.converter.task_finished.connect(lambda: self.handleConvertFinished())
         self.converter.error_occurred.connect(
             lambda msg: self.handleConverterError(msg)
         )
-        self.converter.convert_progress_desc.connect(lambda x: self.setProcessLabel(x))
+        self.converter.convert_progress_desc.connect(
+            lambda x: self.setConvertProcessLabel(x)
+        )
 
     def initLogger(self):
         init = add_text_browser_handler(LOGGER.name, self.mainWindow.logBrowser, 500)
@@ -84,17 +88,19 @@ class MainWindow(QMainWindow):
         # 加载模式类型
         for mode in MODE:
             self.mainWindow.taskComBox.addItem(mode.name, mode.value)
-        self.name_index_map = self._build_name_index_map()
-        self.changePage("welcomePage")
+        # 默认为Detect
+        self.mainWindow.taskComBox.setCurrentIndex(0)
+        # 隐藏关键点配置
         self.showkptConfig(False)
         # 初始化训练比例
         regex = QRegExp(r"^0(\.\d{1,2})?$|^1(\.0{1,2})?$")
         validator = QRegExpValidator(regex)
-        # validator = QDoubleValidator(0.0, 1.0, 2)  # 范围 0.0~1.0，最多 2 位小数
-        # validator.setNotation(QDoubleValidator.StandardNotation)
         self.mainWindow.trainRatio.setValidator(validator)
         self.mainWindow.valRatio.setValidator(validator)
         self.mainWindow.testRatio.setValidator(validator)
+        self.name_index_map = self._build_name_index_map()
+        # 切换到欢迎页
+        self.changePage("welcomePage")
 
     def initConverter(self):
         """
@@ -192,13 +198,13 @@ class MainWindow(QMainWindow):
             name_map[page_name] = i  # 存储 名称→索引
         return name_map
 
-    def setProcessLabel(self, text):
+    def setConvertProcessLabel(self, text):
         """
         设置进度条的标签
         """
         self.mainWindow.convertStatusLabel.setText(text)
 
-    def setProcessValue(self, value):
+    def setConvertProcessValue(self, value):
         """
         设置进度条的值
         """
@@ -218,15 +224,14 @@ class MainWindow(QMainWindow):
                 self.mainWindow.taskComBox.hide()
             else:
                 self.mainWindow.taskComBox.show()
+
             if page_name == "annotatePage":
                 self.sysConfig.currentTask = TASK.ANNOTATE
 
             # 切换到转换页面时，设置当前模式和格式
             elif page_name == "convertPage":
                 self.sysConfig.currentTask = TASK.CONVERT
-                self.sysConfig.currentMode = MODE(
-                    self.mainWindow.taskComBox.currentData()
-                )
+
                 if self.mainWindow.jsonBtn.isChecked():
                     self.sysConfig.convertConfig.setSourceFormat("JSON")
                 elif self.mainWindow.txtBtn.isChecked():
@@ -277,12 +282,16 @@ class MainWindow(QMainWindow):
             self.mainWindow.kptListView.show()
             self.mainWindow.label_9.show()
             self.mainWindow.kptLabel.show()
+            self.mainWindow.label_30.show()
+            self.mainWindow.keyConfEdit.show()
         else:
             self.mainWindow.kptListView.hide()
             self.mainWindow.addKptBtn.hide()
             self.mainWindow.clearKptBtn.hide()
             self.mainWindow.label_9.hide()
             self.mainWindow.kptLabel.hide()
+            self.mainWindow.label_30.hide()
+            self.mainWindow.keyConfEdit.hide()
 
     def handleConvertCancel(self):
         """
@@ -295,7 +304,7 @@ class MainWindow(QMainWindow):
         处理转换线程中的错误
         """
         showMessageBox(QMessageBox.Icon.Critical, f"转换错误：{error_msg}")
-        self.setProcessLabel("转换错误")
+        self.setConvertProcessLabel("转换错误")
 
     def handleConvertFinished(self):
         """
@@ -304,13 +313,13 @@ class MainWindow(QMainWindow):
         self.mainWindow.convertCancelBtn.hide()
         self.mainWindow.convertRunBtn.setText("开始")
         self.enabelConvertBtn(True)
-        self.setProcessLabel("转换完成")
+        self.setConvertProcessLabel("转换完成")
 
     def handleConvertPause(self):
         """
         转换暂停
         """
-        self.setProcessLabel("已暂停")
+        self.setConvertProcessLabel("已暂停")
         self.mainWindow.convertRunBtn.setText("继续")
         self.converter.pause()
 
@@ -537,7 +546,7 @@ class MainWindow(QMainWindow):
             )
             self.converter.setConfig(self.sysConfig)
             self.converter.start()
-            self.setProcessLabel("转换中...")
+            self.setConvertProcessLabel("转换中...")
 
         except Exception as e:
             LOGGER.error(f"转换失败，错误信息：{e}")
