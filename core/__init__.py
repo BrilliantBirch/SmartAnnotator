@@ -1,2 +1,2 @@
 from .convert import ConvertWorker
-from .annotate import AnnotateWorker
+from .annotate import AnnotateWorker, TensorRTInfer

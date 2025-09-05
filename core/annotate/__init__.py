@@ -3,6 +3,8 @@ from cfg import LOGGER, SysConfig
 # from .converter import Converter
 from ..baseworker import BaseWorker
 from PyQt5.QtCore import QMutexLocker
+from .vision.tensorrtbackend import TensorRTInfer
+from .vision.yolo import DetectionPredictor, PoseDetectionPredictor
 
 
 class AnnotateWorker(BaseWorker):

@@ -79,8 +79,8 @@ class AnnotateConfig:
         self.kptConf = 0.5
         self.nms = 0.25
 
-    def setModel(self, model):
-        self.model = model
+    def setModel(self, modelPath):
+        self.modelPath = modelPath
 
     def setDevice(self, device):
         self.device = device
