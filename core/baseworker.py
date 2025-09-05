@@ -11,7 +11,7 @@ class BaseWorker(QThread):
     # 定义信号：任务完成（无参数）
     task_finished = pyqtSignal()
     error_occurred = pyqtSignal(str)
-    convert_progress_desc = pyqtSignal(str)
+    progress_desc = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -37,7 +37,7 @@ class BaseWorker(QThread):
     def stop(self):
         """停止任务"""
         with QMutexLocker(self.mutex):
-            self.convert_progress_desc.emit("正在停止任务...")
+            self.progress_desc.emit("正在停止任务...")
             self.stopped = True
             self.paused = False  # 先恢复暂停，避免线程卡在等待状态
             self.wait_condition.wakeOne()  # 唤醒线程，让它检查停止标志
@@ -66,5 +66,5 @@ class BaseWorker(QThread):
 
         # 3. 正常更新进度
         self.progress_updated.emit(progress)
-        self.convert_progress_desc.emit(desc)
+        self.progress_desc.emit(desc)
         return True  # 告知转换器继续处理

@@ -19,7 +19,6 @@ class AnnotateWorker(BaseWorker):
 
     def run(self):
         """线程主逻辑（安全响应暂停/停止）"""
-        converter = None
         try:
             # 初始检查：配置是否设置 + 是否已被停止
             with QMutexLocker(self.mutex):
@@ -27,6 +26,18 @@ class AnnotateWorker(BaseWorker):
                     raise ValueError("转换配置未设置")
                 if self.stopped:
                     return
+                # 模拟耗时
+                import time
+
+            def mock_annotate():
+                for i in range(100):
+                    time.sleep(1)
+                    flag = self.run_callback(f"转换进度 {i}%", (i + 1) / 100)
+                    if not flag:
+                        break
+                return True
+
+            running = mock_annotate()
 
             # # 初始化转换器并执行任务
             # converter = Converter(self.config)
@@ -34,14 +45,14 @@ class AnnotateWorker(BaseWorker):
             # continue_running = converter.run(self.run_callback)
 
             # 任务结束：区分“正常完成”和“被停止”
-            # with QMutexLocker(self.mutex):
-            #     if self.stopped:
-            #         self.convert_progress_desc.emit("任务手动终止")
-            #         self.progress_updated.emit(0.0)
-            #     elif continue_running:
-            #         self.convert_progress_desc.emit("转换任务完成")
-            #     else:
-            #         self.convert_progress_desc.emit("转换任务异常中断")
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.progress_desc.emit("任务手动终止")
+                    self.progress_updated.emit(0.0)
+                elif running:
+                    self.progress_desc.emit("转换任务完成")
+                else:
+                    self.progress_desc.emit("转换任务异常中断")
 
         except Exception as e:
             # 异常处理：记录日志 + 通知 UI

@@ -22,7 +22,7 @@ from utils import (
     CustomItemWidget,
 )
 
-from core import ConvertWorker
+from core import ConvertWorker, AnnotateWorker
 from ui import Ui_MainWindow
 
 
@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
             self.mainWindow.jsonBtn.setChecked(True)
             self.sysConfig.convertConfig.setSourceFormat("JSON")
         # 初始化标注
+        self.mainWindow.annotateCancelBtn.hide()
         self.initAnnotator()
         if self.mainWindow.gpuBtn.isChecked():
             self.sysConfig.annotateConfig.device = DEVICE.GPU
@@ -127,15 +128,19 @@ class MainWindow(QMainWindow):
         self.converter.error_occurred.connect(
             lambda msg: self.handleConverterError(msg)
         )
-        self.converter.convert_progress_desc.connect(
-            lambda x: self.setConvertProcessLabel(x)
-        )
+        self.converter.progress_desc.connect(lambda x: self.setConvertProcessLabel(x))
 
     def initAnnotator(self):
         """
         初始化标注线程
         """
-        pass
+        self.annotator = AnnotateWorker()
+        self.annotator.progress_updated.connect(
+            lambda x: self.setAnnotateProcessValue(x)
+        )
+        self.annotator.task_finished.connect(lambda: self.handleAnnotateFinished())
+        self.annotator.error_occurred.connect(lambda msg: self.handleAnnotateError(msg))
+        self.annotator.progress_desc.connect(lambda x: self.setAnnotateProcessLabel(x))
 
     def initModifier(self):
         """
@@ -215,6 +220,9 @@ class MainWindow(QMainWindow):
                 lambda: self.updateAnnotateOutputDir()
             )
             self.mainWindow.annotateBtn.clicked.connect(lambda: self.annotate())
+            self.mainWindow.annotateCancelBtn.clicked.connect(
+                lambda: self.handleAnnotateCancel()
+            )
             # modify
 
             # export
@@ -248,7 +256,6 @@ class MainWindow(QMainWindow):
             self.mainWindow.convertProgressBar.setValue(
                 int(100 * value)
             )  # 进度条用整数近似
-            # self.mainWindow.progressBar.text = f"{value:.2f}%"  # 标签显示精确浮点数
 
     def changePage(self, page_name):
         """
@@ -481,11 +488,11 @@ class MainWindow(QMainWindow):
             showMessageBox(QMessageBox.Icon.Warning, "请选择标注目录")
             return False
         if self.sysConfig.convertConfig.outputDir == "":
-            reslut = showMessageBox(
+            result = showMessageBox(
                 QMessageBox.Icon.Question,
                 "输出目录为空，不指定则输出到程序执行目录下output目录，是否继续？",
             )
-            if reslut == QMessageBox.Cancel:
+            if result == QMessageBox.Cancel:
                 return False
             else:
                 self.sysConfig.convertConfig.outputDir = os.path.join(
@@ -609,11 +616,131 @@ class MainWindow(QMainWindow):
         )
         self.mainWindow.annotateOutput.setText(self.sysConfig.annotateConfig.outputDir)
 
+    def setAnnotateProcessLabel(self, text):
+        """
+        设置进度条的标签
+        """
+        self.mainWindow.annotateStatusLabel.setText(text)
+
+    def setAnnotateProcessValue(self, value):
+        """
+        设置进度条的值
+        """
+        if 0.0 <= value <= 100.0:
+            self.mainWindow.annotateProgressBar.setValue(
+                int(100 * value)
+            )  # 进度条用整数近似
+
+    def checkAnnotateParams(self):
+        """
+        检查标注参数
+        """
+        if not self.sysConfig.annotateConfig.modelPath:
+            showMessageBox(QMessageBox.Icon.Warning, "请选择模型文件")
+            return False
+        if not self.sysConfig.annotateConfig.inputDir:
+            showMessageBox(QMessageBox.Icon.Warning, "请选择标注输入目录")
+            return False
+        if not self.sysConfig.annotateConfig.imgFiles:
+            showMessageBox(QMessageBox.Icon.Warning, "源目录没有图像文件")
+            return False
+        if not self.sysConfig.annotateConfig.outputDir:
+            result = showMessageBox(
+                QMessageBox.Icon.Question, "输出目录为空，将在图像目录生成标注文件"
+            )
+            if result == QMessageBox.Cancel:
+                return False
+            else:
+                self.sysConfig.annotateConfig.outputDir = (
+                    self.sysConfig.annotateConfig.inputDir
+                )
+                self.mainWindow.annotateOutput.setText(
+                    self.sysConfig.annotateConfig.outputDir
+                )
+        if not self.mainWindow.bboxConfEdit.text():
+            showMessageBox(QMessageBox.Icon.Warning, "请输入置信度阈值")
+            return False
+        else:
+            self.sysConfig.annotateConfig.bboxConf = float(
+                self.mainWindow.bboxConfEdit.text()
+            )
+        if not self.mainWindow.nmsEdit.text():
+            showMessageBox(QMessageBox.Icon.Warning, "请输入NMS阈值")
+            return False
+        else:
+            self.sysConfig.annotateConfig.nms = float(self.mainWindow.nmsEdit.text())
+        if (
+            self.sysConfig.currentMode == MODE.POSE
+            and not self.mainWindow.keyConfEdit.text()
+        ):
+            showMessageBox(QMessageBox.Icon.Warning, "请输入关键点置信度阈值")
+            return False
+        else:
+            self.sysConfig.annotateConfig.kptConf = float(
+                self.mainWindow.keyConfEdit.text()
+            )
+
+        return True
+
+    def handleAnnotateCancel(self):
+        """
+        标注取消
+        """
+        self.annotator.stop()
+
+    def handleAnnotateContinue(self):
+        """
+        标注继续
+        """
+        self.annotator.resume()
+        self.mainWindow.annotateBtn.setText("暂停")
+
+    def handleAnnotatePause(self):
+        """
+        标注暂停
+        """
+        self.setAnnotateProcessLabel("标注暂停")
+        self.annotator.pause()
+        self.mainWindow.annotateBtn.setText("继续")
+
+    def handleAnnotateError(self):
+        """
+        标注错误
+        """
+        self.setAnnotateProcessLabel("标注错误")
+        showMessageBox(QMessageBox.Icon.Critical, "标注错误")
+
+    def handleAnnotateFinished(self):
+        """
+        标注完成
+        """
+        self.setAnnotateProcessLabel("标注完成")
+        self.mainWindow.annotateBtn.setText("开始")
+        self.mainWindow.annotateCancelBtn.hide()
+
     def annotate(self):
         """
         标注
         """
-        pass
+        try:
+            if not self.checkAnnotateParams():
+                return
+
+            if hasattr(self, "annotator") and self.annotator.isRunning():
+                if self.mainWindow.annotateBtn.text() == "暂停":
+                    self.handleAnnotatePause()
+                    return
+                elif self.mainWindow.annotateBtn.text() == "继续":
+                    self.handleAnnotateContinue()
+                    return
+            self.annotator.setConfig(self.sysConfig)
+            self.annotator.start()
+            self.mainWindow.annotateBtn.setText("暂停")
+            self.mainWindow.annotateCancelBtn.show()
+            self.setAnnotateProcessLabel("标注中...")
+        except Exception as e:
+            LOGGER.error(f"标注失败，错误信息：{e}")
+            showMessageBox(QMessageBox.Icon.Critical, f"标注失败，错误信息：{e}")
 
 
 # endregion 标注
