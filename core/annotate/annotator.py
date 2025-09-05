@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER
 from ..convert import Yolo2JsonConverter, YoloPose2JsonConverter
+from .vision import DetectionPredictor, PoseDetectionPredictor
 
 
 class Annotator:

@@ -83,7 +83,16 @@ def chooseFile(suffix, dir=None) -> str:
 
 class CustomItemWidget(QWidget):
 
-    def __init__(self, text, list_widget, parent=None, check=False):
+    def __init__(
+        self,
+        text,
+        list_widget,
+        parent=None,
+        check=False,
+        checkDesc="补充框",
+        hideCheckEdit=False,
+        placeholder="大小",
+    ):
         super().__init__(parent)
         self.list_widget = list_widget  # 保存列表引用
 
@@ -95,11 +104,14 @@ class CustomItemWidget(QWidget):
         if check:
             self.edit.setPlaceholderText("请以_point{idx}结尾")
             self.edit.editingFinished.connect(self.on_edit_finished)
-            self.check = QCheckBox("补充框")
-            self.checkEdit = QLineEdit("")
-            self.checkEdit.setPlaceholderText("大小")
-            self.checkEdit.setStyleSheet("border: 1px solid #ddd; border-radius: 3px;")
-            self.checkEdit.setMinimumWidth(150)  # 限制最小宽度，避免被压缩
+            self.check = QCheckBox(checkDesc)
+            if not hideCheckEdit:
+                self.checkEdit = QLineEdit("")
+                self.checkEdit.setPlaceholderText(placeholder)
+                self.checkEdit.setStyleSheet(
+                    "border: 1px solid #ddd; border-radius: 3px;"
+                )
+                self.checkEdit.setMinimumWidth(150)  # 限制最小宽度，避免被压缩
         self.del_btn = QPushButton("×")
         self.del_btn.setStyleSheet(
             """
