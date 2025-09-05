@@ -1,12 +1,13 @@
 from cfg import LOGGER, SysConfig
-from .converter import Converter
+
+# from .converter import Converter
 from ..baseworker import BaseWorker
 from PyQt5.QtCore import QMutexLocker
 
 
-class ConvertWorker(BaseWorker):
+class AnnotateWorker(BaseWorker):
     """
-    转换线程--避免阻塞UI线程
+    标注线程--避免阻塞UI线程
     """
 
     def __init__(self):
@@ -27,20 +28,20 @@ class ConvertWorker(BaseWorker):
                 if self.stopped:
                     return
 
-            # 初始化转换器并执行任务
-            converter = Converter(self.config)
-            # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
-            continue_running = converter.run(self.run_callback)
+            # # 初始化转换器并执行任务
+            # converter = Converter(self.config)
+            # # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
+            # continue_running = converter.run(self.run_callback)
 
             # 任务结束：区分“正常完成”和“被停止”
-            with QMutexLocker(self.mutex):
-                if self.stopped:
-                    self.convert_progress_desc.emit("任务手动终止")
-                    self.progress_updated.emit(0.0)
-                elif continue_running:
-                    self.convert_progress_desc.emit("转换任务完成")
-                else:
-                    self.convert_progress_desc.emit("转换任务异常中断")
+            # with QMutexLocker(self.mutex):
+            #     if self.stopped:
+            #         self.convert_progress_desc.emit("任务手动终止")
+            #         self.progress_updated.emit(0.0)
+            #     elif continue_running:
+            #         self.convert_progress_desc.emit("转换任务完成")
+            #     else:
+            #         self.convert_progress_desc.emit("转换任务异常中断")
 
         except Exception as e:
             # 异常处理：记录日志 + 通知 UI

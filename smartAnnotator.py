@@ -11,12 +11,14 @@ update：
 import argparse
 import sys
 
-from cfg import __APPNAME__, __VERSION__, LOGGER, ROOT, MODE, SysConfig, TASK
+from cfg import __APPNAME__, __VERSION__, LOGGER, ROOT, DEVICE, MODE, SysConfig
 from utils import (
     add_text_browser_handler,
     chooseDir,
+    chooseFile,
     showMessageBox,
     checkAnnotationFiles,
+    getImageFilesInDir,
     CustomItemWidget,
 )
 
@@ -53,17 +55,7 @@ class MainWindow(QMainWindow):
         self.sysConfig.currentMode = MODE(self.mainWindow.taskComBox.currentData())
         # convert 初始化
         self.mainWindow.convertCancelBtn.hide()
-        self.converter = ConvertWorker()
-        self.converter.progress_updated.connect(
-            lambda x: self.setConvertProcessValue(x)
-        )
-        self.converter.task_finished.connect(lambda: self.handleConvertFinished())
-        self.converter.error_occurred.connect(
-            lambda msg: self.handleConverterError(msg)
-        )
-        self.converter.convert_progress_desc.connect(
-            lambda x: self.setConvertProcessLabel(x)
-        )
+        self.initConverter()
         # 初始化转换源
         if self.mainWindow.jsonBtn.isChecked():
             self.sysConfig.convertConfig.setSourceFormat("JSON")
@@ -72,6 +64,15 @@ class MainWindow(QMainWindow):
         else:
             self.mainWindow.jsonBtn.setChecked(True)
             self.sysConfig.convertConfig.setSourceFormat("JSON")
+        # 初始化标注
+        self.initAnnotator()
+        if self.mainWindow.gpuBtn.isChecked():
+            self.sysConfig.annotateConfig.device = DEVICE.GPU
+        elif self.mainWindow.cpuBtn.isChecked():
+            self.sysConfig.annotateConfig.device = DEVICE.CPU
+        else:
+            self.mainWindow.gpuBtn.setChecked(True)
+            self.sysConfig.annotateConfig.device = DEVICE.GPU
 
     def initLogger(self):
         init = add_text_browser_handler(LOGGER.name, self.mainWindow.logBrowser, 500)
@@ -100,25 +101,39 @@ class MainWindow(QMainWindow):
         self.mainWindow.taskComBox.setCurrentIndex(0)
         # 隐藏关键点配置
         self.showkptConfig(False)
-        # 初始化训练比例
+        # 参数验证器
         regex = QRegExp(r"^0(\.\d{1,2})?$|^1(\.0{1,2})?$")
         validator = QRegExpValidator(regex)
         self.mainWindow.trainRatio.setValidator(validator)
         self.mainWindow.valRatio.setValidator(validator)
         self.mainWindow.testRatio.setValidator(validator)
+        self.mainWindow.bboxConfEdit.setValidator(validator)
+        self.mainWindow.keyConfEdit.setValidator(validator)
+        self.mainWindow.nmsEdit.setValidator(validator)
         self.name_index_map = self._build_name_index_map()
+
         # 切换到欢迎页
         self.changePage("welcomePage")
 
     def initConverter(self):
         """
-        初始化转换器
+        初始化转换线程
         """
-        pass
+        self.converter = ConvertWorker()
+        self.converter.progress_updated.connect(
+            lambda x: self.setConvertProcessValue(x)
+        )
+        self.converter.task_finished.connect(lambda: self.handleConvertFinished())
+        self.converter.error_occurred.connect(
+            lambda msg: self.handleConverterError(msg)
+        )
+        self.converter.convert_progress_desc.connect(
+            lambda x: self.setConvertProcessLabel(x)
+        )
 
     def initAnnotator(self):
         """
-        初始化标注器
+        初始化标注线程
         """
         pass
 
@@ -186,7 +201,20 @@ class MainWindow(QMainWindow):
                 lambda: self.handleConvertCancel()
             )
             # annotate
-
+            self.mainWindow.gpuBtn.toggled.connect(
+                lambda: self.sysConfig.annotateConfig.setDevice(DEVICE.GPU)
+            )
+            self.mainWindow.cpuBtn.toggled.connect(
+                lambda: self.sysConfig.annotateConfig.setDevice(DEVICE.CPU)
+            )
+            self.mainWindow.modelInputBtn.clicked.connect(lambda: self.updateModel())
+            self.mainWindow.annotateImgInputBtn.clicked.connect(
+                lambda: self.updateAnnotateImg()
+            )
+            self.mainWindow.annotateOutputBtn.clicked.connect(
+                lambda: self.updateAnnotateOutputDir()
+            )
+            self.mainWindow.annotateBtn.clicked.connect(lambda: self.annotate())
             # modify
 
             # export
@@ -233,18 +261,6 @@ class MainWindow(QMainWindow):
             else:
                 self.mainWindow.taskComBox.show()
 
-            if page_name == "annotatePage":
-                self.sysConfig.currentTask = TASK.ANNOTATE
-
-            # 切换到转换页面时，设置当前模式和格式
-            elif page_name == "convertPage":
-                self.sysConfig.currentTask = TASK.CONVERT
-
-            elif page_name == "modifyPage":
-                self.sysConfig.currentTask = TASK.MODIFY
-            elif page_name == "exportPage":
-                self.sysConfig.currentTask = TASK.EXPORT
-
             self.mainWindow.stackedWidget.setCurrentIndex(index)
 
         else:
@@ -269,9 +285,6 @@ class MainWindow(QMainWindow):
             LOGGER.error(f"模式切换失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Warning, f"模式切换失败，错误信息：{e}")
 
-    # endregion SYS
-
-    # region 转换
     def showkptConfig(self, show):
         """
         显示关键点配置
@@ -292,6 +305,10 @@ class MainWindow(QMainWindow):
             self.mainWindow.kptLabel.hide()
             self.mainWindow.label_30.hide()
             self.mainWindow.keyConfEdit.hide()
+
+    # endregion SYS
+
+    # region 转换
 
     def handleConvertCancel(self):
         """
@@ -552,10 +569,57 @@ class MainWindow(QMainWindow):
             LOGGER.error(f"转换失败，错误信息：{e}")
             showMessageBox(QMessageBox.Icon.Critical, f"转换失败，错误信息：{e}")
 
+    # endregion 转换
 
-# endregion 转换
+    # region 标注
+    def updateModel(self):
+        """
+        更新模型
+        """
+        suffix = "模型文件 (*.engine *.onnx)"
+        self.sysConfig.annotateConfig.modelPath = chooseFile(
+            suffix, self.sysConfig.annotateConfig.modelPath
+        )
+        self.mainWindow.modelInput.setText(self.sysConfig.annotateConfig.modelPath)
+
+    def updateAnnotateImg(self):
+        """
+        更新标注输入图片
+        """
+        self.sysConfig.annotateConfig.inputDir = chooseDir(
+            self.sysConfig.annotateConfig.inputDir
+        )
+        self.mainWindow.annotateImgInput.setText(self.sysConfig.annotateConfig.inputDir)
+        # 获取目录下所有图片文件 并更新预览到前端
+        imgFiles = getImageFilesInDir(self.sysConfig.annotateConfig.inputDir)
+        dataModel = QtCore.QStringListModel()
+        dataModel.setStringList(imgFiles)
+        self.mainWindow.annoateImgListView.setModel(dataModel)
+        self.sysConfig.annotateConfig.imgFiles = imgFiles
+        self.mainWindow.annotationImgNumLabel.setText(f"共有{len(imgFiles)}张图片")
+        LOGGER.info(f"共有{len(imgFiles)}张图片")
+
+    def updateAnnotateOutputDir(self):
+        """
+        更新标注输出目录
+        """
+
+        self.sysConfig.annotateConfig.outputDir = chooseDir(
+            self.sysConfig.annotateConfig.outputDir
+        )
+        self.mainWindow.annotateOutput.setText(self.sysConfig.annotateConfig.outputDir)
+
+    def annotate(self):
+        """
+        标注
+        """
+        pass
 
 
+# endregion 标注
+
+
+# region 程序入口
 def get_main_app(argv=[]):
     """
     没有方便通过单线程测试应用的方式，所以这里没有使用app.exec_()
@@ -582,3 +646,6 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# endregion 程序入口

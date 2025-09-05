@@ -23,8 +23,8 @@ LOGGING_NAME = "VAI_E_LabelTool"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])
 
 
-from .qt import chooseDir, showMessageBox, CustomItemWidget
-from .files import checkAnnotationFiles
+from .qt import chooseDir, chooseFile, showMessageBox, CustomItemWidget
+from .files import checkAnnotationFiles, getImageFilesInDir
 from .tool import is_point_in_box, is_rect_inside, export
 
 

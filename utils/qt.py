@@ -67,6 +67,20 @@ def chooseDir(dir=None) -> str:
     return ""
 
 
+def chooseFile(suffix, dir=None) -> str:
+    """
+    选择文件
+    """
+    dialog = QFileDialog(directory=dir)
+    dialog.setWindowTitle("选择文件")
+    dialog.setFileMode(QFileDialog.ExistingFile)
+    dialog.setNameFilter(suffix)
+    if dialog.exec_() == QFileDialog.Accepted:
+        # 获取选中的文件（返回列表，取第一个元素）
+        return dialog.selectedFiles()[0]
+    return ""
+
+
 class CustomItemWidget(QWidget):
 
     def __init__(self, text, list_widget, parent=None, check=False):

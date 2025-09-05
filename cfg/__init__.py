@@ -25,6 +25,11 @@ class MODE(Enum):
     OCR = 3
 
 
+class DEVICE(Enum):
+    CPU = 0
+    GPU = 1
+
+
 class TASK(Enum):
     MODIFY = 0
     ANNOTATE = 1
@@ -65,8 +70,20 @@ class ConvertConfig:
 
 class AnnotateConfig:
     def __init__(self):
-        self.classes = []
-        self.kpt = []
+        self.modelPath = ""
+        self.device = DEVICE.GPU
+        self.inputDir = ""
+        self.outputDir = ""
+        self.imgFiles = []
+        self.bboxConf = 0.5
+        self.kptConf = 0.5
+        self.nms = 0.25
+
+    def setModel(self, model):
+        self.model = model
+
+    def setDevice(self, device):
+        self.device = device
 
 
 class ModifyConfig:
@@ -86,7 +103,6 @@ class exportConfig:
 class SysConfig:
     def __init__(self):
         self.currentMode = None
-        self.currentTask = None
         self.convertConfig = ConvertConfig()
         self.annotateConfig = AnnotateConfig()
         self.modifyConfig = ModifyConfig()
