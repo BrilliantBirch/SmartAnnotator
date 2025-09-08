@@ -30,6 +30,7 @@ class BasePredictor:
         self.device = config.device
         self.conf = config.bboxConf
         self.iou = config.nms
+        self.load_model()
 
     def load_model(self):
         pass
@@ -62,7 +63,7 @@ class BasePredictor:
         img = [np.ones((imgSize[0], imgSize[1], 3))]
         for _ in range(self.batch - 1):
             img.extend(img)
-        for _ in range(self.warmupcount):
+        for _ in range(5):
             self.predict(img)
 
 

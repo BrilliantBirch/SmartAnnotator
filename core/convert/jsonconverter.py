@@ -7,24 +7,33 @@ E-mail: baibinnan@chuanfeng.com
 
 """
 
-from cfg import LOGGER
+from cfg import LOGGER, ConvertConfig, MODE
 from pathlib import Path
 import shutil
 from datetime import datetime
 import os
+import cv2
+import numpy as np
 
 
 # region YOLO系列转换Labelme json
 class JsonBaseConverter:
-    def __init__(self, *args, **kwargs):
-        self.source = kwargs.get("source", None)
+    def __init__(self, config: ConvertConfig):
+        self.source = config.source
         if self.source is None or not Path.exists(Path(self.source)):
             raise ValueError("未指定源")
-        class_mapping = kwargs.get("class_mapping", None)
-        if class_mapping is None or not isinstance(class_mapping, list):
-            raise ValueError(f"需要以列表形式指定检测类型")
-        self.class_mapping = {idx: value for idx, value in enumerate(class_mapping)}
-        self.ignore = kwargs.get("ignore", [])
+        self.classes = config.classes
+        # 对类别去重
+        seen = set()
+        unique_classes = []
+        for value in self.classes:
+            lower_val = value.lower()
+            if lower_val not in seen:
+                seen.add(lower_val)
+                unique_classes.append(lower_val)
+            else:
+                LOGGER.warning(f"类别{value}重复，已去重")
+        self.class_mapping = {i: v for i, v in enumerate(unique_classes)}
 
     def process(self, path, imagePath):
         pass
@@ -90,18 +99,8 @@ class JsonBaseConverter:
 
 # region 目标检测结果转换为Labelme Json
 class Yolo2JsonConverter(JsonBaseConverter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.task = "yolo2labelme"
-        self.target = kwargs.get(
-            "target",
-            os.path.join(
-                ROOT,
-                "target",
-                f"{self.task}",
-                f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            ),
-        )
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
 
     def process(self, path, imagePath):
         annotations = []
@@ -154,23 +153,9 @@ class Yolo2JsonConverter(JsonBaseConverter):
 
 # region 姿态检测结果转换为Labelme Json
 class YoloPose2JsonConverter(JsonBaseConverter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.kpt = kwargs.get("kpt", None)
-        self.ignore = kwargs.get("ignore", [])
-        self.ignore = [k.lower() for k in self.ignore]
-        if self.kpt is None:
-            raise ValueError(f"关键点--kpt参数缺失")
-        self.task = "yolopose2labelme"
-        self.target = kwargs.get(
-            "target",
-            os.path.join(
-                ROOT,
-                "target",
-                f"{self.task}",
-                f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            ),
-        )
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
+        self.kpt = config.kpt
 
     def process(self, path, imagePath):
         kpt_nums = len(self.kpt)
@@ -205,16 +190,14 @@ class YoloPose2JsonConverter(JsonBaseConverter):
                     [x_min, y_min],
                     [x_max, y_max],
                 ]
-                if self.class_mapping[class_id].lower() not in self.ignore:
-
-                    annotations.append(
-                        {
-                            "class": self.class_mapping[class_id],
-                            "points": points,
-                            "shape_type": "rectangle",
-                            "description": "",
-                        }
-                    )
+                annotations.append(
+                    {
+                        "class": self.class_mapping[class_id].lower(),
+                        "points": points,
+                        "shape_type": "rectangle",
+                        "description": "",
+                    }
+                )
                 # 获取关键点
                 kpts = parts[5:]
                 step = 0

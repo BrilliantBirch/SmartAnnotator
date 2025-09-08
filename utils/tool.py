@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import yaml
+import json
 
 
 # region 标注检查
@@ -72,6 +73,9 @@ def classMapping(classes):
         for index, line in enumerate(c):
             class_dict[line.strip()] = index
     return class_dict
+
+
+# endregion 标注检查
 
 
 # region 数据集分割与yaml文件生成
@@ -198,3 +202,202 @@ def export(
         create_yaml(data_dir, classMapping, kpt)
     else:
         raise Exception("数据集分割失败")
+
+
+# endregion 数据集分割与yaml文件生成
+
+
+# region yolo文本行转换为labelme格式标签
+def yolo_to_labelme(lines, img_width, img_height, classMapping, type, *args):
+    """
+    将YOLO格式的文本行转换为Labelme格式的标签
+
+    Args:
+        yolo_line: YOLO格式的文本行，格式为：class_id x_center y_center width height
+        img_width: 图像宽度
+        img_height: 图像高度
+        classMapping: 类别映射
+        type: 标注类型，bbox或kpt
+
+    Returns:
+        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
+    """
+    if type == 0:
+        return detect_to_labelme(lines, img_width, img_height, classMapping)
+    elif type == 1:
+        return pose_to_labelme(lines, img_width, img_height, classMapping, *args)
+    else:
+        raise ValueError(f"标注类型:{type}暂不支持")
+
+
+def detect_to_labelme(lines, img_width, img_height, classMapping):
+    """
+    将检测结果转换为Labelme格式的标签
+
+    Args:
+        line: 检测结果，格式为：class_id x_center y_center width height
+        img_width: 图像宽度
+        img_height: 图像高度
+        classMapping: 类别映射
+
+    Returns:
+        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
+    """
+    annotations = []
+    lineNo = 0
+    for line in lines:
+        lineNo += 1
+        parts = line.strip().split()
+        if len(parts) != 5:
+            raise ValueError(f"标注文本格式第{lineNo}行有误，{line}")
+        class_id = int(parts[0])
+        x_center = float(parts[1])
+        y_center = float(parts[2])
+        width = float(parts[3])
+        height = float(parts[4])
+        # 计算点坐标 (左上角和右下角)
+        x_center *= img_width  # 假设图像宽度是 1.0 的归一化值
+        y_center *= img_height  # 假设图像高度是 1.0 的归一化值
+        width *= img_width
+        height *= img_height
+        x_min = x_center - width / 2
+        x_max = x_center + width / 2
+        y_min = y_center - height / 2
+        y_max = y_center + height / 2
+        points = [
+            [x_min, y_min],
+            [x_max, y_max],
+        ]
+        annotations.append(
+            {
+                "class": classMapping[class_id],
+                "points": points,
+                "shape_type": "rectangle",
+                "description": "",
+            }
+        )
+    return annotations
+
+
+def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
+    """
+    将姿态检测结果转换为Labelme格式的标签
+
+    Args:
+        line: 姿态检测结果，格式为：class_id x_center y_center width height
+        img_width: 图像宽度
+        img_height: 图像高度
+        classMapping: 类别映射
+
+    Returns:
+        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
+    """
+    annotations = []
+    lineNo = 0
+    kpt_nums = args[0]
+    for line in lines:
+        lineNo += 1
+        parts = line.strip().split()
+        if len(parts) != 5 + (kpt_nums * 3):
+            continue
+        # 获取框
+        class_id = int(parts[0])
+        x_center = float(parts[1])
+        y_center = float(parts[2])
+        width = float(parts[3])
+        height = float(parts[4])
+        # 计算点坐标 (左上角和右下角)
+        x_center *= img_width  # 假设图像宽度是 1.0 的归一化值
+        y_center *= img_height  # 假设图像高度是 1.0 的归一化值
+        width *= img_width
+        height *= img_height
+        x_min = x_center - width / 2
+        x_max = x_center + width / 2
+        y_min = y_center - height / 2
+        y_max = y_center + height / 2
+        points = [
+            [x_min, y_min],
+            [x_max, y_max],
+        ]
+        annotations.append(
+            {
+                "class": classMapping[class_id].lower(),
+                "points": points,
+                "shape_type": "rectangle",
+                "description": "",
+            }
+        )
+        # 获取关键点
+        kpts = parts[5:]
+        point_idx = 1
+        for i in range(0, kpt_nums, 3):
+            x, y, vis = kpts[i : i + 3]
+            if int(vis) != 2:
+                continue
+            else:
+                kpt_name = classMapping[class_id].lower() + f"_point{point_idx}"
+            x = float(x) * img_width
+            y = float(y) * img_height
+            points = [[x, y]]
+            if x == y == 0 or x == img_width or y == img_height:
+                continue
+            annotations.append(
+                {
+                    "class": kpt_name,
+                    "points": points,
+                    "shape_type": "point",
+                    "description": vis,
+                }
+            )
+            point_idx += 1
+    return annotations
+
+
+# endregion yolo文本行转换为labelme格式标签
+
+
+# region 生成labelme格式文件
+def generate_labelme_file(
+    annotations, labelme_version, image_path, image_height, image_width, output_path
+):
+    """
+    生成Labelme格式的文件
+    Args:
+        annotations: Labelme格式的标签
+        labelme_version: labelme版本
+        image_path: 图像路径
+        output_path: 输出路径
+        image_height: 图像高度
+        image_width: 图像宽度
+    """
+    if not annotations:
+        return
+    data = {
+        "version": labelme_version,
+        "flags": {},
+        "shapes": [],
+        "imagePath": image_path,
+        "imageData": None,
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+    }
+    for annotation in annotations:
+        label = annotation["class"]
+        points = annotation["points"]
+        shape_type = annotation["shape_type"]
+        description = annotation["description"]
+        shape = {
+            "label": label,
+            "points": points,
+            "group_id": None,
+            "description": description,
+            "shape_type": shape_type,
+            "flags": {},
+            "mask": None,
+        }
+        data["shapes"].append(shape)
+    with open(output_path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+# endregion 生成labelme格式文件

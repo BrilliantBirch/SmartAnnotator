@@ -26,7 +26,6 @@ from pathlib import Path
 import random
 import shutil
 import json
-import yaml
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 

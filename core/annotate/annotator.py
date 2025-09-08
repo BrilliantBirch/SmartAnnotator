@@ -11,8 +11,7 @@ import cv2
 import numpy as np
 import shutil
 from pathlib import Path
-from cfg import SysConfig, AnnotateConfig, MODE, LOGGER
-from ..convert import Yolo2JsonConverter, YoloPose2JsonConverter
+from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
 from .vision import DetectionPredictor, PoseDetectionPredictor
 
 
@@ -28,10 +27,8 @@ class Annotator:
 
         if self.mode == MODE.DETECT:
             self.model = DetectionPredictor(self.config)
-            self.converter = Yolo2JsonConverter(self.config)
         elif self.mode == MODE.POSE:
             self.model = PoseDetectionPredictor(self.config)
-            self.converter = YoloPose2JsonConverter(self.config)
         else:
             raise ValueError(f"任务类型:{self.mode.name}暂不支持")
 
@@ -59,9 +56,29 @@ class Annotator:
             try:
                 if not callback("自动标注中", (idx + 1) / total):
                     return False
-                lines = self._label(image_path)
-                pass
-                # annotations, h, w = self.converter.process(lines, image_path)
+                # 标注
+                lines, h, w = self._label(image_path)
+                from utils.tool import yolo_to_labelme, generate_labelme_file
+
+                # 转换为labelme格式
+                annotations = yolo_to_labelme(
+                    lines,
+                    w,
+                    h,
+                    self.model.class_mapping,
+                    self.mode.value,
+                    self.model.kpt_shape[0],
+                )
+                # 生成labelme格式文件
+                generate_labelme_file(
+                    annotations,
+                    LABELME_VERSION,
+                    image_path.name,
+                    h,
+                    w,
+                    self.output / f"{image_path.stem}.json",
+                )
+                shutil.copy(image_path, self.output / image_path.name)
             except Exception as e:
                 LOGGER.error(f"处理 {image_path} 时出错: {e}")
 
@@ -71,16 +88,15 @@ class Annotator:
 
         image : 输入图像。
         """
-        filename = image_path.name
         image_data = np.fromfile(image_path, dtype=np.uint8)
         image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+        img_h, img_w = image.shape[:2]
         predections = self.model.predict([image])
         lines = []
         if predections:
             for pred in predections:
                 bboxes = pred["bboxs"]
                 labels = pred["labels"]
-                scores = pred["scores"]
                 if self.mode == MODE.POSE:
                     kpt = pred["keypoints"]
                     for det in zip(bboxes, labels, kpt):
@@ -104,4 +120,4 @@ class Annotator:
                         x, y, w, h = bbox
                         cls = label
                         lines.append(f"{cls} {x} {y} {w} {h}\n")
-        return lines
+        return lines, img_h, img_w
