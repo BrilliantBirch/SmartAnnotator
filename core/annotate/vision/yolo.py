@@ -98,7 +98,9 @@ class DetectionPredictor(BasePredictor):
 
         elif self.device == DEVICE.GPU:
             if get_gpu_info() == -1:
-                LOGGER.warning("找不到显卡信息")
+                LOGGER.warning("找不到显卡信息,请检查是否安装了显卡驱动")
+                return False
+
             if self.model_path.suffix == ".onnx":
                 LOGGER.warning("GPU使用tensorrt推理,尝试寻找engine模型")
                 engine_path = self.model_path.with_suffix(".engine")

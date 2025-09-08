@@ -1,0 +1,93 @@
+{
+ "version": "auto-py-to-exe-configuration_v1",
+ "pyinstallerOptions": [
+  {
+   "optionDest": "noconfirm",
+   "value": true
+  },
+  {
+   "optionDest": "filenames",
+   "value": "E:/VAI_E/VAI_E_SmartAnnotator/smartAnnotator.py"
+  },
+  {
+   "optionDest": "onefile",
+   "value": true
+  },
+  {
+   "optionDest": "console",
+   "value": false
+  },
+  {
+   "optionDest": "icon_file",
+   "value": "E:/VAI_E/VAI_E_SmartAnnotator/resources/images/welcome.ico"
+  },
+  {
+   "optionDest": "name",
+   "value": "VAI_E_SmartAnnotator"
+  },
+  {
+   "optionDest": "clean_build",
+   "value": false
+  },
+  {
+   "optionDest": "strip",
+   "value": false
+  },
+  {
+   "optionDest": "noupx",
+   "value": false
+  },
+  {
+   "optionDest": "disable_windowed_traceback",
+   "value": false
+  },
+  {
+   "optionDest": "version_file",
+   "value": "E:/VAI_E/VAI_E_SmartAnnotator/version.txt"
+  },
+  {
+   "optionDest": "uac_admin",
+   "value": false
+  },
+  {
+   "optionDest": "uac_uiaccess",
+   "value": false
+  },
+  {
+   "optionDest": "argv_emulation",
+   "value": false
+  },
+  {
+   "optionDest": "bootloader_ignore_signals",
+   "value": false
+  },
+  {
+   "optionDest": "datas",
+   "value": "E:/VAI_E/VAI_E_SmartAnnotator/resources;resources/"
+  },
+  {
+   "optionDest": "collect_submodules",
+   "value": "onnxruntime"
+  },
+  {
+   "optionDest": "collect_submodules",
+   "value": "tensorrt"
+  },
+  {
+   "optionDest": "collect_submodules",
+   "value": "onnx"
+  },
+  {
+   "optionDest": "collect_submodules",
+   "value": "cuda"
+  },
+  {
+   "optionDest": "hiddenimports",
+   "value": "pywintypes"
+  }
+ ],
+ "nonPyinstallerOptions": {
+  "increaseRecursionLimit": true,
+  "manualArguments": ""
+ }
+}
