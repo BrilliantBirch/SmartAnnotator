@@ -173,6 +173,7 @@ class Ui_MainWindow(object):
         self.buttonGroup.addButton(self.jsonBtn)
         self.horizontalLayout_4.addWidget(self.jsonBtn)
         self.txtBtn = QtWidgets.QRadioButton(self.convertPage)
+        self.txtBtn.setEnabled(False)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
@@ -658,7 +659,7 @@ class Ui_MainWindow(object):
         self.menubar.addAction(self.menu.menuAction())
 
         self.retranslateUi(MainWindow)
-        self.stackedWidget.setCurrentIndex(2)
+        self.stackedWidget.setCurrentIndex(1)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
     def retranslateUi(self, MainWindow):

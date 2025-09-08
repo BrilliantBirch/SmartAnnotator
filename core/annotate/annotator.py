@@ -30,6 +30,7 @@ class Annotator:
         elif self.mode == MODE.POSE:
             self.model = PoseDetectionPredictor(self.config)
         else:
+            LOGGER.warning(f"任务类型:{self.mode.name}暂不支持")
             raise ValueError(f"任务类型:{self.mode.name}暂不支持")
 
         # 模型预热
@@ -78,7 +79,8 @@ class Annotator:
                     w,
                     self.output / f"{image_path.stem}.json",
                 )
-                shutil.copy(image_path, self.output / image_path.name)
+                if image_path != self.output / image_path.name:
+                    shutil.copy(image_path, self.output / image_path.name)
             except Exception as e:
                 LOGGER.error(f"处理 {image_path} 时出错: {e}")
 

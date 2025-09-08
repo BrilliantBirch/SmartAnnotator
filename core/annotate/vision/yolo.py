@@ -2,7 +2,7 @@
 Description：YOLO预测器
 Author:BaiBinnan
 Date:2025/02/17
-LastEdit:2025/02/17
+LastEdit:2025/09/05
 LastEditBy:BaiBinnan
 E-mail:baiBinnan@chuanfeng.com
 """
@@ -114,10 +114,13 @@ class DetectionPredictor(BasePredictor):
                     try:
                         from .onnx2engine import Onnx2Engine
 
+                        LOGGER.info(
+                            f"开始转换{self.model_path},请耐心等待，根据模型大小需要10-30mins,请勿关闭程序"
+                        )
                         onnx2engine = Onnx2Engine(onnxfile=self.model_path)
                         engine_path = onnx2engine.run()
                         self.model = TensorRTInfer(engine_path)
-
+                        LOGGER.info(f"转换完成,模型已保存到{engine_path}")
                     except Exception as ex:
                         LOGGER.error(f"模型转换失败{str(ex)}")
                         return False

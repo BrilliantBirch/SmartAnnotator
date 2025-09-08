@@ -10,7 +10,6 @@ E-mail: baibinnan@chuanfeng.com
 from cfg import LOGGER, ConvertConfig, MODE
 from pathlib import Path
 import shutil
-from datetime import datetime
 import os
 import cv2
 import numpy as np
@@ -19,9 +18,13 @@ import numpy as np
 # region YOLO系列转换Labelme json
 class JsonBaseConverter:
     def __init__(self, config: ConvertConfig):
-        self.source = config.source
-        if self.source is None or not Path.exists(Path(self.source)):
-            raise ValueError("未指定源")
+        self.config = config
+        self.imageFiles = [Path(imageFile) for imageFile in config.imageFiles]
+        self.annotationFiles = [
+            Path(annotationFile) for annotationFile in config.annotationFiles
+        ]
+        self.output = Path(self.config.outputDir)
+        self.kpt = config.kpt
         self.classes = config.classes
         # 对类别去重
         seen = set()
@@ -40,26 +43,7 @@ class JsonBaseConverter:
 
     def run(self):
         try:
-            LOGGER.info(f"标签开始转换，任务类型：{self.task}")
-            source = Path(self.source)
-            target = Path(self.target)
-            background = target / "background"
-            target.mkdir(parents=True, exist_ok=True)
-            background.mkdir(parents=True, exist_ok=True)
-            image_extensions = ("*.jpg", "*.jpeg", "*.png", "*.gif")
-            image_files = []
-            for ext in image_extensions:
-                found_images = list(source.rglob(ext))
-                image_files.extend([str(img) for img in found_images])
-            self.image_files_set = set(image_files)
-            label_extensions = "*.txt"
-            found_labels = list(source.rglob(label_extensions))
-            self.label_files_set = set([str(label) for label in found_labels])
-            # 构建标注文件名到标注文件路径的哈希索引
-            self.label_name2path = {
-                os.path.splitext(os.path.basename(path))[0]: path
-                for path in self.label_files_set
-            }
+            self.output.mkdir(parents=True, exist_ok=True)
             # 遍历图片转换标签
             for image in tqdm(self.image_files_set, desc="标签转换中", unit="files"):
                 image_name = os.path.splitext(os.path.basename(image))[0]
@@ -101,6 +85,7 @@ class JsonBaseConverter:
 class Yolo2JsonConverter(JsonBaseConverter):
     def __init__(self, config: ConvertConfig):
         super().__init__(config)
+        self.mode = MODE.DET
 
     def process(self, path, imagePath):
         annotations = []
@@ -156,6 +141,7 @@ class YoloPose2JsonConverter(JsonBaseConverter):
     def __init__(self, config: ConvertConfig):
         super().__init__(config)
         self.kpt = config.kpt
+        self.mode = MODE.POSE
 
     def process(self, path, imagePath):
         kpt_nums = len(self.kpt)

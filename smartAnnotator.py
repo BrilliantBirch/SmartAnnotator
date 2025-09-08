@@ -265,8 +265,10 @@ class MainWindow(QMainWindow):
             index = self.name_index_map[page_name]
             if page_name == "welcomePage":
                 self.mainWindow.taskComBox.hide()
+                self.mainWindow.label_5.hide()
             else:
                 self.mainWindow.taskComBox.show()
+                self.mainWindow.label_5.show()
 
             self.mainWindow.stackedWidget.setCurrentIndex(index)
 

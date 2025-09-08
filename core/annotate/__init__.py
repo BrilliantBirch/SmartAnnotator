@@ -3,6 +3,7 @@ from cfg import LOGGER, SysConfig
 # from .converter import Converter
 from ..baseworker import BaseWorker
 from PyQt5.QtCore import QMutexLocker
+from .annotator import Annotator
 
 
 class AnnotateWorker(BaseWorker):
@@ -26,30 +27,18 @@ class AnnotateWorker(BaseWorker):
                     raise ValueError("转换配置未设置")
                 if self.stopped:
                     return
-                # 模拟耗时
-                import time
 
-            def mock_annotate():
-                for i in range(100):
-                    time.sleep(1)
-                    flag = self.run_callback(f"转换进度 {i}%", (i + 1) / 100)
-                    if not flag:
-                        break
-                return True
-
-            running = mock_annotate()
-
-            # # 初始化转换器并执行任务
-            # converter = Converter(self.config)
-            # # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
-            # continue_running = converter.run(self.run_callback)
+            # 初始化转换器并执行任务
+            annotator = Annotator(self.config)
+            # converter.run() 会循环调用 run_callback，且根据返回值决定是否继续
+            continue_running = annotator.run(self.run_callback)
 
             # 任务结束：区分“正常完成”和“被停止”
             with QMutexLocker(self.mutex):
                 if self.stopped:
                     self.progress_desc.emit("任务手动终止")
                     self.progress_updated.emit(0.0)
-                elif running:
+                elif continue_running:
                     self.progress_desc.emit("转换任务完成")
                 else:
                     self.progress_desc.emit("转换任务异常中断")
