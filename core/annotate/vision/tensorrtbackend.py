@@ -95,7 +95,6 @@ class TensorRTInfer:
         logger = trt.Logger(trt.Logger.ERROR)
         trt.init_libnvinfer_plugins(logger, namespace="")
         runtime = trt.Runtime(logger)
-        self.fp16 = False
         with open(engine_path, "rb") as f:
             try:
                 meta_len = int.from_bytes(
@@ -125,7 +124,9 @@ class TensorRTInfer:
             dtype = self.engine.get_tensor_dtype(name)
             dtype = np.dtype(trt.nptype(dtype))
             if dtype == np.float16:
-                self.fp16 = True
+                self.metadata["fp16"] = True
+            else:
+                self.metadata["fp16"] = False
             shape = self.engine.get_tensor_shape(name)
             size = dtype.itemsize
             for s in shape:

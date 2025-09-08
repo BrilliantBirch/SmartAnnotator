@@ -60,9 +60,10 @@ class Annotator:
                 if not callback("自动标注中", (idx + 1) / total):
                     return False
                 lines = self._label(image_path)
-                annotations, h, w = self.converter.process(lines, image_path)
+                pass
+                # annotations, h, w = self.converter.process(lines, image_path)
             except Exception as e:
-                print(f"处理 {image_path} 时出错: {e}")
+                LOGGER.error(f"处理 {image_path} 时出错: {e}")
 
     def _label(self, image_path: Path):
         """

@@ -80,6 +80,7 @@ class AnnotateConfig:
         self.nms = 0.25
 
     def setModel(self, modelPath):
+
         self.modelPath = modelPath
 
     def setDevice(self, device):

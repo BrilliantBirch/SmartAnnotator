@@ -8,18 +8,30 @@ E-mail:baiBinnan@chuanfeng.com
 """
 
 import numpy as np
-from ..utils import resize_image
+import ast
+import cv2
+from pathlib import Path
+from ..utils import (
+    resize_image,
+    get_cpu_info,
+    get_gpu_info,
+    get_total_memory,
+    scale_boxes,
+    scale_coords,
+)
+from .onnxbackend import ONNXInfer
+from .tensorrtbackend import TensorRTInfer
 from cfg import LOGGER, AnnotateConfig, DEVICE
 
 
 class BasePredictor:
     def __init__(self, config: AnnotateConfig):
-        self.model_path = config.modelPath
+        self.model_path = Path(config.modelPath)
         self.device = config.device
         self.conf = config.bboxConf
         self.iou = config.nms
 
-    def load_model(self, *args, **kwargs):
+    def load_model(self):
         pass
 
     def unload_model(self):
@@ -54,20 +66,6 @@ class BasePredictor:
             self.predict(img)
 
 
-import ast
-import cv2
-from pathlib import Path
-from ..utils import (
-    get_cpu_info,
-    get_gpu_info,
-    get_total_memory,
-    scale_boxes,
-    scale_coords,
-)
-from .onnxbackend import ONNXInfer
-from .tensorrtbackend import TensorRTInfer
-
-
 # region 目标检测
 class DetectionPredictor(BasePredictor):
     """目标检测的检测器
@@ -79,7 +77,7 @@ class DetectionPredictor(BasePredictor):
     def __init__(self, config: AnnotateConfig):
         super().__init__(config=config)
 
-    def load_model(self, config: AnnotateConfig):
+    def load_model(self):
         if self.device == DEVICE.CPU:
             if get_cpu_info() == -1 or get_total_memory() == -1:
                 LOGGER.warning("找不到cpu信息")
@@ -133,15 +131,20 @@ class DetectionPredictor(BasePredictor):
 
         # 尝试从模型元数据中获取
         if self.model.metadata:
-            class_mapping = self.model.metadata.get("names", None)
+            self.batch = int(ast.literal_eval(self.model.metadata.get("batch")))
+            self.imgSize = tuple(ast.literal_eval(self.model.metadata.get("imgsz")))
+            self.fp16 = self.model.metadata.get("fp16", False)
+            class_mapping = self.model.metadata.get("names")
             if isinstance(class_mapping, str):
                 class_mapping = ast.literal_eval(class_mapping)
-                class_mapping = {
-                    str(key): value for key, value in class_mapping.items()
-                }
+                if isinstance(class_mapping, dict):
+                    class_mapping = {
+                        int(key): value for key, value in class_mapping.items()
+                    }
+                else:
+                    LOGGER.warning("模型元数据中类别映射格式错误")
+                    return False
 
-        if class_mapping is None:
-            raise ValueError("请提供类别映射")
         self.class_mapping = class_mapping
 
         return True
@@ -195,16 +198,18 @@ class DetectionPredictor(BasePredictor):
 class PoseDetectionPredictor(DetectionPredictor):
     def __init__(self, config: AnnotateConfig):
         super().__init__(config)
-        # 尝试从模型元数据中获取
-        # if self.model.metadata:
-        #     kpt_shape = self.model.metadata.get("kpt_shape", None)
-        #     if isinstance(kpt_shape, str):
-        #         kpt_shape = ast.literal_eval(kpt_shape)
 
-    def load_model(self, config: AnnotateConfig):
-        super().load_model(config)
-        self.class_num = len(self.class_mapping)
-        self.kpt_shape = (self.class_num, 2)
+    def load_model(self):
+        super().load_model()
+        try:
+            self.class_num = len(self.class_mapping)
+            self.kpt_shape = tuple(
+                ast.literal_eval(self.model.metadata.get("kpt_shape"))
+            )
+            return True
+        except Exception as ex:
+            LOGGER.error(f"模型元数据中关键点形状获取失败{str(ex)}")
+            return False
 
     def postprocess(self, predictions, pred_shape, orig_shapes):
         outputs = np.transpose(predictions, (0, 2, 1))
