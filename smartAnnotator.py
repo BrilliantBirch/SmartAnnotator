@@ -185,10 +185,10 @@ class MainWindow(QMainWindow):
             )
 
             self.mainWindow.jsonBtn.toggled.connect(
-                lambda: self.sysConfig.convertConfig.setSourceFormat("JSON")
+                lambda: self.setConvertSourceFormat("json")
             )
             self.mainWindow.txtBtn.toggled.connect(
-                lambda: self.sysConfig.convertConfig.setSourceFormat("TXT")
+                lambda: self.setConvertSourceFormat("txt")
             )
 
             self.mainWindow.addLabelBtn.clicked.connect(lambda: self.addLabel())
@@ -319,6 +319,25 @@ class MainWindow(QMainWindow):
 
     # region 转换
 
+    def setConvertSourceFormat(self, format: str):
+        """
+        设置转换源格式
+        """
+        self.sysConfig.convertConfig.sourceFormat = format
+        if format == "json":
+            self.mainWindow.valRatio.setEnabled(True)
+            self.mainWindow.testRatio.setEnabled(True)
+            self.mainWindow.trainRatio.setEnabled(True)
+            self.mainWindow.exportBtn.setEnabled(True)
+            self.mainWindow.visualizeBtn.setEnabled(True)
+        elif format == "txt":
+            self.mainWindow.valRatio.setEnabled(False)
+            self.mainWindow.testRatio.setEnabled(False)
+            self.mainWindow.trainRatio.setEnabled(False)
+            self.mainWindow.exportBtn.setEnabled(False)
+            self.mainWindow.visualizeBtn.setEnabled(False)
+        self.getConvertSource(self.sysConfig.convertConfig.inputDir, format)
+
     def handleConvertCancel(self):
         """
         取消转换
@@ -366,20 +385,19 @@ class MainWindow(QMainWindow):
         self.mainWindow.convertInput.setText(dir)
         self.sysConfig.convertConfig.inputDir = dir
         # 获取当前工作目录下的所有标注文件与图像文件
-        if self.sysConfig.convertConfig.sourceFormat == "JSON":
-            self.getConvertSource_Json(dir)
-        elif self.sysConfig.convertConfig.sourceFormat == "TXT":
-            showMessageBox(
-                QMessageBox.Icon.Warning,
-                f"暂未实现源未TXT格式！",
-            )
+        if self.sysConfig.convertConfig.sourceFormat == "json":
+            self.getConvertSource(dir, "json")
+        elif self.sysConfig.convertConfig.sourceFormat == "txt":
+            self.getConvertSource(dir, "txt")
 
-    def getConvertSource_Json(self, dirPath: str):
+    def getConvertSource(self, dirPath: str, type: str):
         """
         获取转换目录下的所有JSON文件
         """
         try:
-            anotationFiles, imageFiles, lostAnnoFiles = checkAnnotationFiles(dirPath)
+            anotationFiles, imageFiles, lostAnnoFiles = checkAnnotationFiles(
+                dirPath, type
+            )
             self.sysConfig.convertConfig.annotationFiles = anotationFiles
             self.sysConfig.convertConfig.imageFiles = imageFiles
             LOGGER.info(
@@ -405,7 +423,7 @@ class MainWindow(QMainWindow):
             LOGGER.error(f"获取转换目录下的标注文件失败，错误信息：{e}")
             showMessageBox(
                 QMessageBox.Icon.Critical,
-                f"获取转换目录下的所有JSON文件失败，错误信息：{e}",
+                f"获取转换目录下的所有{type}文件失败，错误信息：{e}",
             )
 
     def addLabel(self):

@@ -26,7 +26,7 @@ class Converter:
         self.mode = config.currentMode
 
         # LabelmeJson to txt
-        if self.sourceFormat == "JSON":
+        if self.sourceFormat == "json":
             if self.mode == MODE.POSE:
                 self.converter = YoloPoseConverter(config.convertConfig)
 
@@ -44,7 +44,7 @@ class Converter:
                     f"当源类型为{self.sourceFormat}转换类型不支持{self.mode}"
                 )
         # txt to labelmeJson
-        elif self.sourceFormat == "TXT":
+        elif self.sourceFormat == "txt":
             if self.mode == MODE.DETECT:
                 self.converter = Yolo2JsonConverter(config.convertConfig)
             elif self.mode == MODE.POSE:

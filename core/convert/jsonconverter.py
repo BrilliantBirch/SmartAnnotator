@@ -7,7 +7,7 @@ E-mail: baibinnan@chuanfeng.com
 
 """
 
-from cfg import LOGGER, ConvertConfig, MODE
+from cfg import LOGGER, LABELME_VERSION, ConvertConfig, MODE
 from pathlib import Path
 import shutil
 import os
@@ -24,7 +24,10 @@ class JsonBaseConverter:
             Path(annotationFile) for annotationFile in config.annotationFiles
         ]
         self.output = Path(self.config.outputDir)
-        self.kpt = config.kpt
+        kpt_type = []
+        for k in config.kpt:
+            kpt_type.append(k)
+        self.kpt = kpt_type
         self.classes = config.classes
         # 对类别去重
         seen = set()
@@ -41,51 +44,68 @@ class JsonBaseConverter:
     def process(self, path, imagePath):
         pass
 
-    def run(self):
+    def run(self, callback):
         try:
             self.output.mkdir(parents=True, exist_ok=True)
+            total = len(self.annotationFiles)
+            empty_files = []
+            # 获取图片路径及其后缀字典
+            imageFiles_dir = {
+                str(Path(imageFile).stem): Path(imageFile).suffix
+                for imageFile in self.imageFiles
+            }
             # 遍历图片转换标签
-            for image in tqdm(self.image_files_set, desc="标签转换中", unit="files"):
-                image_name = os.path.splitext(os.path.basename(image))[0]
-                if image_name in self.label_name2path:
-                    label = self.label_name2path[image_name]
-                    # #标签不存在 作为背景
-                    # if label not in self.label_files_set:
-                    #     shutil.copy(image,background)
-                    #     continue
-                    annotations, image_height, image_width = self.process(label, image)
+            for idx, file in enumerate(self.annotationFiles):
+                if not callback(f"标签转换中", (idx + 1) / total):
+                    return False
+                imagePath = file.parent.parent / "images" / file.name
+                imagePath = imagePath.with_suffix(
+                    imageFiles_dir.get(imagePath.stem, "")
+                )
+                if imagePath in self.imageFiles:
+                    self.imageFiles.remove(imagePath)
+                    annotations, image_height, image_width = self.process(
+                        file, imagePath
+                    )
                     if not annotations:
-                        # LOGGER.warning(f'当前标签{label}为空，图片拷贝到背景文件夹')
-                        shutil.copy(image, background)
-                        self.label_files_set.remove(label)
+                        empty_files.append(imagePath)
                         continue
-                    writetoLabelme(
+                    from utils import generate_labelme_file
+
+                    generate_labelme_file(
                         annotations,
+                        LABELME_VERSION,
+                        imagePath.name,
                         image_height,
                         image_width,
-                        os.path.basename(image),
-                        str(target),
+                        self.output / (file.stem + ".json"),
                     )
-                    shutil.copy(image, target)
-                    # 该标签已被处理 从集合中排除
-                    self.label_files_set.remove(label)
+                    shutil.copy(imagePath, self.output / imagePath.name)
                 else:
-                    # LOGGER.warning(f'当前图像无标签，拷贝到背景文件夹')
-                    shutil.copy(image, background)
-            if self.label_files_set:
-                LOGGER.warning(f"剩余{len(self.label_files_set)}标签未处理")
-                for l in self.label_files_set:
-                    LOGGER.warning(f"{l}未找到对应的图片，请检查")
-            LOGGER.info(f"转换完毕，目标文件夹：{str(target)}")
+                    LOGGER.warning(f"当前标签{file.name}无图片")
+            if self.imageFiles or empty_files:
+                background_total = len(self.imageFiles) + len(empty_files)
+                LOGGER.info(
+                    f"开始处理背景图片，共{background_total}张，复制到{self.output / 'background'}"
+                )
+                backgroundFolder_img = self.output / "background" / "images"
+                backgroundFolder_img.mkdir(parents=True, exist_ok=True)
+                background_imgFiles = self.imageFiles + empty_files
+                for id, imageFile in enumerate(background_imgFiles):
+                    if not callback("背景图片转换中", (id + 1) / background_total):
+                        return False
+                    shutil.copy(imageFile, backgroundFolder_img / imageFile.name)
+            return True
         except Exception as ex:
             LOGGER.error(f"标签转换失败：{str(ex)}")
+            return False
 
 
 # region 目标检测结果转换为Labelme Json
 class Yolo2JsonConverter(JsonBaseConverter):
     def __init__(self, config: ConvertConfig):
         super().__init__(config)
-        self.mode = MODE.DET
+        self.mode = MODE.DETECT
 
     def process(self, path, imagePath):
         annotations = []
@@ -140,7 +160,6 @@ class Yolo2JsonConverter(JsonBaseConverter):
 class YoloPose2JsonConverter(JsonBaseConverter):
     def __init__(self, config: ConvertConfig):
         super().__init__(config)
-        self.kpt = config.kpt
         self.mode = MODE.POSE
 
     def process(self, path, imagePath):
@@ -196,15 +215,14 @@ class YoloPose2JsonConverter(JsonBaseConverter):
                     points = [[x, y]]
                     if x == y == 0 or x == image_width or y == image_height:
                         continue
-                    if kpt_name.lower() not in self.ignore:
-                        annotations.append(
-                            {
-                                "class": kpt_name,
-                                "points": points,
-                                "shape_type": "point",
-                                "description": vis,
-                            }
-                        )
+                    annotations.append(
+                        {
+                            "class": kpt_name,
+                            "points": points,
+                            "shape_type": "point",
+                            "description": vis,
+                        }
+                    )
         return annotations, image_height, image_width
 
 

@@ -173,7 +173,7 @@ class Ui_MainWindow(object):
         self.buttonGroup.addButton(self.jsonBtn)
         self.horizontalLayout_4.addWidget(self.jsonBtn)
         self.txtBtn = QtWidgets.QRadioButton(self.convertPage)
-        self.txtBtn.setEnabled(False)
+        self.txtBtn.setEnabled(True)
         sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
