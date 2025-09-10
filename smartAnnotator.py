@@ -19,6 +19,7 @@ from utils import (
     showMessageBox,
     checkAnnotationFiles,
     getImageFilesInDir,
+    resource_path,
     CustomItemWidget,
 )
 
@@ -87,14 +88,26 @@ class MainWindow(QMainWindow):
         初始化UI
         """
         # 加载并设置图片以及logo
-        pixmap = QPixmap("resources/images/welcome.png")
-        scaled_pixmap = pixmap.scaled(
-            self.mainWindow.welcomeImageLabel.size(),  # 适应QLabel的大小
-            Qt.KeepAspectRatio,  # 保持宽高比
-            Qt.SmoothTransformation,  # 平滑缩放（抗锯齿）
-        )
-        self.mainWindow.welcomeImageLabel.setPixmap(scaled_pixmap)
-        self.setWindowIcon(QIcon("resources/images/welcome.ico"))
+        pixmap = QPixmap(resource_path(r"resources/images/welcome.png"))
+        if pixmap.isNull():
+            LOGGER.warning(
+                f"加载资源图片失败: {resource_path('resources/images/welcome.png')}"
+            )
+        else:
+            scaled_pixmap = pixmap.scaled(
+                self.mainWindow.welcomeImageLabel.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.mainWindow.welcomeImageLabel.setPixmap(scaled_pixmap)
+
+        app_icon = QIcon(resource_path("resources/images/welcome.ico"))
+        if app_icon.isNull():
+            LOGGER.warning(
+                f"加载资源图片失败: {resource_path('resources/images/welcome.ico')}"
+            )
+        else:
+            self.setWindowIcon(app_icon)
         # 加载模式类型
         for mode in MODE:
             self.mainWindow.taskComBox.addItem(mode.name, mode.value)

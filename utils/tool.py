@@ -2,6 +2,8 @@ from pathlib import Path
 import shutil
 import yaml
 import json
+import os
+import sys
 
 
 # region 标注检查
@@ -401,3 +403,21 @@ def generate_labelme_file(
 
 
 # endregion 生成labelme格式文件
+
+
+def resource_path(relative_path):
+    """获取打包后资源的绝对路径。
+    参数:
+        relative_path (str): 资源相对于项目根目录的路径，或直接在资源目录下的文件名。
+    返回:
+        str: 资源的绝对路径。
+    """
+    try:
+        # 当程序被打包后，sys._MEIPASS 属性会被定义，指向临时解压目录
+        base_path = sys._MEIPASS
+    except AttributeError:
+        # 如果没有定义（即在开发模式下），则使用当前文件的目录作为基础路径
+        base_path = os.path.abspath(".")
+    # 将基础路径与相对路径结合，创建完整的路径
+    full_path = os.path.join(base_path, relative_path)
+    return full_path

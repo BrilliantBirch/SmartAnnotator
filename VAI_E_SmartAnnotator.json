@@ -63,7 +63,7 @@
   },
   {
    "optionDest": "datas",
-   "value": "E:/VAI_E/VAI_E_SmartAnnotator/resources;resources/"
+   "value": "E:\\VAI_E/VAI_E_SmartAnnotator\\resources;resources"
   },
   {
    "optionDest": "collect_submodules",
@@ -84,14 +84,6 @@
   {
    "optionDest": "hiddenimports",
    "value": "pywintypes"
-  },
-  {
-   "optionDest": "datas",
-   "value": "E:/VAI_E/VAI_E_SmartAnnotator/resources/images;resources/images/"
-  },
-  {
-   "optionDest": "datas",
-   "value": "E:/VAI_E/VAI_E_SmartAnnotator/resources/images/welcome.png;."
   }
  ],
  "nonPyinstallerOptions": {

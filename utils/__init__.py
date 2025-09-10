@@ -25,7 +25,13 @@ MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Wi
 
 from .qt import chooseDir, chooseFile, showMessageBox, CustomItemWidget
 from .files import checkAnnotationFiles, getImageFilesInDir
-from .tool import is_point_in_box, is_rect_inside, export, generate_labelme_file
+from .tool import (
+    is_point_in_box,
+    is_rect_inside,
+    export,
+    generate_labelme_file,
+    resource_path,
+)
 
 
 class QTextBrowserLogger(QObject, logging.Handler):
