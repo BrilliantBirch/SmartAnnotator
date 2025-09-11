@@ -193,8 +193,8 @@ class TxtConverter:
 
 # region ToYOLOPose
 class YoloPoseConverter(TxtConverter):
-    def __init__(self, config: ConvertConfig, **kwargs):
-        super().__init__(config, **kwargs)
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
         self.mode = MODE.POSE
         # 获取要补充框的点
         kpt_withoutBBox = []
@@ -585,8 +585,8 @@ class YoloPoseConverter(TxtConverter):
 
 # region ToYOLO
 class YoloConverter(TxtConverter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
         self.mode = MODE.DETECT
 
     def process(self, path):
@@ -669,8 +669,8 @@ class YoloConverter(TxtConverter):
 
 
 class YoloSegConverter(TxtConverter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
         self.mode = MODE.SEGMENT
 
     def process(self, path):
