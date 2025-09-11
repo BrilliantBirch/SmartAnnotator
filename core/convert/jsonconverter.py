@@ -156,6 +156,52 @@ class Yolo2JsonConverter(JsonBaseConverter):
 # endreigon
 
 
+# region 分割结果转换为Labelme Json
+class YoloSeg2JsonConverter(JsonBaseConverter):
+    def __init__(self, config: ConvertConfig):
+        super().__init__(config)
+        self.mode = MODE.SEGMENT
+
+    def process(self, path, imagePath):
+        annotations = []
+        image_data = np.fromfile(imagePath, dtype=np.uint8)
+        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+        image_height, image_width = image.shape[:2]
+        with open(path, "r", encoding="utf-8") as l:
+            lineNo = 0
+            for line in l:
+                lineNo += 1
+                parts = line.strip().split()
+                if len(parts) <= 7 and len(parts) % 2 != 0:
+                    LOGGER.warning(
+                        f"{path}标注文本格式第{lineNo}行有误，{line},分割模型至少有三个关键点"
+                    )
+                    continue
+                class_id = int(parts[0])
+                points = parts[1:]
+                # 将点两两配对
+                points = [
+                    [
+                        float(points[i]) * image_width,
+                        float(points[i + 1]) * image_height,
+                    ]
+                    for i in range(0, len(points), 2)
+                ]
+
+                annotations.append(
+                    {
+                        "class": self.class_mapping[class_id],
+                        "points": points,
+                        "shape_type": "polygon",
+                        "description": "",
+                    }
+                )
+        return annotations, image_height, image_width
+
+
+# endregion  分割结果转换为Labelme Json
+
+
 # region 姿态检测结果转换为Labelme Json
 class YoloPose2JsonConverter(JsonBaseConverter):
     def __init__(self, config: ConvertConfig):

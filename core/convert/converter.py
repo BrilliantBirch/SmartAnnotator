@@ -15,7 +15,11 @@ from .txtconverter import (
     YoloSegConverter,
 )
 
-from .jsonconverter import Yolo2JsonConverter, YoloPose2JsonConverter
+from .jsonconverter import (
+    Yolo2JsonConverter,
+    YoloPose2JsonConverter,
+    YoloSeg2JsonConverter,
+)
 
 
 # region 通用转换器
@@ -49,6 +53,8 @@ class Converter:
                 self.converter = Yolo2JsonConverter(config.convertConfig)
             elif self.mode == MODE.POSE:
                 self.converter = YoloPose2JsonConverter(config.convertConfig)
+            elif self.mode == MODE.SEGMENT:
+                self.converter = YoloSeg2JsonConverter(config.convertConfig)
             else:
                 raise ValueError(
                     f"当源类型为{self.sourceFormat}转换类型不支持{self.mode}"
