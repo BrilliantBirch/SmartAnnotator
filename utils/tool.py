@@ -332,7 +332,7 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
         # 获取关键点
         kpts = parts[5:]
         point_idx = 1
-        for i in range(0, kpt_nums, 3):
+        for i in range(0, kpt_nums * 3, 3):
             x, y, vis = kpts[i : i + 3]
             if int(vis) != 2:
                 continue
