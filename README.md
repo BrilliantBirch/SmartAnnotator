@@ -1,20 +1,99 @@
-#简介
-TODO: 简要介绍你的项目。通过此节说明此项目的目标或动机。
+# VAI_E_SmartAnnotator  
 
-#入门
-TODO: 指导用户在自己的系统上设置和运行代码。在本节中，可讨论:
-1.	安装过程
-2.	软件依赖项
-3.	最新发布
-4.	API 参考
+## 1.软件概述​
+本工具是一个基于 Qt 框架开发的智能标注软件。
+本工具旨在简化数据集处理流程，提供自动标注、格式转换等核心功能，同时支持后续功能扩展，适用于计算机视觉领域（如目标检测、姿态估计、图像分割、光学字符识别）的数据集制备场景。​ 
+![weclome](assets\examples\welcome.jpg)
 
-#生成与测试
-TODO: 说明并展示如何生成代码和运行测试。
+## 2.核心功能说明​
+### 2.1 自动标注功能​
+#### 2.1.1 支持范围​
 
-#参与
-TODO: 说明其他用户和开发人员可如何帮助改善代码。
+* 模型类型：兼容 Ultralytics YOLOv8 及以上版本的检测（detect）、姿态估计（pose）、分割（seg）任务预标注模型​
+* 模型格式：支持导入 onnx、engine 等格式的预训练模型​
+* 推理硬件：支持 CPU 推理，同时兼容英伟达（NVIDIA）显卡的 GPU 推理​
 
-如需深入了解如何创建优秀的自述文件，请参阅以下[指南](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops)。还可从以下自述文件中寻求灵感:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+#### 2.1.2 操作流程​
+1. 导入预标注模型（onnx/engine 格式）​
+2. 指定待标注图片的存储路径​
+3. 选择推理硬件（CPU/GPU）​
+4. 启动自动标注任务​
+5. 标注结果会在 用户指定目录 生成 LabelMe 格式的数据集（含 json 标注文件与对应图片）​   
+![annotation](assets\examples\annotation.jpg)    
+
+#### 2.1.3 结果用途​  
+
+生成的 LabelMe 格式数据集可直接供标注人员进行人工审核、微调修改，减少手动标注工作量。​
+
+### 2.2 数据集格式互相转换功能​
+#### 2.2.1 支持格式​
+* 正向转换：YOLO txt 格式数据集 → LabelMe json 格式数据集​
+* 反向转换：LabelMe json 格式数据集 → YOLO txt 格式数据集​
+    
+#### 2.2.2 标注文件审核功能​  
+转换过程中自动触发审核机制，包括但不限于：​  
+* 格式审核：检查标注文件（txt/json）的语法规范性、字段完整性（如 YOLO txt 的 “类别 ID x y w h” 格式、LabelMe json 的 “shapes” 字段）​  
+* 关键点位置审核：针对姿态估计（pose）类标注，检查关键点坐标是否在BBOx  内（0~1 归一化后），避免超出边界的无效标注​  
+* 类别名称审核：检查标注框类别名称是否与预定义类别列表匹配，避免使用不存在的类别​  
+* 标注框位置审核：检查标注框位置是否正确，避免标注框超出图片边界​  
+* 标注框大小审核：检查标注框大小是否合理，避免标注框过小或过大​  
+
+#### 2.2.3 操作流程​
+1. 导入待转换的数据集（YOLO txt 或 LabelMe json 格式）  
+* yolo数据集目录结构如下：
+```
+├── data
+│   ├── images
+│   │   ├── xx.jpg
+│   │   ├── yy.jpg
+│   ├── labels
+│   │   ├── xx.txt
+│   │   ├── yy.txt
+```  
+* labelme数据集目录结构如下：
+```
+├── data
+│   ├── xx.jpg
+│   ├── xx.json
+│   ├── yy.jpg
+│   ├── yy.json
+```  
+
+2. 选择源格式（YOLO txt  或 LabelMe json ）​
+3. 配置转换参数（如类别名称列表、图片存储路径等）​
+4. 启动转换任务​
+5. 转换完成后，查看转换结果（标注文件、图片）  
+   ​  
+![convert](assets\examples\convert.png)
+![convert1](assets\examples\convert1.png)
+
+#### 2.2.4 输出结果​
+转换完成后，自动生成 符合 YOLO 训练标准的数据集目录结构，同时生成 dataset.yaml 文件（包含数据集路径、类别名称、类别数量等训练必要配置），可直接用于 YOLO 模型训练。​  
+
+### 2.3 待开发功能​
+​
+
+#### 2.3.1 LabelMe json 批修改​
+支持对 LabelMe 格式的 json 标注文件进行批量编辑（如批量修改类别名称、调整标注框位置等）​
+待开发​
+#### 2.3.2 视频文件导出图片数据集​
+支持从视频文件中提取图片生成数据集，含多进程加速导出、稀疏导出（按指定间隔提取帧）功能​
+待开发​
+​
+## 3.使用前准备​  
+
+### 3.1 硬件要求：​  
+* CPU：无特殊要求（满足基础计算即可）​
+* GPU（可选）：英伟达（NVIDIA）显卡（需提前安装对应版本的 CUDA、cuDNN）​ 
+
+## 常见问题（FAQ）​
+
+**Q：GPU 推理失败怎么办？**   
+A： 
+   1. 检查 CUDA、cuDNN 版本是否与要求匹配；  
+   2. 确认 onnx模型是由 ultralytics 导出的，metadata完整；   
+
+**Q：转换后标注文件缺失如何排查？​**  
+A： 
+1. 检查原始数据集路径是否正确（无中文 / 特殊字符）；  
+2. 查看审核日志，确认是否因格式错误被过滤；3. 确认目标存储目录有写入权限。
