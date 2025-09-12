@@ -142,8 +142,9 @@ class DetectionPredictor(BasePredictor):
         if self.model.metadata:
             self.batch = int(ast.literal_eval(self.model.metadata.get("batch")))
             self.imgSize = tuple(ast.literal_eval(self.model.metadata.get("imgsz")))
-            args = ast.literal_eval(self.model.metadata.get("args", None))
-            self.fp16 = args.get("half", False)
+            # args = ast.literal_eval(self.model.metadata.get("args", None))
+            # self.fp16 = args.get("half", False)
+            self.fp16 = self.model.metadata.get("fp16", False)
             class_mapping = self.model.metadata.get("names")
             if isinstance(class_mapping, str):
                 class_mapping = ast.literal_eval(class_mapping)

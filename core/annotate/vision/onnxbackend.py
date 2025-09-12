@@ -26,8 +26,14 @@ class ONNXInfer:
         )
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        self.output_name = [x.name for x in self.session.get_outputs()]
+        # ====== 新增：获取输入数据类型 ======
+        input_tensor = self.session.get_inputs()[0]
+        input_type = input_tensor.type  # 获取ONNX类型字符串，如"tensor(float16)"
         self.metadata = self.session.get_modelmeta().custom_metadata_map
+        self.metadata["fp16"] = (
+            "float16" in input_type.lower() or "half" in input_type.lower()
+        )
+        self.output_name = [x.name for x in self.session.get_outputs()]
         self.imgsz = self.metadata.get("imgsz", "[640,640]")
         self.imgsz = tuple(eval(self.imgsz))
 

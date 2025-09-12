@@ -106,7 +106,7 @@ class Annotator:
             for pred in predections:
                 bboxes = pred["bboxs"]
                 labels = pred["labels"]
-                boundary_points = pred["boundary_points"]
+                boundary_points = pred.get("boundary_points")
                 if self.mode == MODE.POSE:
                     kpt = pred["keypoints"]
                     for det in zip(bboxes, labels, kpt):
