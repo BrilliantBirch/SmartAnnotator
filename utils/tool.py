@@ -229,6 +229,8 @@ def yolo_to_labelme(lines, img_width, img_height, classMapping, type, *args):
         return detect_to_labelme(lines, img_width, img_height, classMapping)
     elif type == 1:
         return pose_to_labelme(lines, img_width, img_height, classMapping, *args)
+    elif type == 2:
+        return segment_to_labelme(lines, img_width, img_height, classMapping)
     else:
         raise ValueError(f"标注类型:{type}暂不支持")
 
@@ -353,6 +355,50 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
                 }
             )
             point_idx += 1
+    return annotations
+
+
+def segment_to_labelme(lines, img_width, img_height, classMapping):
+    """
+    将分割检测结果转换为Labelme格式的标签
+
+    Args:
+        line: 分割检测结果，格式为：class_id x_center y_center width height
+        img_width: 图像宽度
+        img_height: 图像高度
+        classMapping: 类别映射
+
+    Returns:
+        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
+    """
+    annotations = []
+    lineNo = 0
+    for line in lines:
+        lineNo += 1
+        parts = line.strip().split()
+        if len(parts) <= 7:
+            raise ValueError(f"标注文本格式第{lineNo}行有误，多边形至少需要3个点{line}")
+        # 获取框
+        class_id = int(parts[0])
+
+        # 获取关键点
+        polygons = parts[1:]
+        points = []
+        for i in range(0, len(polygons), 2):
+            x, y = polygons[i : i + 2]
+            x = float(x) * img_width
+            y = float(y) * img_height
+            points.append([x, y])
+            if x == y == 0 or x == img_width or y == img_height:
+                continue
+        annotations.append(
+            {
+                "class": classMapping[class_id].lower(),
+                "points": points,
+                "shape_type": "polygon",
+                "description": "",
+            }
+        )
     return annotations
 
 

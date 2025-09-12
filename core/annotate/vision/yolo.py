@@ -205,7 +205,7 @@ class DetectionPredictor(BasePredictor):
 
 
 # region 分割检测
-class SegDetectionPredictor(DetectionPredictor):
+class SegmentationPredictor(DetectionPredictor):
     def __init__(self, config: AnnotateConfig):
         super().__init__(config)
 

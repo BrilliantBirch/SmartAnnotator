@@ -12,7 +12,7 @@ import numpy as np
 import shutil
 from pathlib import Path
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
-from .vision import DetectionPredictor, PoseDetectionPredictor
+from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
 
 
 class Annotator:
@@ -29,7 +29,10 @@ class Annotator:
             self.model = DetectionPredictor(self.config)
         elif self.mode == MODE.POSE:
             self.model = PoseDetectionPredictor(self.config)
+        elif self.mode == MODE.SEGMENT:
+            self.model = SegmentationPredictor(self.config)
         else:
+
             LOGGER.warning(f"任务类型:{self.mode.name}暂不支持")
             raise ValueError(f"任务类型:{self.mode.name}暂不支持")
 
@@ -61,6 +64,10 @@ class Annotator:
                 lines, h, w = self._label(image_path)
                 from utils.tool import yolo_to_labelme, generate_labelme_file
 
+                if self.mode == MODE.POSE:
+                    kpt_shape = self.model.kpt_shape[0]
+                else:
+                    kpt_shape = None
                 # 转换为labelme格式
                 annotations = yolo_to_labelme(
                     lines,
@@ -68,7 +75,7 @@ class Annotator:
                     h,
                     self.model.class_mapping,
                     self.mode.value,
-                    self.model.kpt_shape[0],
+                    kpt_shape,
                 )
                 # 生成labelme格式文件
                 generate_labelme_file(
@@ -99,6 +106,7 @@ class Annotator:
             for pred in predections:
                 bboxes = pred["bboxs"]
                 labels = pred["labels"]
+                boundary_points = pred["boundary_points"]
                 if self.mode == MODE.POSE:
                     kpt = pred["keypoints"]
                     for det in zip(bboxes, labels, kpt):
@@ -122,4 +130,8 @@ class Annotator:
                         x, y, w, h = bbox
                         cls = label
                         lines.append(f"{cls} {x} {y} {w} {h}\n")
+                elif self.mode == MODE.SEGMENT:
+                    for classid, points in zip(labels, boundary_points):
+                        line = f"{classid} {' '.join(map(str, points))}"
+                        lines.append(line)
         return lines, img_h, img_w

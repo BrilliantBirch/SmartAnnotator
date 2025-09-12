@@ -1,1 +1,1 @@
-from .yolo import DetectionPredictor, PoseDetectionPredictor
+from .yolo import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
