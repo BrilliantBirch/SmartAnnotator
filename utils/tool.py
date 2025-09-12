@@ -167,6 +167,7 @@ def create_yaml(data_dir: Path, classMapping, kpt):
         class_dict: 类别名称到索引的映射
         split_ratios: 训练集、验证集、测试集的比例
     """
+    classMapping = {v: k for k, v in classMapping.items()}
     if kpt:
         yaml_content = {
             "path": data_dir.absolute().as_posix(),  # dataset root dir

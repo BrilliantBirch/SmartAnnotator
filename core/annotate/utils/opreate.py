@@ -135,3 +135,83 @@ def clip_coords(coords, shape):
     coords[..., 0] = coords[..., 0].clip(0, shape[1])  # x
     coords[..., 1] = coords[..., 1].clip(0, shape[0])  # y
     return coords
+
+
+def process_mask(protos, masks_in, bboxes, shape, upsample=False):
+    """_summary_
+
+    Args:
+        protos (_type_): _description_
+        masks_in (_type_): _description_
+        bboxes (_type_): _description_
+        shape (_type_): _description_
+        upsample (bool, optional): _description_. Defaults to False.
+
+    Returns:
+        _type_: _description_
+    """
+    c, mh, mw = protos.shape  # CHW
+    ih, iw = shape
+    masks = (masks_in @ protos.astype(np.float32).reshape(c, -1)).reshape(
+        -1, mh, mw
+    )  # CHW
+
+    width_ratio = mw / iw
+    height_ratio = mh / ih
+
+    downsampled_bboxes = bboxes.copy()
+    downsampled_bboxes[:, 0] *= width_ratio
+    downsampled_bboxes[:, 2] *= width_ratio
+    downsampled_bboxes[:, 3] *= height_ratio
+    downsampled_bboxes[:, 1] *= height_ratio
+
+    masks = crop_mask(masks, downsampled_bboxes)  # CHW
+    if upsample:
+        masks = cv2.resize(
+            masks.transpose(1, 2, 0), (iw, ih), interpolation=cv2.INTER_LINEAR
+        )  # CHW
+        # masks = F.interpolate(masks[None], shape, mode="bilinear", align_corners=False)[0]  # CHW
+    return masks > 0.0
+
+
+def crop_mask(masks, boxes):
+    """
+    Apply boxes to masks, returning cropped masks
+    """
+    _, h, w = masks.shape
+    x1, y1, x2, y2 = np.split(boxes[:, :, None], 4, 1)  # x1 shape(n,1,1)
+    r = np.arange(w, dtype=x1.dtype)[None, None, :]  # rows shape(1,1,w)
+    c = np.arange(h, dtype=x1.dtype)[None, :, None]  # cols shape(1,h,1)
+
+    return masks * ((r >= x1) * (r < x2) * (c >= y1) * (c < y2))
+
+
+def scale_image(im1_shape, masks, im0_shape, ratio_pad=None):
+    """
+    Rescale masks from im1_shape to im0_shape
+    """
+    if ratio_pad is None:
+        gain = min(im1_shape[0] / im0_shape[0], im1_shape[1] / im0_shape[1])
+        pad = (im1_shape[1] - im0_shape[1] * gain) / 2, (
+            im1_shape[0] - im0_shape[0] * gain
+        ) / 2
+    else:
+        pad = ratio_pad[1]
+    top, left = int(pad[1]), int(pad[0])  # y, x
+    bottom, right = int(im1_shape[0] - pad[1]), int(im1_shape[1] - pad[0])
+
+    if len(masks.shape) < 2:
+        raise ValueError(
+            f'"len of masks shape" should be 2 or 3, but got {len(masks.shape)}'
+        )
+    masks = masks[top:bottom, left:right]
+    masks = cv2.resize(
+        masks.astype(np.uint8),
+        (im0_shape[1], im0_shape[0]),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+    if len(masks.shape) == 2:
+        masks = masks[:, :, None]
+    masks = np.transpose(masks, (2, 0, 1))
+    return masks
