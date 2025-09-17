@@ -88,18 +88,22 @@ def scale_boxes(
     return clip_boxes(boxes, img0_shape)
 
 
-def clip_boxes(boxes: np.ndarray, shape: Tuple[int]):
+def clip_boxes(boxes: np.ndarray, shape: Tuple[int], normalize=False):
     """
         检测框原图坐标裁剪，还原后的检测框大小不应超出原图并且归一化
     Args:
         boxes (np.ndarray): _de检测框scription_
         shape (tuple[int]): 原图形状
+        normalize (bool, optional): 是否归一化. Defaults to False.
 
     Returns:
         np.ndarray: 还原后的检测框
     """
-    boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1]) / shape[1]  # x1, x2
-    boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0]) / shape[0]  # y1, y2
+    boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1])  # x1, x2
+    boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
+    if normalize:
+        boxes[..., [0, 2]] /= shape[1]  # width
+        boxes[..., [1, 3]] /= shape[0]  # height
     return boxes
 
 

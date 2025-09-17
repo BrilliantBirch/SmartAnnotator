@@ -138,3 +138,6 @@ dmypy.json
 cython_debug/
 Logs/*
 output/*
+*.engine
+*.onnx
+video/*

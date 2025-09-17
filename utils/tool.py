@@ -255,23 +255,15 @@ def detect_to_labelme(lines, img_width, img_height, classMapping):
         parts = line.strip().split()
         if len(parts) != 5:
             raise ValueError(f"标注文本格式第{lineNo}行有误，{line}")
-        class_id = int(parts[0])
-        x_center = float(parts[1])
-        y_center = float(parts[2])
-        width = float(parts[3])
-        height = float(parts[4])
-        # 计算点坐标 (左上角和右下角)
-        x_center *= img_width  # 假设图像宽度是 1.0 的归一化值
-        y_center *= img_height  # 假设图像高度是 1.0 的归一化值
-        width *= img_width
-        height *= img_height
-        x_min = x_center - width / 2
-        x_max = x_center + width / 2
-        y_min = y_center - height / 2
-        y_max = y_center + height / 2
+        class_id = int(float(parts[0]))  # 先转float再转int
+        x1 = int(float(parts[1]))
+        y1 = int(float(parts[2]))
+        x2 = int(float(parts[3]))
+        y2 = int(float(parts[4]))
+
         points = [
-            [x_min, y_min],
-            [x_max, y_max],
+            [x1, y1],
+            [x2, y2],
         ]
         annotations.append(
             {
@@ -306,23 +298,15 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
         if len(parts) != 5 + (kpt_nums * 3):
             continue
         # 获取框
-        class_id = int(parts[0])
-        x_center = float(parts[1])
-        y_center = float(parts[2])
-        width = float(parts[3])
-        height = float(parts[4])
-        # 计算点坐标 (左上角和右下角)
-        x_center *= img_width  # 假设图像宽度是 1.0 的归一化值
-        y_center *= img_height  # 假设图像高度是 1.0 的归一化值
-        width *= img_width
-        height *= img_height
-        x_min = x_center - width / 2
-        x_max = x_center + width / 2
-        y_min = y_center - height / 2
-        y_max = y_center + height / 2
+        class_id = int(float(parts[0]))  # 先转float再转int
+        x1 = int(float(parts[1]))
+        y1 = int(float(parts[2]))
+        x2 = int(float(parts[3]))
+        y2 = int(float(parts[4]))
+
         points = [
-            [x_min, y_min],
-            [x_max, y_max],
+            [x1, y1],
+            [x2, y2],
         ]
         annotations.append(
             {
@@ -341,8 +325,8 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
                 continue
             else:
                 kpt_name = classMapping[class_id].lower() + f"_point{point_idx}"
-            x = float(x) * img_width
-            y = float(y) * img_height
+            x = float(x)
+            y = float(y)
             points = [[x, y]]
             if x == y == 0 or x == img_width or y == img_height:
                 continue

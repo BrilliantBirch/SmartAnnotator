@@ -188,6 +188,7 @@ class DetectionPredictor(BasePredictor):
                 cv_box, confidence, j, self.conf, self.iou
             )
             cv_box, confidence, j = cv_box[nms_idx], confidence[nms_idx], j[nms_idx]
+            # xyxy
             cv_box[:, 2:] += cv_box[:, :2]
             cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i]).round()
             predict_results.append({"bboxs": cv_box, "scores": confidence, "labels": j})
@@ -255,6 +256,7 @@ class SegmentationPredictor(DetectionPredictor):
                 j[nms_idx],
                 mask_conf[nms_idx],
             )
+            # xyxy
             cv_box[:, 2:] += cv_box[:, :2]
 
             masks = process_mask(
@@ -360,18 +362,18 @@ class PoseDetectionPredictor(DetectionPredictor):
             )
             cv_box = np.concatenate([cxcy - 0.5 * wh, wh], -1)
             nms_idx = cv2.dnn.NMSBoxesBatched(cv_box, conf, j, self.conf, self.iou)
-            cxcy, wh, conf, j, kpt = (
-                cxcy[nms_idx],
-                wh[nms_idx],
+            cv_box, conf, j, kpt = (
+                cv_box[nms_idx],
                 conf[nms_idx],
                 j[nms_idx],
                 kpt[nms_idx],
             )
-            cv_box = np.concatenate([cxcy, wh], -1)
-            cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i], xywh=True)
+            # xyxy
+            cv_box[:, 2:] += cv_box[:, :2]
+            cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i])
             # 关键点还原
             kpt = kpt.reshape(len(kpt), *self.kpt_shape)
-            kpt = scale_coords(pred_shape, kpt, orig_shapes[i], normalize=True)
+            kpt = scale_coords(pred_shape, kpt, orig_shapes[i])
 
             predict_results.append(
                 {"bboxs": cv_box, "scores": conf, "labels": j, "keypoints": kpt}
