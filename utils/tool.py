@@ -452,3 +452,30 @@ def resource_path(relative_path):
     # 将基础路径与相对路径结合，创建完整的路径
     full_path = os.path.join(base_path, relative_path)
     return full_path
+
+
+# region 图片处理
+from PIL import Image
+
+
+def rotate_90_image(imagePath: str, clockwise=True):
+    """
+    旋转图像
+    Args:
+        image: 图像
+        angle: 旋转角度
+    Returns:
+        旋转后的图像
+    """
+    img = Image.open(imagePath)
+    # 2. 旋转90°（用transpose实现，自动交换宽高）
+    if clockwise:
+        # 顺时针旋转90°（等价于transpose(Image.ROTATE_270)）
+        rotated_img = img.transpose(Image.ROTATE_270)
+    else:
+        # 逆时针旋转90°（transpose(Image.ROTATE_90)）
+        rotated_img = img.transpose(Image.ROTATE_90)
+    return rotated_img
+
+
+# endregion 图片处理
