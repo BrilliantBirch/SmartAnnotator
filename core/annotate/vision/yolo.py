@@ -98,6 +98,7 @@ class DetectionPredictor(BasePredictor):
                 return False
 
         elif self.device == DEVICE.GPU:
+            from .tensorrtbackend import TensorRTInfer
             if get_gpu_info() == -1:
                 LOGGER.warning("找不到显卡信息,请检查是否安装了显卡驱动")
                 return False
@@ -107,8 +108,6 @@ class DetectionPredictor(BasePredictor):
                 engine_path = self.model_path.with_suffix(".engine")
                 if engine_path.exists():
                     try:
-                        from .tensorrtbackend import TensorRTInfer
-
                         self.model = TensorRTInfer(engine_path)
                         self.model_path = engine_path
                     except Exception as ex:

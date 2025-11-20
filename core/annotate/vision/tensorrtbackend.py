@@ -180,7 +180,8 @@ class TensorRTInfer:
         memcpy_async_host_to_device(self.inputs[0]["allocation"], img, self.stream)
 
         # 异步执行推理
-        self.context.execute_async_v2(self.allocations, self.stream)
+        self.context.execute_v2(self.allocations)
+
 
         # 异步从 device 到 host 的内存拷贝，对于每个输出
         for o in self.outputs:
