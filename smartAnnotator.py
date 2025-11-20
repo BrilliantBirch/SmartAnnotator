@@ -152,7 +152,7 @@ class MainWindow(QMainWindow):
             lambda x: self.setAnnotateProcessValue(x)
         )
         self.annotator.task_finished.connect(lambda: self.handleAnnotateFinished())
-        self.annotator.error_occurred.connect(lambda msg: self.handleAnnotateError(msg))
+        self.annotator.error_occurred.connect(lambda: self.handleAnnotateError())
         self.annotator.progress_desc.connect(lambda x: self.setAnnotateProcessLabel(x))
 
     def initModifier(self):

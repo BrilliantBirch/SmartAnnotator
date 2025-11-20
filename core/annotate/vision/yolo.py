@@ -22,7 +22,6 @@ from ..utils import (
     scale_image,
 )
 from .onnxbackend import ONNXInfer
-from .tensorrtbackend import TensorRTInfer
 from cfg import LOGGER, AnnotateConfig, DEVICE
 
 
@@ -108,6 +107,8 @@ class DetectionPredictor(BasePredictor):
                 engine_path = self.model_path.with_suffix(".engine")
                 if engine_path.exists():
                     try:
+                        from .tensorrtbackend import TensorRTInfer
+
                         self.model = TensorRTInfer(engine_path)
                         self.model_path = engine_path
                     except Exception as ex:
