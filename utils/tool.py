@@ -290,10 +290,8 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
         dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
     """
     annotations = []
-    lineNo = 0
     kpt_nums = args[0]
-    for line in lines:
-        lineNo += 1
+    for group_id, line in enumerate(lines):
         parts = line.strip().split()
         if len(parts) != 5 + (kpt_nums * 3):
             continue
@@ -314,6 +312,7 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
                 "points": points,
                 "shape_type": "rectangle",
                 "description": "",
+                "group_id": group_id,
             }
         )
         # 获取关键点
@@ -336,6 +335,7 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
                     "points": points,
                     "shape_type": "point",
                     "description": vis,
+                    "group_id": group_id,
                 }
             )
             point_idx += 1
@@ -419,10 +419,11 @@ def generate_labelme_file(
         points = annotation["points"]
         shape_type = annotation["shape_type"]
         description = annotation["description"]
+        group_id = annotation.get("group_id", None)
         shape = {
             "label": label,
             "points": points,
-            "group_id": None,
+            "group_id": group_id,
             "description": description,
             "shape_type": shape_type,
             "flags": {},
