@@ -216,7 +216,7 @@ class YoloPose2JsonConverter(JsonBaseConverter):
         image_height, image_width = image.shape[:2]
         with open(path, "r", encoding="utf-8") as l:
             lineNo = 0
-            for line in l:
+            for idx, line in enumerate(l):
                 lineNo += 1
                 parts = line.strip().split()
                 if len(parts) != 5 + (kpt_nums * 3):
@@ -247,6 +247,7 @@ class YoloPose2JsonConverter(JsonBaseConverter):
                         "points": points,
                         "shape_type": "rectangle",
                         "description": "",
+                        "group_id": idx,
                     }
                 )
                 # 获取关键点
@@ -267,6 +268,7 @@ class YoloPose2JsonConverter(JsonBaseConverter):
                             "points": points,
                             "shape_type": "point",
                             "description": vis,
+                            "group_id": idx,
                         }
                     )
         return annotations, image_height, image_width

@@ -59,12 +59,12 @@ class MainWindow(QMainWindow):
         self.initConverter()
         # 初始化转换源
         if self.mainWindow.jsonBtn.isChecked():
-            self.sysConfig.convertConfig.setSourceFormat("JSON")
+            self.sysConfig.convertConfig.setSourceFormat("json")
         elif self.mainWindow.txtBtn.isChecked():
-            self.sysConfig.convertConfig.setSourceFormat("TXT")
+            self.sysConfig.convertConfig.setSourceFormat("txt")
         else:
             self.mainWindow.jsonBtn.setChecked(True)
-            self.sysConfig.convertConfig.setSourceFormat("JSON")
+            self.sysConfig.convertConfig.setSourceFormat("json")
         # 初始化标注
         self.mainWindow.annotateCancelBtn.hide()
         self.initAnnotator()
@@ -198,10 +198,10 @@ class MainWindow(QMainWindow):
             )
 
             self.mainWindow.jsonBtn.toggled.connect(
-                lambda: self.setConvertSourceFormat("json")
+                lambda checked: self.setConvertSourceFormat("json") if checked else None
             )
             self.mainWindow.txtBtn.toggled.connect(
-                lambda: self.setConvertSourceFormat("txt")
+                lambda checked: self.setConvertSourceFormat("txt") if checked else None
             )
 
             self.mainWindow.addLabelBtn.clicked.connect(lambda: self.addLabel())
