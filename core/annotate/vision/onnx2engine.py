@@ -21,16 +21,21 @@ class Onnx2Engine:
         import tensorrt as trt
 
         LOGGER.info(f"当前tensorrt版本{trt.__version__}")
+        is_trt10 = int(trt.__version__.split(".", 1)[0]) >= 10
         if not self.onnxfile.exists():
             raise FileNotFoundError(f"{self.onnxfile}模型文件不存在")
         engine_file = self.onnxfile.with_suffix(".engine")
+
         # trt推理引擎创建
         logger = trt.Logger(trt.Logger.INFO)
         builder = trt.Builder(logger)
         config = builder.create_builder_config()
         # 4GB工作空间
         workspace = int(4 * (1 << 30))
-        config.max_workspace_size = workspace
+        if is_trt10:
+            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace)
+        else:
+            config.max_workspace_size = workspace
         # 显示批次标记
         flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         network = builder.create_network(flag)
@@ -69,13 +74,25 @@ class Onnx2Engine:
             config.set_flag(trt.BuilderFlag.FP16)
 
         # 写入engine文件
-        build = builder.build_engine
-        with build(network, config) as engine, open(engine_file, "wb") as t:
-            if custom_metadata:
-                meta = json.dumps(custom_metadata)
-                t.write(len(meta).to_bytes(4, byteorder="little", signed=True))
-                t.write(meta.encode())
-            t.write(engine.serialize())
+        if is_trt10:
+            engine = builder.build_serialized_network(network, config)
+            if engine is None:
+                raise RuntimeError("构建tensorrt引擎失败")
+            with open(engine_file, "wb") as t:
+                if custom_metadata:
+                    meta = json.dumps(custom_metadata)
+                    t.write(len(meta).to_bytes(4, byteorder="little", signed=True))
+                    t.write(meta.encode())
+                t.write(engine)
+        else:
+            with builder.build_engine(network, config) as engine, open(
+                engine_file, "wb"
+            ) as t:
+                if custom_metadata:
+                    meta = json.dumps(custom_metadata)
+                    t.write(len(meta).to_bytes(4, byteorder="little", signed=True))
+                    t.write(meta.encode())
+                t.write(engine.serialize())
         LOGGER.info(f"模型转换完毕：{str(engine_file)}")
         return engine_file
         # gc.collect()

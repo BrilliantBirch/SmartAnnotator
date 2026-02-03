@@ -337,7 +337,7 @@ class YoloPoseConverter(TxtConverter):
 
                     # 匹配组内的关键点
                     for point_category in self.kpt:
-                        if not point_category.startswith(box_label):
+                        if not point_category.split("_point")[0] == box_label:
                             line.extend(["0", "0", "0"])
                             continue
                         # 只查找组内的点
@@ -512,7 +512,7 @@ class YoloPoseConverter(TxtConverter):
                             )
 
                             # 绘制关键点
-                            circle_radius = 2
+                            circle_radius = 1
                             draw.ellipse(
                                 xy=[
                                     kp_x - circle_radius,
@@ -549,7 +549,7 @@ class YoloPoseConverter(TxtConverter):
                     kp_y = int(point[1] * height)
 
                     # 绘制错误关键点（圆形，直径6，红色填充）
-                    circle_radius = 5
+                    circle_radius = 1
                     draw.ellipse(
                         xy=[
                             kp_x - circle_radius,
