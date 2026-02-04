@@ -2,7 +2,7 @@
 Description：工具类
 Author: Baibinnan
 Date: 2025/8/25
-LastEdit: 2025/8/25
+LastEdit: 2026/2/4
 E-mail: baibinnan@chuanfeng.com
 update：
 
@@ -19,7 +19,7 @@ import platform
 
 ROOT = os.getcwd()
 ASSET = os.path.join(ROOT, "Resources")
-LOGGING_NAME = "VAI_E_LabelTool"
+LOGGING_NAME = "VAI_E_SmartAnnotator"
 MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Windows"])
 
 

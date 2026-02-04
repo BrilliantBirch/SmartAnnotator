@@ -2,7 +2,7 @@
 Description：自动标注工具-支持多种模型的目标检测、姿态估计等
 Author:BaiBinnan
 Date:2025/06/9
-LastEdit:2025/6/11
+LastEdit:2026/2/4
 LastEditBy:BaiBinnan
 E-mail:baiBinnan@chuanfeng.com
 """
@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import shutil
 from pathlib import Path
+from typing import List
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
 from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
 
@@ -44,66 +45,79 @@ class Annotator:
         运行自动标注工具
         """
 
-        def image_generator(imgList):
-            for image in imgList:
-                yield Path(image)
+        def image_generator(imgList, batch=1):
+            if batch <= 0:
+                raise ValueError("批处理大小无效")
+            for i in range(0, len(imgList), batch):
+                batch_paths = [Path(img) for img in imgList[i : i + batch]]
+                yield batch_paths
 
         if isinstance(self.config, AnnotateConfig):
-            image_gen = image_generator(self.config.imgFiles)
+            image_gen = image_generator(self.config.imgFiles, self.model.batch)
         else:
             LOGGER.error("标注配置错误，无法解析图片")
             return False
         self.output = Path(self.config.outputDir)
         self.output.mkdir(parents=True, exist_ok=True)
         total = len(self.config.imgFiles)
-        for idx, image_path in enumerate(image_gen):
+        for idx, image_pathList in enumerate(image_gen):
             try:
-                if not callback("自动标注中", (idx + 1) / total):
+                if not callback("自动标注中", (idx + 1) * self.model.batch / total):
                     return False
                 # 标注
-                lines, h, w = self._label(image_path)
+                results = self._label(image_pathList)
                 from utils.tool import yolo_to_labelme, generate_labelme_file
 
                 if self.mode == MODE.POSE:
                     kpt_shape = self.model.kpt_shape[0]
                 else:
                     kpt_shape = None
-                # 转换为labelme格式
-                annotations = yolo_to_labelme(
-                    lines,
-                    w,
-                    h,
-                    self.model.class_mapping,
-                    self.mode.value,
-                    kpt_shape,
-                )
-                # 生成labelme格式文件
-                generate_labelme_file(
-                    annotations,
-                    LABELME_VERSION,
-                    image_path.name,
-                    h,
-                    w,
-                    self.output / f"{image_path.stem}.json",
-                )
-                if image_path != self.output / image_path.name:
-                    shutil.copy(image_path, self.output / image_path.name)
+                for image_path, lines, h, w in results:
+                    # 转换为labelme格式
+                    annotations = yolo_to_labelme(
+                        lines,
+                        w,
+                        h,
+                        self.model.class_mapping,
+                        self.mode.value,
+                        kpt_shape,
+                    )
+                    # 生成labelme格式文件
+                    generate_labelme_file(
+                        annotations,
+                        LABELME_VERSION,
+                        image_path.name,
+                        h,
+                        w,
+                        self.output / f"{image_path.stem}.json",
+                    )
+                    if image_path != self.output / image_path.name:
+                        shutil.copy(image_path, self.output / image_path.name)
             except Exception as e:
-                LOGGER.error(f"处理 {image_path} 时出错: {e}")
+                LOGGER.error(f"处理 {image_pathList} 时出错: {e}")
 
-    def _label(self, image_path: Path):
+    def _label(self, image_pathList: List[Path]):
         """
-        用于处理单个图像的标注。
+        用于处理图像列表的标注。
 
         image : 输入图像。
         """
-        image_data = np.fromfile(image_path, dtype=np.uint8)
-        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
-        img_h, img_w = image.shape[:2]
-        predections = self.model.predict([image])
-        lines = []
+        results = []
+        imgList = []
+        imgInfo = []
+
+        for image_path in image_pathList:
+            image_data = np.fromfile(image_path, dtype=np.uint8)
+            image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+            img_h, img_w = image.shape[:2]
+            imgList.append(image)
+            imgInfo.append([image_path, img_h, img_w])
+
+        predections = self.model.predict(imgList)
         if predections:
-            for pred in predections:
+            for idx, pred in enumerate(predections):
+                lines = []
+                image_path, img_h, img_w = imgInfo[idx]
                 bboxes = pred["bboxs"]
                 labels = pred["labels"]
                 boundary_points = pred.get("boundary_points")
@@ -134,4 +148,5 @@ class Annotator:
                     for classid, points in zip(labels, boundary_points):
                         line = f"{classid} {' '.join(map(str, points))}"
                         lines.append(line)
-        return lines, img_h, img_w
+                results.append([image_path, lines, img_h, img_w])
+        return results
