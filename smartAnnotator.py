@@ -635,7 +635,7 @@ class MainWindow(QMainWindow):
         dataModel = QtCore.QStringListModel()
         dataModel.setStringList(imgFiles)
         self.mainWindow.annoateImgListView.setModel(dataModel)
-        self.sysConfig.annotateConfig.imgFiles = imgFiles
+        self.sysConfig.annotateConfig.annotationFiles = imgFiles
         self.mainWindow.annotationImgNumLabel.setText(f"共有{len(imgFiles)}张图片")
         LOGGER.info(f"共有{len(imgFiles)}张图片")
 
@@ -674,7 +674,7 @@ class MainWindow(QMainWindow):
         if not self.sysConfig.annotateConfig.inputDir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择标注输入目录")
             return False
-        if not self.sysConfig.annotateConfig.imgFiles:
+        if not self.sysConfig.annotateConfig.annotationFiles:
             showMessageBox(QMessageBox.Icon.Warning, "源目录没有图像文件")
             return False
         if not self.sysConfig.annotateConfig.outputDir:

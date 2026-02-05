@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
 from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
+from utils.tool import yolo_to_labelme, generate_labelme_file
 
 
 class Annotator:
@@ -45,7 +46,7 @@ class Annotator:
         运行自动标注工具
         """
 
-        def image_generator(imgList, batch=1):
+        def annotation_generator(imgList, batch=1):
             if batch <= 0:
                 raise ValueError("批处理大小无效")
             for i in range(0, len(imgList), batch):
@@ -53,48 +54,24 @@ class Annotator:
                 yield batch_paths
 
         if isinstance(self.config, AnnotateConfig):
-            image_gen = image_generator(self.config.imgFiles, self.model.batch)
+            annotation_gen = annotation_generator(
+                self.config.annotationFiles, self.model.batch
+            )
         else:
             LOGGER.error("标注配置错误，无法解析图片")
             return False
         self.output = Path(self.config.outputDir)
         self.output.mkdir(parents=True, exist_ok=True)
-        total = len(self.config.imgFiles)
-        for idx, image_pathList in enumerate(image_gen):
+        total = len(self.config.annotationFiles)
+        for idx, annotation_pathList in enumerate(annotation_gen):
             try:
                 if not callback("自动标注中", (idx + 1) * self.model.batch / total):
                     return False
                 # 标注
-                results = self._label(image_pathList)
-                from utils.tool import yolo_to_labelme, generate_labelme_file
+                self._label(annotation_pathList)
 
-                if self.mode == MODE.POSE:
-                    kpt_shape = self.model.kpt_shape[0]
-                else:
-                    kpt_shape = None
-                for image_path, lines, h, w in results:
-                    # 转换为labelme格式
-                    annotations = yolo_to_labelme(
-                        lines,
-                        w,
-                        h,
-                        self.model.class_mapping,
-                        self.mode.value,
-                        kpt_shape,
-                    )
-                    # 生成labelme格式文件
-                    generate_labelme_file(
-                        annotations,
-                        LABELME_VERSION,
-                        image_path.name,
-                        h,
-                        w,
-                        self.output / f"{image_path.stem}.json",
-                    )
-                    if image_path != self.output / image_path.name:
-                        shutil.copy(image_path, self.output / image_path.name)
             except Exception as e:
-                LOGGER.error(f"处理 {image_pathList} 时出错: {e}")
+                LOGGER.error(f"处理 第{idx}批标注数据时出错: {e}")
 
     def _label(self, image_pathList: List[Path]):
         """
@@ -102,7 +79,6 @@ class Annotator:
 
         image : 输入图像。
         """
-        results = []
         imgList = []
         imgInfo = []
 
@@ -121,6 +97,7 @@ class Annotator:
                 bboxes = pred["bboxs"]
                 labels = pred["labels"]
                 boundary_points = pred.get("boundary_points")
+                kpt_shape = self.model.kpt_shape[0] if self.mode == MODE.POSE else None
                 if self.mode == MODE.POSE:
                     kpt = pred["keypoints"]
                     for det in zip(bboxes, labels, kpt):
@@ -148,5 +125,22 @@ class Annotator:
                     for classid, points in zip(labels, boundary_points):
                         line = f"{classid} {' '.join(map(str, points))}"
                         lines.append(line)
-                results.append([image_path, lines, img_h, img_w])
-        return results
+                annotations = yolo_to_labelme(
+                    lines,
+                    img_w,
+                    img_h,
+                    self.model.class_mapping,
+                    self.mode.value,
+                    kpt_shape,
+                )
+                # 生成labelme格式文件
+                generate_labelme_file(
+                    annotations,
+                    LABELME_VERSION,
+                    image_path.name,
+                    img_w,
+                    img_h,
+                    self.output / f"{image_path.stem}.json",
+                )
+                if image_path != self.output / image_path.name:
+                    shutil.copy(image_path, self.output / image_path.name)

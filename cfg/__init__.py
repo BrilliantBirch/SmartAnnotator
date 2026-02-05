@@ -74,7 +74,7 @@ class AnnotateConfig:
         self.device = DEVICE.GPU
         self.inputDir = ""
         self.outputDir = ""
-        self.imgFiles = []
+        self.annotationFiles = []
         self.bboxConf = 0.5
         self.kptConf = 0.5
         self.nms = 0.25

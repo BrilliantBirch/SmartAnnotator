@@ -3,9 +3,10 @@ Description：文件操作
 
 Author: Baibinnan
 Date: 2025/8/27
-LastEdit: 2025/8/27
+LastEdit: 2026/2/4
 E-mail: baibinnan@chuanfeng.com
 update：
+2026/2/4: 新增筛选目录下视频文件的函数
 
 """
 
@@ -39,10 +40,23 @@ def getImageFilesInDir(dirPath: Path) -> list:
     """
     if not os.path.isdir(dirPath):
         return []
-    # 支持多种图片格式
-    image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
+    # 支持多种图片与视频格式
+    extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
     files = []
-    for ext in image_extensions:
+    for ext in extensions:
+        files.extend(glob.glob(os.path.join(dirPath, ext)))
+    return files
+
+
+def getVideoFilesInDir(dirPath: Path) -> list:
+    """
+    获取目录下所有的视频文件
+    """
+    if not os.path.isdir(dirPath):
+        return []
+    extensions = ["*.mp4", "*.avi", "*.mov"]
+    files = []
+    for ext in extensions:
         files.extend(glob.glob(os.path.join(dirPath, ext)))
     return files
 
