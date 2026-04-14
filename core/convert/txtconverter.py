@@ -644,7 +644,7 @@ class YoloConverter(TxtConverter):
                 # 绘制边界框
                 box_color = tuple(int(c * 255) for c in self.class_color_map[class_id])
                 # 绘制矩形框
-                draw.rectangle([(x1, y1), (x2, y2)], outline=box_color, width=2)
+                draw.rectangle(xy=[x1, y1, x2, y2], outline=box_color, width=2)
                 # 添加类别标签
                 label = f"{list(self.class_mapping.keys())[class_id]}"
                 # 计算文本位置，确保文本在图像范围内

@@ -65,7 +65,10 @@ class Annotator:
         total = len(self.config.annotationFiles)
         for idx, annotation_pathList in enumerate(annotation_gen):
             try:
-                if not callback("自动标注中", (idx + 1) * self.model.batch / total):
+                if not callback(
+                    "正处理第{}批标注数据".format(idx + 1),
+                    (idx + 1) * self.model.batch / total,
+                ):
                     return False
                 # 标注
                 self._label(annotation_pathList)

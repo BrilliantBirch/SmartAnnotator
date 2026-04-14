@@ -391,7 +391,7 @@ def segment_to_labelme(lines, img_width, img_height, classMapping):
 
 # region 生成labelme格式文件
 def generate_labelme_file(
-    annotations, labelme_version, image_path, image_height, image_width, output_path
+    annotations, labelme_version, image_path, image_width, image_height, output_path
 ):
     """
     生成Labelme格式的文件
