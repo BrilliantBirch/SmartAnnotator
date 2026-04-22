@@ -43,9 +43,19 @@ class Onnx2Engine:
         half_flag = builder.platform_has_fast_fp16 and self.half
         # 解析onnx模型
         parser = trt.OnnxParser(network, logger)
+        try:
+            with open(self.onnxfile, "rb") as f:
+                if not parser.parse(f.read()):
+                    error_msgs = "\n".join(
+                        [
+                            f"{idx}: {err.desc()}"
+                            for idx, err in enumerate(parser.errors)
+                        ]
+                    )
+                    raise RuntimeError(f"解析onnx模型失败:\n{error_msgs}")
+        except Exception as ex:
+            raise RuntimeError(f"解析onnx模型失败:\n{ex}")
 
-        if not parser.parse_from_file(str(self.onnxfile)):
-            raise RuntimeError(f"加载模型{str(self.onnxfile)}文件失败")
         # 解析metadata
         try:
             import onnx

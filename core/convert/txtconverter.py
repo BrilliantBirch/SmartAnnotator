@@ -235,7 +235,7 @@ class YoloPoseConverter(TxtConverter):
                 label = shape["label"].lower()
                 if label not in self.class_mapping and label not in self.kpt:
                     continue
-                if shape["group_id"]:
+                if shape.get("group_id", None):
                     grouped.append(shape)
                     continue
                 if shape["shape_type"] == "rectangle":

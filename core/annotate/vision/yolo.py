@@ -99,6 +99,7 @@ class DetectionPredictor(BasePredictor):
 
         elif self.device == DEVICE.GPU:
             from .tensorrtbackend import TensorRTInfer
+
             if get_gpu_info() == -1:
                 LOGGER.warning("找不到显卡信息,请检查是否安装了显卡驱动")
                 return False
@@ -344,40 +345,61 @@ class PoseDetectionPredictor(DetectionPredictor):
             return False
 
     def postprocess(self, predictions, pred_shape, orig_shapes):
-        outputs = np.transpose(predictions, (0, 2, 1))
-        bboxes, scores, kpts = np.split(outputs, [4, 4 + self.class_num], 2)
-        idxs = scores.max(axis=2) > self.conf
+        # 检查模型是否有end2end属性且为True
         predict_results = []
-        for i in range(len(predictions)):
-            idx = idxs[i]
-            score, bbox, kpt = scores[i][idx], bboxes[i][idx], kpts[i][idx]
-            j = score.argmax(1)
-            conf = np.max(score, axis=1)
-            cxcy, wh = np.split(
-                bbox,
-                [
-                    2,
-                ],
-                -1,
-            )
-            cv_box = np.concatenate([cxcy - 0.5 * wh, wh], -1)
-            nms_idx = cv2.dnn.NMSBoxesBatched(cv_box, conf, j, self.conf, self.iou)
-            cv_box, conf, j, kpt = (
-                cv_box[nms_idx],
-                conf[nms_idx],
-                j[nms_idx],
-                kpt[nms_idx],
-            )
-            # xyxy
-            cv_box[:, 2:] += cv_box[:, :2]
-            cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i])
-            # 关键点还原
-            kpt = kpt.reshape(len(kpt), *self.kpt_shape)
-            kpt = scale_coords(pred_shape, kpt, orig_shapes[i])
 
-            predict_results.append(
-                {"bboxs": cv_box, "scores": conf, "labels": j, "keypoints": kpt}
-            )
+        if self.model.metadata.get("end2end", False) == "True":
+            bboxes, scores, clses, kpts = np.split(predictions, [4, 5, 6], 2)
+            idxs = scores.max(axis=2) > self.conf
+            for i in range(len(predictions)):
+                idx = idxs[i]
+                cls, score, bbox, kpt = (
+                    clses[i][idx],
+                    scores[i][idx],
+                    bboxes[i][idx],
+                    kpts[i][idx],
+                )
+                cls = cls.flatten().astype(int).tolist()
+                cv_box = scale_boxes(pred_shape, bbox, orig_shapes[i])
+                kpt = kpt.reshape(len(kpt), *self.kpt_shape)
+                kpt = scale_coords(pred_shape, kpt, orig_shapes[i])
+                predict_results.append(
+                    {"bboxs": cv_box, "scores": score, "labels": cls, "keypoints": kpt}
+                )
+        else:
+            outputs = np.transpose(predictions, (0, 2, 1))
+            bboxes, scores, kpts = np.split(outputs, [4, 4 + self.class_num], 2)
+            idxs = scores.max(axis=2) > self.conf
+            for i in range(len(predictions)):
+                idx = idxs[i]
+                score, bbox, kpt = scores[i][idx], bboxes[i][idx], kpts[i][idx]
+                j = score.argmax(1)
+                conf = np.max(score, axis=1)
+                cxcy, wh = np.split(
+                    bbox,
+                    [
+                        2,
+                    ],
+                    -1,
+                )
+                cv_box = np.concatenate([cxcy - 0.5 * wh, wh], -1)
+                nms_idx = cv2.dnn.NMSBoxesBatched(cv_box, conf, j, self.conf, self.iou)
+                cv_box, conf, j, kpt = (
+                    cv_box[nms_idx],
+                    conf[nms_idx],
+                    j[nms_idx],
+                    kpt[nms_idx],
+                )
+                # xyxy
+                cv_box[:, 2:] += cv_box[:, :2]
+                cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i])
+                # 关键点还原
+                kpt = kpt.reshape(len(kpt), *self.kpt_shape)
+                kpt = scale_coords(pred_shape, kpt, orig_shapes[i])
+
+                predict_results.append(
+                    {"bboxs": cv_box, "scores": conf, "labels": j, "keypoints": kpt}
+                )
 
         return predict_results
 
