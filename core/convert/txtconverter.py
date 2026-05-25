@@ -29,7 +29,6 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-
 # region labelme2txt
 
 
@@ -392,7 +391,8 @@ class YoloPoseConverter(TxtConverter):
                 for point_category in self.kpt:
                     point_category = point_category
                     box_label = box_label
-                    if point_category.startswith(box_label):
+                    # if point_category.startswith(box_label):
+                    if box_label == point_category.split("_point")[0]:
                         if point_category in kpt_dict:
                             for point_info in kpt_dict[point_category]:
                                 point, visible = point_info
