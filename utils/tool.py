@@ -211,30 +211,6 @@ def export(
 
 
 # region yolo文本行转换为labelme格式标签
-def yolo_to_labelme(lines, img_width, img_height, classMapping, type, *args):
-    """
-    将YOLO格式的文本行转换为Labelme格式的标签
-
-    Args:
-        yolo_line: YOLO格式的文本行，格式为：class_id x_center y_center width height
-        img_width: 图像宽度
-        img_height: 图像高度
-        classMapping: 类别映射
-        type: 标注类型，bbox或kpt
-
-    Returns:
-        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
-    """
-    if type == 0:
-        return detect_to_labelme(lines, img_width, img_height, classMapping)
-    elif type == 1:
-        return pose_to_labelme(lines, img_width, img_height, classMapping, *args)
-    elif type == 2:
-        return segment_to_labelme(lines, img_width, img_height, classMapping)
-    else:
-        raise ValueError(f"标注类型:{type}暂不支持")
-
-
 def detect_to_labelme(lines, img_width, img_height, classMapping):
     """
     将检测结果转换为Labelme格式的标签
@@ -249,26 +225,20 @@ def detect_to_labelme(lines, img_width, img_height, classMapping):
         dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
     """
     annotations = []
-    lineNo = 0
-    for line in lines:
-        lineNo += 1
+    for line_no, line in enumerate(lines, 1):
         parts = line.strip().split()
         if len(parts) != 5:
-            raise ValueError(f"标注文本格式第{lineNo}行有误，{line}")
-        class_id = int(float(parts[0]))  # 先转float再转int
+            raise ValueError(f"标注文本格式第{line_no}行有误，{line}")
+        class_id = int(float(parts[0]))
         x1 = int(float(parts[1]))
         y1 = int(float(parts[2]))
         x2 = int(float(parts[3]))
         y2 = int(float(parts[4]))
 
-        points = [
-            [x1, y1],
-            [x2, y2],
-        ]
         annotations.append(
             {
                 "class": classMapping[class_id],
-                "points": points,
+                "points": [[x1, y1], [x2, y2]],
                 "shape_type": "rectangle",
                 "description": "",
             }
@@ -281,7 +251,7 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
     将姿态检测结果转换为Labelme格式的标签
 
     Args:
-        line: 姿态检测结果，格式为：class_id x_center y_center width height
+        line: 姿态检测结果，格式为：class_id x_center y_center width height kpt...
         img_width: 图像宽度
         img_height: 图像高度
         classMapping: 类别映射
@@ -291,48 +261,45 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
     """
     annotations = []
     kpt_nums = args[0]
+    kpt_stride = kpt_nums * 3
+    expected_parts = 5 + kpt_stride
+
     for group_id, line in enumerate(lines):
         parts = line.strip().split()
-        if len(parts) != 5 + (kpt_nums * 3):
+        if len(parts) != expected_parts:
             continue
-        # 获取框
-        class_id = int(float(parts[0]))  # 先转float再转int
+
+        class_id = int(float(parts[0]))
+        class_name = classMapping[class_id].lower()
         x1 = int(float(parts[1]))
         y1 = int(float(parts[2]))
         x2 = int(float(parts[3]))
         y2 = int(float(parts[4]))
 
-        points = [
-            [x1, y1],
-            [x2, y2],
-        ]
         annotations.append(
             {
-                "class": classMapping[class_id].lower(),
-                "points": points,
+                "class": class_name,
+                "points": [[x1, y1], [x2, y2]],
                 "shape_type": "rectangle",
                 "description": "",
                 "group_id": group_id,
             }
         )
-        # 获取关键点
+
         kpts = parts[5:]
         point_idx = 1
-        for i in range(0, kpt_nums * 3, 3):
+        for i in range(0, kpt_stride, 3):
             x, y, vis = kpts[i : i + 3]
             if int(vis) != 2:
                 continue
-            else:
-                kpt_name = classMapping[class_id].lower() + f"_point{point_idx}"
-            x = float(x)
-            y = float(y)
-            points = [[x, y]]
-            if x == y == 0 or x == img_width or y == img_height:
+            x_val = float(x)
+            y_val = float(y)
+            if x_val == y_val == 0 or x_val == img_width or y_val == img_height:
                 continue
             annotations.append(
                 {
-                    "class": kpt_name,
-                    "points": points,
+                    "class": f"{class_name}_point{point_idx}",
+                    "points": [[x_val, y_val]],
                     "shape_type": "point",
                     "description": vis,
                     "group_id": group_id,
@@ -347,7 +314,7 @@ def segment_to_labelme(lines, img_width, img_height, classMapping):
     将分割检测结果转换为Labelme格式的标签
 
     Args:
-        line: 分割检测结果，格式为：class_id x_center y_center width height
+        line: 分割检测结果，格式为：class_id x_center y_center width height ...
         img_width: 图像宽度
         img_height: 图像高度
         classMapping: 类别映射
@@ -356,34 +323,63 @@ def segment_to_labelme(lines, img_width, img_height, classMapping):
         dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
     """
     annotations = []
-    lineNo = 0
-    for line in lines:
-        lineNo += 1
+    mul_w = img_width
+    mul_h = img_height
+
+    for line_no, line in enumerate(lines, 1):
         parts = line.strip().split()
         if len(parts) <= 7:
-            raise ValueError(f"标注文本格式第{lineNo}行有误，多边形至少需要3个点{line}")
-        # 获取框
-        class_id = int(parts[0])
+            raise ValueError(f"标注文本格式第{line_no}行有误，多边形至少需要3个点{line}")
 
-        # 获取关键点
+        class_id = int(parts[0])
         polygons = parts[1:]
         points = []
+
         for i in range(0, len(polygons), 2):
             x, y = polygons[i : i + 2]
-            x = float(x) * img_width
-            y = float(y) * img_height
-            points.append([x, y])
-            if x == y == 0 or x == img_width or y == img_height:
-                continue
-        annotations.append(
-            {
-                "class": classMapping[class_id].lower(),
-                "points": points,
-                "shape_type": "polygon",
-                "description": "",
-            }
-        )
+            x = float(x) * mul_w
+            y = float(y) * mul_h
+            if not (x == y == 0 or x == mul_w or y == mul_h):
+                points.append([x, y])
+
+        if points:
+            annotations.append(
+                {
+                    "class": classMapping[class_id].lower(),
+                    "points": points,
+                    "shape_type": "polygon",
+                    "description": "",
+                }
+            )
     return annotations
+
+
+# 模块级转换器映射，避免每次调用时重复创建字典
+_CONVERTER_MAP = {
+    0: detect_to_labelme,
+    1: pose_to_labelme,
+    2: segment_to_labelme,
+}
+
+
+def yolo_to_labelme(lines, img_width, img_height, classMapping, type, *args):
+    """
+    将YOLO格式的文本行转换为Labelme格式的标签
+
+    Args:
+        yolo_line: YOLO格式的文本行，格式为：class_id x_center y_center width height
+        img_width: 图像宽度
+        img_height: 图像高度
+        classMapping: 类别映射
+        type: 标注类型，bbox或kpt
+
+    Returns:
+        dict: Labelme格式的标签，包含类别、框坐标和关键点坐标
+    """
+    converter = _CONVERTER_MAP.get(type)
+    if converter is None:
+        raise ValueError(f"标注类型:{type}暂不支持")
+    return converter(lines, img_width, img_height, classMapping, *args)
 
 
 # endregion yolo文本行转换为labelme格式标签
@@ -408,29 +404,24 @@ def generate_labelme_file(
     data = {
         "version": labelme_version,
         "flags": {},
-        "shapes": [],
+        "shapes": [
+            {
+                "label": a["class"],
+                "points": a["points"],
+                "group_id": a.get("group_id", None),
+                "description": a["description"],
+                "shape_type": a["shape_type"],
+                "flags": {},
+                "mask": None,
+            }
+            for a in annotations
+        ],
         "imagePath": image_path,
         "imageData": None,
         "imageHeight": image_height,
         "imageWidth": image_width,
     }
-    for annotation in annotations:
-        label = annotation["class"]
-        points = annotation["points"]
-        shape_type = annotation["shape_type"]
-        description = annotation["description"]
-        group_id = annotation.get("group_id", None)
-        shape = {
-            "label": label,
-            "points": points,
-            "group_id": group_id,
-            "description": description,
-            "shape_type": shape_type,
-            "flags": {},
-            "mask": None,
-        }
-        data["shapes"].append(shape)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 

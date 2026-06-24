@@ -25,17 +25,25 @@ def resize_image(image: np.ndarray, target_shape=(640, 640)):
         img (np.ndarray): 裁剪填充后的图像
     """
     origin_shape = image.shape[:2]
+
+    # 快速路径：原图尺寸与目标尺寸一致时直接返回
+    if origin_shape[0] == target_shape[0] and origin_shape[1] == target_shape[1]:
+        return image
+
     scale = min(target_shape[0] / origin_shape[0], target_shape[1] / origin_shape[1])
     scale_shape = int(round(origin_shape[1] * scale)), int(
         round(origin_shape[0] * scale)
     )
 
-    pad_w, pad_h = target_shape[1] - scale_shape[0], target_shape[0] - scale_shape[1]
-    pad_w /= 2
-    pad_h /= 2
-
-    if origin_shape[::-1] != scale_shape:  # resize
+    if origin_shape[::-1] != scale_shape:
         image = cv2.resize(image, scale_shape, interpolation=cv2.INTER_LINEAR)
+
+    pad_w = (target_shape[1] - scale_shape[0]) / 2
+    pad_h = (target_shape[0] - scale_shape[1]) / 2
+
+    # 无需padding时跳过copyMakeBorder
+    if pad_w < 0.5 and pad_h < 0.5:
+        return image
 
     top, bottom = int(round(pad_h - 0.1)), int(round(pad_h + 0.1))
     left, right = int(round(pad_w - 0.1)), int(round(pad_w + 0.1))

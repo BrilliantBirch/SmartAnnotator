@@ -1,10 +1,12 @@
 """
-Description：tensorRT的推理后端
+Description：tensorRT的推理后端（兼容 TensorRT 10.x）
 Author:BaiBinnan
 Date:2025/02/17
-LastEdit:2025/02/27
+LastEdit:2026/06/24
 LastEditBy:BaiBinnan
 E-mail:baiBinnan@chuanfeng.com
+update：
+    1. 2026/06/24: 适配 TensorRT 10.x API（set_tensor_address + execute_async_v3）
 """
 
 import tensorrt as trt
@@ -161,6 +163,11 @@ class TensorRTInfer:
             or not len(self.allocations) > 0
         ):
             raise ValueError(f"模型输入输出缓存错误")
+
+        # TensorRT 10.x: 使用 set_tensor_address 绑定地址
+        for binding in self.inputs + self.outputs:
+            self.context.set_tensor_address(binding["name"], binding["allocation"])
+
         stream = cuda_call(cudart.cudaStreamCreate())
         self.stream = stream
 
@@ -174,14 +181,11 @@ class TensorRTInfer:
         return specs
 
     def predict(self, img):
-        # img_contig = np.ascontiguousarray(img)
-
         # 异步从 host 到 device 的内存拷贝
         memcpy_async_host_to_device(self.inputs[0]["allocation"], img, self.stream)
 
-        # 异步执行推理
-        self.context.execute_v2(self.allocations)
-
+        # TensorRT 10.x: 异步执行推理，使用CUDA流实现拷贝与计算的并行重叠
+        self.context.execute_async_v3(self.stream)
 
         # 异步从 device 到 host 的内存拷贝，对于每个输出
         for o in self.outputs:

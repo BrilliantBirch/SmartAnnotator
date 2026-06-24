@@ -99,30 +99,39 @@ class BasePredictor:
     def preprocess(self, images: List[np.ndarray]) -> np.ndarray:
         """
         预处理图像，调整大小并转换为CHW格式
+        预分配输出数组，避免多次内存拷贝
 
         Args:
             images: 原图列表
 
         Returns:
-            预处理后的batch张量
+            预处理后的batch张量 (N, C, H, W)
         """
-        img_resized = [resize_image(x, self.imgSize) for x in images]
-        img = np.stack(img_resized)
-        img = img[..., ::-1].transpose((0, 3, 1, 2))
-        img = np.ascontiguousarray(img)
-        img = img.astype(np.float16) if self.fp16 else img.astype(np.float32)
-        img /= 255
-        return img
+        batch = len(images)
+        target_h, target_w = self.imgSize
+        dtype = np.float16 if self.fp16 else np.float32
+
+        # 预分配连续内存，避免stack→transpose→ascontiguousarray→astype四次拷贝
+        output = np.empty((batch, 3, target_h, target_w), dtype=dtype)
+
+        for i, img in enumerate(images):
+            resized = resize_image(img, self.imgSize)
+            # BGR→RGB 同时 HWC→CHW，直接写入预分配数组
+            output[i] = resized[..., ::-1].transpose(2, 0, 1)
+
+        output /= 255
+        return output
 
     def warm_up(self) -> None:
         """
         模型预热，减少首次推理延迟
+        仅需2轮即可达到稳定状态，避免不必要的预热开销
         """
         imgSize = self.imgSize
         img = [np.ones((imgSize[0], imgSize[1], 3), dtype=np.float32)]
         for _ in range(self.batch - 1):
             img.extend(img)
-        for _ in range(5):
+        for _ in range(2):
             self.predict(img)
 
 

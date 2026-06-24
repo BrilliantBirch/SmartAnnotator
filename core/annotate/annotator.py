@@ -17,11 +17,18 @@ import numpy as np
 import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Callable, Generator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
 from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
 from .formatters import FormatterFactory, BaseFormatter
 from utils.tool import yolo_to_labelme, generate_labelme_file
+
+
+def _load_image(image_path: Path) -> np.ndarray:
+    """从磁盘加载并解码单张图片（模块级函数，供线程池调用）"""
+    image_data = np.fromfile(image_path, dtype=np.uint8)
+    return cv2.imdecode(image_data, cv2.IMREAD_COLOR)
 
 
 class Annotator:
@@ -132,18 +139,31 @@ class Annotator:
         """
         batch_size = len(image_pathList)
 
-        # 预分配内存，避免重复分配
-        imgList: List[np.ndarray] = [None] * batch_size
-        imgInfo: List[Tuple[Path, int, int]] = [None] * batch_size
+        # 使用线程池并行图片解码，I/O密集型任务线程池可提升吞吐量
+        images: List[np.ndarray] = []
+        imgInfo: List[Tuple[Path, int, int]] = []
 
-        for i, image_path in enumerate(image_pathList):
-            image_data = np.fromfile(image_path, dtype=np.uint8)
-            image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
-            img_h, img_w = image.shape[:2]
-            imgList[i] = image
-            imgInfo[i] = (image_path, img_h, img_w)
+        with ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
+            # 提交所有解码任务
+            futures = {
+                executor.submit(_load_image, path): path
+                for path in image_pathList
+            }
+            # 收集结果，保持顺序和路径对应
+            result_map = {}
+            for future in as_completed(futures):
+                path = futures[future]
+                img = future.result()
+                result_map[path] = img
 
-        predictions = self.model.predict(imgList)
+            # 按原始顺序重构列表
+            for path in image_pathList:
+                img = result_map[path]
+                img_h, img_w = img.shape[:2]
+                images.append(img)
+                imgInfo.append((path, img_h, img_w))
+
+        predictions = self.model.predict(images)
         if not predictions:
             return
 
