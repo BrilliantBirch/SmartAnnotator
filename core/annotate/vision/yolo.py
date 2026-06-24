@@ -1,16 +1,21 @@
 """
 Description：YOLO预测器
-Author:BaiBinnan
-Date:2025/02/17
-LastEdit:2025/09/05
-LastEditBy:BaiBinnan
-E-mail:baiBinnan@chuanfeng.com
+Author: BaiBinnan
+Date: 2025/02/17
+LastEdit: 2026/06/24
+LastEditBy: BaiBinnan
+E-mail: baibinnan@chuanfeng.com
+update：
+    1. 2026/06/24: 完善类型提示，增强代码可读性
+    2. 2026/06/24: 确保基类正确处理加载失败返回值
 """
 
 import numpy as np
 import ast
 import cv2
 from pathlib import Path
+from typing import List, Dict, Any, Tuple, Optional, Union
+
 from ..utils import (
     resize_image,
     get_cpu_info,
@@ -26,26 +31,81 @@ from cfg import LOGGER, AnnotateConfig, DEVICE
 
 
 class BasePredictor:
+    """YOLO预测器基类，定义通用接口"""
+
+    model_path: Path
+    device: DEVICE
+    conf: float
+    iou: float
+    model: Any
+    batch: int
+    imgSize: Tuple[int, int]
+    fp16: bool
+    class_mapping: Dict[int, str]
+
     def __init__(self, config: AnnotateConfig):
         self.model_path = Path(config.modelPath)
         self.device = config.device
         self.conf = config.bboxConf
         self.iou = config.nms
+        self.model = None
+        self.class_mapping = {}
         self.load_model()
 
-    def load_model(self):
+    def load_model(self) -> bool:
+        """
+        加载模型
+
+        Returns:
+            加载成功返回True，失败返回False
+        """
         pass
 
-    def unload_model(self):
-        self.is_warmup = False
-
-    def predict(self, input_data):
+    def unload_model(self) -> None:
+        """卸载模型"""
         pass
 
-    def postprocess(self, predictions, pred_shape, orig_shapes):
+    def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
+        """
+        对输入图像进行预测
+
+        Args:
+            input_data: 图像列表
+
+        Returns:
+            预测结果列表，失败返回None
+        """
         pass
 
-    def preprocess(self, images):
+    def postprocess(
+        self,
+        predictions: np.ndarray,
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """
+        后处理预测结果
+
+        Args:
+            predictions: 模型输出预测
+            pred_shape: 输入图像尺寸
+            orig_shapes: 原图尺寸列表
+
+        Returns:
+            后处理后的预测结果列表
+        """
+        pass
+
+    def preprocess(self, images: List[np.ndarray]) -> np.ndarray:
+        """
+        预处理图像，调整大小并转换为CHW格式
+
+        Args:
+            images: 原图列表
+
+        Returns:
+            预处理后的batch张量
+        """
         img_resized = [resize_image(x, self.imgSize) for x in images]
         img = np.stack(img_resized)
         img = img[..., ::-1].transpose((0, 3, 1, 2))
@@ -54,14 +114,12 @@ class BasePredictor:
         img /= 255
         return img
 
-    def warm_up(self):
+    def warm_up(self) -> None:
         """
-        模型预热
-        Args:
-            batch (int, optional): 批次大小. Defaults to 1.
+        模型预热，减少首次推理延迟
         """
         imgSize = self.imgSize
-        img = [np.ones((imgSize[0], imgSize[1], 3))]
+        img = [np.ones((imgSize[0], imgSize[1], 3), dtype=np.float32)]
         for _ in range(self.batch - 1):
             img.extend(img)
         for _ in range(5):
@@ -70,16 +128,9 @@ class BasePredictor:
 
 # region 目标检测
 class DetectionPredictor(BasePredictor):
-    """目标检测的检测器
+    """目标检测的检测器"""
 
-    Args:
-        BasePredictor (_type_): _description_
-    """
-
-    def __init__(self, config: AnnotateConfig):
-        super().__init__(config=config)
-
-    def load_model(self):
+    def load_model(self) -> bool:
         if self.device == DEVICE.CPU:
             if get_cpu_info() == -1 or get_total_memory() == -1:
                 LOGGER.warning("找不到cpu信息")
@@ -132,7 +183,6 @@ class DetectionPredictor(BasePredictor):
                         return False
 
             elif self.model_path.suffix == ".engine":
-
                 try:
                     self.model = TensorRTInfer(self.model_path)
                 except Exception as ex:
@@ -140,11 +190,9 @@ class DetectionPredictor(BasePredictor):
                     return False
 
         # 尝试从模型元数据中获取
-        if self.model.metadata:
+        if self.model and self.model.metadata:
             self.batch = int(ast.literal_eval(self.model.metadata.get("batch")))
             self.imgSize = tuple(ast.literal_eval(self.model.metadata.get("imgsz")))
-            # args = ast.literal_eval(self.model.metadata.get("args", None))
-            # self.fp16 = args.get("half", False)
             self.fp16 = self.model.metadata.get("fp16", False)
             class_mapping = self.model.metadata.get("names")
             if isinstance(class_mapping, str):
@@ -156,12 +204,19 @@ class DetectionPredictor(BasePredictor):
                 else:
                     LOGGER.warning("模型元数据中类别映射格式错误")
                     return False
-
-        self.class_mapping = class_mapping
+            self.class_mapping = class_mapping
+        else:
+            LOGGER.error("模型元数据无效或模型未加载")
+            return False
 
         return True
 
-    def postprocess(self, predictions, pred_shape, orig_shapes):
+    def postprocess(
+        self,
+        predictions: np.ndarray,
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
         outputs = np.transpose(predictions, (0, 2, 1))
         bboxes, scores = np.split(
             outputs,
@@ -171,7 +226,7 @@ class DetectionPredictor(BasePredictor):
             2,
         )
         idxs = scores.max(axis=2) > self.conf
-        predict_results = []
+        predict_results: List[Dict[str, Any]] = []
         for i in range(len(predictions)):
             idx = idxs[i]
             score, bbox = scores[i][idx], bboxes[i][idx]
@@ -195,13 +250,17 @@ class DetectionPredictor(BasePredictor):
             predict_results.append({"bboxs": cv_box, "scores": confidence, "labels": j})
         return predict_results
 
-    def predict(self, input_data):
+    def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
         # 预处理阶段
-        preprocess_input = self.preprocess(input_data)
-        predictions = self.model.predict(preprocess_input)[0]
-        orig_shapes = [x.shape[:2] for x in input_data]
-        results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
-        return results
+        try:
+            preprocess_input = self.preprocess(input_data)
+            predictions = self.model.predict(preprocess_input)[0]
+            orig_shapes = [x.shape[:2] for x in input_data]
+            results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
+            return results
+        except Exception as ex:
+            LOGGER.error(f"预测过程出错: {str(ex)}")
+            return None
 
 
 # endregion 目标检测
@@ -209,30 +268,43 @@ class DetectionPredictor(BasePredictor):
 
 # region 分割检测
 class SegmentationPredictor(DetectionPredictor):
-    def __init__(self, config: AnnotateConfig):
-        super().__init__(config)
+    """实例分割预测器"""
 
-    def load_model(self):
-        super().load_model()
+    class_num: int
+
+    def load_model(self) -> bool:
+        if not super().load_model():
+            return False
         try:
             self.class_num = len(self.class_mapping)
             return True
         except Exception as ex:
-            LOGGER.error(f"模型元数据中关键点形状获取失败{str(ex)}")
+            LOGGER.error(f"模型元数据中类别信息获取失败{str(ex)}")
             return False
 
-    def postprocess(self, predictions, pred_shape, orig_shapes):
+    def postprocess(
+        self,
+        predictions: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]],
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
         if self.model_path.suffix == ".onnx":
+            assert isinstance(predictions, (list, tuple))
             proto, outputs = predictions[1], predictions[0]
         elif self.model_path.suffix == ".engine":
+            assert isinstance(predictions, (list, tuple))
             proto, outputs = predictions[0], predictions[1]
+        else:
+            LOGGER.error(f"不支持的模型格式: {self.model_path.suffix}")
+            return []
+
         outputs = np.transpose(outputs, (0, 2, 1))
         bboxes, scores, maskconf = np.split(outputs, [4, 4 + self.class_num], 2)
         idxs = scores.max(axis=2) > self.conf
 
-        predict_results = []
+        predict_results: List[Dict[str, Any]] = []
 
-        for i in range(len(predictions[1])):
+        for i in range(len(outputs)):
             idx = idxs[i]
             score, bbox, mask_conf = scores[i][idx], bboxes[i][idx], maskconf[i][idx]
             if not len(bbox):
@@ -265,7 +337,7 @@ class SegmentationPredictor(DetectionPredictor):
             )  # HWC
 
             masks = scale_image(pred_shape, masks, orig_shapes[i], ratio_pad=None)
-            boundary_points = []
+            boundary_points: List[List[float]] = []
             for mask in masks:
                 # 将掩码转换为uint8类型并寻找轮廓
                 contours, _ = cv2.findContours(
@@ -277,26 +349,19 @@ class SegmentationPredictor(DetectionPredictor):
                     # 取面积最大的轮廓
                     max_contour = max(contours, key=cv2.contourArea)
 
-                    # ====== 新增：轮廓点精简 ======
                     # 使用Douglas-Peucker算法近似轮廓（保留关键节点）
-                    epsilon = 0.005 * cv2.arcLength(
-                        max_contour, closed=True
-                    )  # 可调整阈值控制点数
+                    epsilon = 0.005 * cv2.arcLength(max_contour, closed=True)
                     approx_contour = cv2.approxPolyDP(max_contour, epsilon, closed=True)
 
-                    # ====== 新增：归一化处理 ======
-                    # 获取原始图像尺寸 (h, w)
-                    h, w = orig_shapes[i][0], orig_shapes[i][1]
                     # 转换为归一化坐标 (x/w, y/h) 并保留6位小数
+                    h, w = orig_shapes[i][0], orig_shapes[i][1]
                     contour_points = approx_contour.squeeze().tolist()
-                    normalized_points = []
+                    normalized_points: List[float] = []
                     for p in contour_points:
                         if isinstance(p, (list, np.ndarray)) and len(p) == 2:
-                            nx = round(p[0] / w, 6)
-                            ny = round(p[1] / h, 6)
-                            normalized_points.extend(
-                                [nx, ny]
-                            )  # 展平为 [x1,y1,x2,y2,...]
+                            nx = round(float(p[0]) / w, 6)
+                            ny = round(float(p[1]) / h, 6)
+                            normalized_points.extend([nx, ny])
 
                     boundary_points.append(normalized_points)
                 else:
@@ -308,20 +373,23 @@ class SegmentationPredictor(DetectionPredictor):
                     "bboxs": cv_box,
                     "scores": conf,
                     "labels": j,
-                    # "masks": masks,
                     "boundary_points": boundary_points,
                 }
             )
 
         return predict_results
 
-    def predict(self, input_data):
+    def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
         # 预处理阶段
-        preprocess_input = self.preprocess(input_data)
-        predictions = self.model.predict(preprocess_input)
-        orig_shapes = [x.shape[:2] for x in input_data]
-        results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
-        return results
+        try:
+            preprocess_input = self.preprocess(input_data)
+            predictions = self.model.predict(preprocess_input)
+            orig_shapes = [x.shape[:2] for x in input_data]
+            results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
+            return results
+        except Exception as ex:
+            LOGGER.error(f"预测过程出错: {str(ex)}")
+            return None
 
 
 # endregion 分割检测
@@ -329,11 +397,14 @@ class SegmentationPredictor(DetectionPredictor):
 
 # region 关键点检测
 class PoseDetectionPredictor(DetectionPredictor):
-    def __init__(self, config: AnnotateConfig):
-        super().__init__(config)
+    """姿态估计预测器"""
 
-    def load_model(self):
-        super().load_model()
+    class_num: int
+    kpt_shape: Tuple[int, int]
+
+    def load_model(self) -> bool:
+        if not super().load_model():
+            return False
         try:
             self.class_num = len(self.class_mapping)
             self.kpt_shape = tuple(
@@ -344,9 +415,13 @@ class PoseDetectionPredictor(DetectionPredictor):
             LOGGER.error(f"模型元数据中关键点形状获取失败{str(ex)}")
             return False
 
-    def postprocess(self, predictions, pred_shape, orig_shapes):
-        # 检查模型是否有end2end属性且为True
-        predict_results = []
+    def postprocess(
+        self,
+        predictions: np.ndarray,
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        predict_results: List[Dict[str, Any]] = []
 
         if self.model.metadata.get("end2end", False) == "True":
             bboxes, scores, clses, kpts = np.split(predictions, [4, 5, 6], 2)
@@ -402,6 +477,18 @@ class PoseDetectionPredictor(DetectionPredictor):
                 )
 
         return predict_results
+
+    def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
+        # 预处理阶段
+        try:
+            preprocess_input = self.preprocess(input_data)
+            predictions = self.model.predict(preprocess_input)[0]
+            orig_shapes = [x.shape[:2] for x in input_data]
+            results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
+            return results
+        except Exception as ex:
+            LOGGER.error(f"预测过程出错: {str(ex)}")
+            return None
 
 
 # endregion
