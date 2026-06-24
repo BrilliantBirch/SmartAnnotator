@@ -11,6 +11,7 @@ update：
 """
 
 import argparse
+import json
 import sys
 
 from cfg import __APPNAME__, __VERSION__, LOGGER, ROOT, DEVICE, MODE, SysConfig
@@ -29,7 +30,7 @@ from core import ConvertWorker, AnnotateWorker
 from ui import Ui_MainWindow
 
 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QListWidgetItem
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QListWidgetItem, QFileDialog
 from PyQt5.QtGui import QIcon, QPixmap, QRegExpValidator
 from PyQt5.QtCore import Qt, QRegExp
 from PyQt5 import QtCore
@@ -237,6 +238,13 @@ class MainWindow(QMainWindow):
             self.mainWindow.convertCancelBtn.clicked.connect(
                 lambda: self.handleConvertCancel()
             )
+            # 转换页导入导出配置
+            self.mainWindow.convertImportBtn.clicked.connect(
+                lambda: self.importConfig("convert")
+            )
+            self.mainWindow.convertExportBtn.clicked.connect(
+                lambda: self.exportConfig("convert")
+            )
             # annotate
             self.mainWindow.gpuBtn.toggled.connect(
                 lambda: self.sysConfig.annotateConfig.setDevice(DEVICE.GPU)
@@ -254,6 +262,13 @@ class MainWindow(QMainWindow):
             self.mainWindow.annotateBtn.clicked.connect(lambda: self.annotate())
             self.mainWindow.annotateCancelBtn.clicked.connect(
                 lambda: self.handleAnnotateCancel()
+            )
+            # 标注页导入导出配置
+            self.mainWindow.annotateImportBtn.clicked.connect(
+                lambda: self.importConfig("annotate")
+            )
+            self.mainWindow.annotateExportBtn.clicked.connect(
+                lambda: self.exportConfig("annotate")
             )
             # modify
 
@@ -778,6 +793,198 @@ class MainWindow(QMainWindow):
         self.setAnnotateProcessLabel("标注完成")
         self.mainWindow.annotateBtn.setText("开始")
         self.mainWindow.annotateCancelBtn.hide()
+
+    def importConfig(self, page_type):
+        """
+        导入配置文件 JSON 格式
+        """
+        try:
+            # 默认路径：转换页使用输出目录，标注页使用输出目录
+            if page_type == "convert":
+                default_dir = self.sysConfig.convertConfig.outputDir
+                if not default_dir or not os.path.exists(default_dir):
+                    default_dir = os.path.expanduser("~")
+            else:
+                default_dir = self.sysConfig.annotateConfig.outputDir
+                if not default_dir or not os.path.exists(default_dir):
+                    default_dir = os.path.expanduser("~")
+
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "导入配置文件",
+                default_dir,
+                "JSON配置文件 (*.json);;所有文件 (*)",
+            )
+            if not file_path:
+                return
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+
+            if page_type == "convert":
+                self._applyConvertConfig(config_data)
+                LOGGER.info(f"转换配置导入成功: {file_path}")
+                showMessageBox(QMessageBox.Icon.Information, f"转换配置导入成功")
+            elif page_type == "annotate":
+                self._applyAnnotateConfig(config_data)
+                LOGGER.info(f"标注配置导入成功: {file_path}")
+                showMessageBox(QMessageBox.Icon.Information, f"标注配置导入成功")
+
+        except Exception as e:
+            LOGGER.error(f"配置导入失败: {str(e)}")
+            showMessageBox(QMessageBox.Icon.Critical, f"配置导入失败: {str(e)}")
+
+    def exportConfig(self, page_type):
+        """
+        导出配置文件 JSON 格式
+        """
+        try:
+            if page_type == "convert":
+                config_data = self._collectConvertConfig()
+                default_name = "convert_config.json"
+                default_dir = self.sysConfig.convertConfig.outputDir
+                if not default_dir or not os.path.exists(default_dir):
+                    default_dir = os.path.expanduser("~")
+                default_path = os.path.join(default_dir, default_name)
+            else:
+                config_data = self._collectAnnotateConfig()
+                default_name = "annotate_config.json"
+                default_dir = self.sysConfig.annotateConfig.outputDir
+                if not default_dir or not os.path.exists(default_dir):
+                    default_dir = os.path.expanduser("~")
+                default_path = os.path.join(default_dir, default_name)
+
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出配置文件",
+                default_path,
+                "JSON配置文件 (*.json);;所有文件 (*)",
+            )
+            if not file_path:
+                return
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=2)
+
+            LOGGER.info(f"配置导出成功: {file_path}")
+            showMessageBox(QMessageBox.Icon.Information, f"配置导出成功")
+
+        except Exception as e:
+            LOGGER.error(f"配置导出失败: {str(e)}")
+            showMessageBox(QMessageBox.Icon.Critical, f"配置导出失败: {str(e)}")
+
+    def _collectConvertConfig(self):
+        """
+        收集当前转换配置
+        """
+        config = {
+            "input_dir": self.sysConfig.convertConfig.inputDir,
+            "output_dir": self.sysConfig.convertConfig.outputDir,
+            "source_format": self.sysConfig.convertConfig.sourceFormat,
+            "classes": self.sysConfig.convertConfig.classes,
+            "kpt": self.sysConfig.convertConfig.kpt,
+            "visualize": self.sysConfig.convertConfig.visualized,
+            "export": self.sysConfig.convertConfig.export,
+            "train_ratio": self.sysConfig.convertConfig.trainRatio,
+            "val_ratio": self.sysConfig.convertConfig.valRatio,
+            "test_ratio": self.sysConfig.convertConfig.testRatio,
+        }
+        return config
+
+    def _applyConvertConfig(self, config):
+        """
+        应用转换配置到界面
+        """
+        # 更新系统配置
+        if "input_dir" in config:
+            self.sysConfig.convertConfig.setInputDir(config["input_dir"])
+            self.mainWindow.convertInputEdit.setText(config["input_dir"])
+        if "output_dir" in config:
+            self.sysConfig.convertConfig.setOutputDir(config["output_dir"])
+            self.mainWindow.convertOutputEdit.setText(config["output_dir"])
+        if "source_format" in config:
+            fmt = config["source_format"]
+            if fmt == "json":
+                self.mainWindow.jsonBtn.setChecked(True)
+            elif fmt == "txt":
+                self.mainWindow.txtBtn.setChecked(True)
+        if "visualize" in config:
+            self.sysConfig.convertConfig.setVisualize(config["visualize"])
+            self.mainWindow.visualizeBtn.setChecked(config["visualize"])
+        if "export" in config:
+            self.sysConfig.convertConfig.setExport(config["export"])
+            self.mainWindow.exportBtn.setChecked(config["export"])
+        if "train_ratio" in config:
+            self.sysConfig.convertConfig.trainRatio = config["train_ratio"]
+            self.mainWindow.trainRatio.setText(str(config["train_ratio"]))
+        if "val_ratio" in config:
+            self.sysConfig.convertConfig.valRatio = config["val_ratio"]
+            self.mainWindow.valRatio.setText(str(config["val_ratio"]))
+        if "test_ratio" in config:
+            self.sysConfig.convertConfig.testRatio = config["test_ratio"]
+            self.mainWindow.testRatio.setText(str(config["test_ratio"]))
+        # 标签和关键点需要重新加载
+        if "classes" in config:
+            self.sysConfig.convertConfig.classes = config["classes"]
+            self.mainWindow.labelListView.clear()
+            for cls in config["classes"]:
+                item = QListWidgetItem(cls)
+                cwi = CustomItemWidget(self.mainWindow.labelListView, item)
+                item.setSizeHint(cwi.sizeHint())
+                self.mainWindow.labelListView.addItem(item)
+        if "kpt" in config:
+            self.sysConfig.convertConfig.kpt = config["kpt"]
+            self.mainWindow.kptListView.clear()
+            for name, id_ in config["kpt"].items():
+                item = QListWidgetItem(f"{name} {id_}")
+                cwi = CustomItemWidget(self.mainWindow.kptListView, item)
+                item.setSizeHint(cwi.sizeHint())
+                self.mainWindow.kptListView.addItem(item)
+
+    def _collectAnnotateConfig(self):
+        """
+        收集当前标注配置
+        """
+        config = {
+            "model_path": self.sysConfig.annotateConfig.modelPath,
+            "device": self.sysConfig.annotateConfig.device.value,
+            "input_dir": self.sysConfig.annotateConfig.inputDir,
+            "output_dir": self.sysConfig.annotateConfig.outputDir,
+            "bbox_conf": self.sysConfig.annotateConfig.bboxConf,
+            "kpt_conf": self.sysConfig.annotateConfig.kptConf,
+            "nms": self.sysConfig.annotateConfig.nms,
+        }
+        return config
+
+    def _applyAnnotateConfig(self, config):
+        """
+        应用标注配置到界面
+        """
+        if "model_path" in config:
+            self.sysConfig.annotateConfig.setModel(config["model_path"])
+            self.mainWindow.modelInputEdit.setText(config["model_path"])
+        if "device" in config:
+            dev = DEVICE(config["device"])
+            self.sysConfig.annotateConfig.setDevice(dev)
+            if dev == DEVICE.GPU:
+                self.mainWindow.gpuBtn.setChecked(True)
+            else:
+                self.mainWindow.cpuBtn.setChecked(True)
+        if "input_dir" in config:
+            self.sysConfig.annotateConfig.inputDir = config["input_dir"]
+            self.mainWindow.annotateImgInputEdit.setText(config["input_dir"])
+        if "output_dir" in config:
+            self.sysConfig.annotateConfig.outputDir = config["output_dir"]
+            self.mainWindow.annotateOutputEdit.setText(config["output_dir"])
+        if "bbox_conf" in config:
+            self.sysConfig.annotateConfig.bboxConf = config["bbox_conf"]
+            self.mainWindow.bboxConfEdit.setText(str(config["bbox_conf"]))
+        if "kpt_conf" in config:
+            self.sysConfig.annotateConfig.kptConf = config["kpt_conf"]
+            self.mainWindow.keyConfEdit.setText(str(config["kpt_conf"]))
+        if "nms" in config:
+            self.sysConfig.annotateConfig.nms = config["nms"]
+            self.mainWindow.nmsEdit.setText(str(config["nms"]))
 
     def annotate(self):
         """

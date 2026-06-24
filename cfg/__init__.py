@@ -13,7 +13,7 @@ from enum import Enum
 from utils import LOGGER, ROOT
 
 __APPNAME__ = "VAI_E_SmartAnnotator"
-__VERSION__ = "1.0.0"
+__VERSION__ = "1.1.0"
 LABELME_VERSION = "5.4.1"
 RANDOM_SEED = 42
 

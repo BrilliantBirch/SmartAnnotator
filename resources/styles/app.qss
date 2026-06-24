@@ -421,6 +421,35 @@ QLabel#annotationImgNumLabel {
     padding: 4px 10px;
 }
 
+/* ==================== 导入/导出按钮 ==================== */
+QPushButton#convertImportBtn,
+QPushButton#convertExportBtn,
+QPushButton#annotateImportBtn,
+QPushButton#annotateExportBtn {
+    background-color: #34a853;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    min-height: 28px;
+}
+
+QPushButton#convertImportBtn:hover,
+QPushButton#convertExportBtn:hover,
+QPushButton#annotateImportBtn:hover,
+QPushButton#annotateExportBtn:hover {
+    background-color: #2d9249;
+}
+
+QPushButton#convertImportBtn:pressed,
+QPushButton#convertExportBtn:pressed,
+QPushButton#annotateImportBtn:pressed,
+QPushButton#annotateExportBtn:pressed {
+    background-color: #267a3d;
+}
+
 /* ==================== 页面标题 ==================== */
 QLabel#pageTitleLabel {
     background-color: #1a73e8;
