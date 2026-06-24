@@ -50,11 +50,11 @@ class QTextBrowserLogger(QObject, logging.Handler):
 
         # 为不同日志级别设置颜色
         self.level_colors = {
-            logging.DEBUG: "#000000",  # 黑色
-            logging.INFO: "#0000FF",  # 蓝色
-            logging.WARNING: "#FFA500",  # 橙色
-            logging.ERROR: "#FF0000",  # 红色
-            logging.CRITICAL: "#8B0000",  # 深红色
+            logging.DEBUG: "#6c757d",  # 灰色
+            logging.INFO: "#00695c",  # 深青色
+            logging.WARNING: "#e65100",  # 深橙色
+            logging.ERROR: "#c62828",  # 深红色
+            logging.CRITICAL: "#b71c1c",  # 暗红色
         }
 
     def emit(self, record):

@@ -2,9 +2,11 @@
 Description：自动标注工具的主程序
 Author: Baibinnan
 Date: 2025/8/25
-LastEdit: 2025/8/27
+LastEdit: 2026/06/24
+LastEditBy: Baibinnan
 E-mail: baibinnan@chuanfeng.com
 update：
+    1. 2026/06/24: 加载现代化QSS样式表，优化UI视觉效果
 
 """
 
@@ -87,6 +89,9 @@ class MainWindow(QMainWindow):
         """
         初始化UI
         """
+        # 加载现代化样式表
+        self._load_stylesheet()
+
         # 加载并设置图片以及logo
         pixmap = QPixmap(resource_path(r"resources/images/welcome.png"))
         if pixmap.isNull():
@@ -128,6 +133,20 @@ class MainWindow(QMainWindow):
 
         # 切换到欢迎页
         self.changePage("welcomePage")
+
+    def _load_stylesheet(self):
+        """
+        加载QSS样式表，实现现代化UI外观
+        """
+        qss_path = resource_path(r"resources/styles/app.qss")
+        try:
+            with open(qss_path, "r", encoding="utf-8") as f:
+                self.setStyleSheet(f.read())
+            LOGGER.info("样式表加载成功")
+        except FileNotFoundError:
+            LOGGER.warning(f"样式表文件未找到: {qss_path}，使用默认样式")
+        except Exception as e:
+            LOGGER.error(f"样式表加载失败: {e}")
 
     def initConverter(self):
         """
@@ -274,6 +293,13 @@ class MainWindow(QMainWindow):
         """
         切换页面
         """
+        page_title_map = {
+            "welcomePage": "欢迎页",
+            "convertPage": "格式转换",
+            "annotatePage": "自动标注",
+            "modifyPage": "标注修改",
+            "exportPage": "数据集导出",
+        }
         if page_name in self.name_index_map:
             index = self.name_index_map[page_name]
             if page_name == "welcomePage":
@@ -284,6 +310,8 @@ class MainWindow(QMainWindow):
                 self.mainWindow.label_5.show()
 
             self.mainWindow.stackedWidget.setCurrentIndex(index)
+            # 更新页面标题
+            self.mainWindow.pageTitleLabel.setText(page_title_map.get(page_name, page_name))
 
         else:
             LOGGER.error(f"页面切换失败，未找到页面：{page_name}")
