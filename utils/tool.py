@@ -211,7 +211,7 @@ def export(
 
 
 # region yolo文本行转换为labelme格式标签
-def detect_to_labelme(lines, img_width, img_height, classMapping):
+def detect_to_labelme(lines, img_width, img_height, classMapping, *args):
     """
     将检测结果转换为Labelme格式的标签
 
@@ -309,7 +309,7 @@ def pose_to_labelme(lines, img_width, img_height, classMapping, *args):
     return annotations
 
 
-def segment_to_labelme(lines, img_width, img_height, classMapping):
+def segment_to_labelme(lines, img_width, img_height, classMapping, *args):
     """
     将分割检测结果转换为Labelme格式的标签
 

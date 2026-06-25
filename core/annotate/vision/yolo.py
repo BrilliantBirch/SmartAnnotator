@@ -2,12 +2,13 @@
 Description：YOLO预测器
 Author: BaiBinnan
 Date: 2025/02/17
-LastEdit: 2026/06/24
+LastEdit: 2026/06/25
 LastEditBy: BaiBinnan
 E-mail: baibinnan@chuanfeng.com
 update：
     1. 2026/06/24: 完善类型提示，增强代码可读性
     2. 2026/06/24: 确保基类正确处理加载失败返回值
+    3. 2026/06/25: 兼容 YOLOv26 端到端推理，自动检测模型版本并路由
 """
 
 import numpy as np
@@ -42,6 +43,7 @@ class BasePredictor:
     imgSize: Tuple[int, int]
     fp16: bool
     class_mapping: Dict[int, str]
+    is_end2end: bool
 
     def __init__(self, config: AnnotateConfig):
         self.model_path = Path(config.modelPath)
@@ -50,7 +52,60 @@ class BasePredictor:
         self.iou = config.nms
         self.model = None
         self.class_mapping = {}
+        self.is_end2end = False
         self.load_model()
+
+    def _detect_model_format(self) -> None:
+        """
+        自动检测模型版本，识别是否为端到端（YOLOv26）模型
+
+        检测优先级：
+        1. 模型元数据中的 end2end 标志
+        2. 模型输出张量形状推断（端到端输出通常为 (batch, N, 6) 或 (batch, N, 4+1+1+kpt*3)）
+        3. 默认按传统模型处理
+        """
+        if not self.model or not self.model.metadata:
+            self.is_end2end = False
+            return
+
+        metadata = self.model.metadata
+
+        if metadata.get("end2end", "False") == "True":
+            self.is_end2end = True
+            LOGGER.info("检测到端到端（YOLOv26）模型（元数据标志）")
+            return
+
+        output_shape = self._get_output_shape()
+        if output_shape is not None:
+            ndim = len(output_shape)
+            if ndim == 3:
+                last_dim = output_shape[-1]
+                if last_dim == 6:
+                    self.is_end2end = True
+                    LOGGER.info(f"检测到端到端检测模型（输出形状: {output_shape}）")
+                    return
+                if last_dim >= 7:
+                    self.is_end2end = True
+                    LOGGER.info(f"检测到端到端姿态/分割模型（输出形状: {output_shape}）")
+                    return
+
+        self.is_end2end = False
+        LOGGER.info("检测到传统YOLO模型（非端到端）")
+
+    def _get_output_shape(self) -> Optional[Tuple[int, ...]]:
+        """获取模型输出张量形状，用于推断模型版本"""
+        try:
+            if hasattr(self.model, "output_spec"):
+                specs = self.model.output_spec()
+                if specs and len(specs) > 0:
+                    return tuple(specs[0][0])
+            if hasattr(self.model, "output_name") and hasattr(self.model, "session"):
+                name = self.model.output_name[0]
+                shape = self.model.session.get_outputs()[0].shape
+                return tuple(shape)
+        except Exception:
+            pass
+        return None
 
     def load_model(self) -> bool:
         """
@@ -218,6 +273,9 @@ class DetectionPredictor(BasePredictor):
             LOGGER.error("模型元数据无效或模型未加载")
             return False
 
+        # 自动检测模型版本（端到端 vs 传统）
+        self._detect_model_format()
+
         return True
 
     def postprocess(
@@ -226,6 +284,17 @@ class DetectionPredictor(BasePredictor):
         pred_shape: Tuple[int, int],
         orig_shapes: List[Tuple[int, int]],
     ) -> List[Dict[str, Any]]:
+        if self.is_end2end:
+            return self._postprocess_end2end(predictions, pred_shape, orig_shapes)
+        return self._postprocess_traditional(predictions, pred_shape, orig_shapes)
+
+    def _postprocess_traditional(
+        self,
+        predictions: np.ndarray,
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """传统YOLO后处理（v8/v11等），包含NMS"""
         outputs = np.transpose(predictions, (0, 2, 1))
         bboxes, scores = np.split(
             outputs,
@@ -257,6 +326,36 @@ class DetectionPredictor(BasePredictor):
             cv_box[:, 2:] += cv_box[:, :2]
             cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i]).round()
             predict_results.append({"bboxs": cv_box, "scores": confidence, "labels": j})
+        return predict_results
+
+    def _postprocess_end2end(
+        self,
+        predictions: np.ndarray,
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """端到端YOLO后处理（v26），输出已包含筛选后的检测框，无需NMS"""
+        predict_results: List[Dict[str, Any]] = []
+        for i in range(len(predictions)):
+            pred = predictions[i]
+            # 端到端输出格式: (N, 6) -> [x1, y1, x2, y2, score, class_id]
+            if pred.ndim == 2 and pred.shape[1] == 6:
+                bboxes = pred[:, :4]
+                scores = pred[:, 4]
+                labels = pred[:, 5].astype(int)
+                # 按置信度过滤
+                keep = scores > self.conf
+                bboxes, scores, labels = bboxes[keep], scores[keep], labels[keep]
+                if len(bboxes) > 0:
+                    bboxes = scale_boxes(pred_shape, bboxes, orig_shapes[i]).round()
+                predict_results.append(
+                    {"bboxs": bboxes, "scores": scores, "labels": labels}
+                )
+            else:
+                # 空预测
+                predict_results.append(
+                    {"bboxs": np.empty((0, 4)), "scores": np.empty(0), "labels": np.empty(0, dtype=int)}
+                )
         return predict_results
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
@@ -297,6 +396,17 @@ class SegmentationPredictor(DetectionPredictor):
         pred_shape: Tuple[int, int],
         orig_shapes: List[Tuple[int, int]],
     ) -> List[Dict[str, Any]]:
+        if self.is_end2end:
+            return self._seg_postprocess_end2end(predictions, pred_shape, orig_shapes)
+        return self._seg_postprocess_traditional(predictions, pred_shape, orig_shapes)
+
+    def _seg_postprocess_traditional(
+        self,
+        predictions: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]],
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """传统分割后处理（v8/v11等），包含NMS和proto掩码解码"""
         if self.model_path.suffix == ".onnx":
             assert isinstance(predictions, (list, tuple))
             proto, outputs = predictions[1], predictions[0]
@@ -346,35 +456,7 @@ class SegmentationPredictor(DetectionPredictor):
             )  # HWC
 
             masks = scale_image(pred_shape, masks, orig_shapes[i], ratio_pad=None)
-            boundary_points: List[List[float]] = []
-            for mask in masks:
-                # 将掩码转换为uint8类型并寻找轮廓
-                contours, _ = cv2.findContours(
-                    mask.astype(np.uint8),
-                    cv2.RETR_EXTERNAL,  # 只检测外轮廓
-                    cv2.CHAIN_APPROX_SIMPLE,  # 压缩冗余线段
-                )
-                if contours:
-                    # 取面积最大的轮廓
-                    max_contour = max(contours, key=cv2.contourArea)
-
-                    # 使用Douglas-Peucker算法近似轮廓（保留关键节点）
-                    epsilon = 0.005 * cv2.arcLength(max_contour, closed=True)
-                    approx_contour = cv2.approxPolyDP(max_contour, epsilon, closed=True)
-
-                    # 转换为归一化坐标 (x/w, y/h) 并保留6位小数
-                    h, w = orig_shapes[i][0], orig_shapes[i][1]
-                    contour_points = approx_contour.squeeze().tolist()
-                    normalized_points: List[float] = []
-                    for p in contour_points:
-                        if isinstance(p, (list, np.ndarray)) and len(p) == 2:
-                            nx = round(float(p[0]) / w, 6)
-                            ny = round(float(p[1]) / h, 6)
-                            normalized_points.extend([nx, ny])
-
-                    boundary_points.append(normalized_points)
-                else:
-                    boundary_points.append([])
+            boundary_points = self._contours_to_boundary(masks, orig_shapes[i])
             cv_box = scale_boxes(pred_shape, cv_box, orig_shapes[i])
 
             predict_results.append(
@@ -387,6 +469,96 @@ class SegmentationPredictor(DetectionPredictor):
             )
 
         return predict_results
+
+    def _seg_postprocess_end2end(
+        self,
+        predictions: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]],
+        pred_shape: Tuple[int, int],
+        orig_shapes: List[Tuple[int, int]],
+    ) -> List[Dict[str, Any]]:
+        """端到端分割后处理（v26），输出已包含筛选结果，无需NMS"""
+        if isinstance(predictions, (list, tuple)) and len(predictions) == 2:
+            # 端到端分割通常有两个输出: (detections, proto)
+            if self.model_path.suffix == ".onnx":
+                outputs, proto = predictions[0], predictions[1]
+            else:
+                proto, outputs = predictions[0], predictions[1]
+        else:
+            LOGGER.error("端到端分割模型预期两个输出，实际不匹配")
+            return []
+
+        predict_results: List[Dict[str, Any]] = []
+        mask_coeff_dim = 32  # 标准掩码系数维度
+
+        for i in range(len(outputs)):
+            pred = outputs[i]
+            if pred.ndim != 2 or pred.shape[1] < 4 + 1 + 1 + mask_coeff_dim:
+                predict_results.append(
+                    {"bboxs": None, "scores": None, "labels": None, "masks": None}
+                )
+                continue
+
+            # 端到端格式: [x1, y1, x2, y2, score, cls, mask_coeff_0, ..., mask_coeff_31]
+            bboxes = pred[:, :4]
+            scores = pred[:, 4]
+            labels = pred[:, 5].astype(int)
+            mask_coeffs = pred[:, 6:6 + mask_coeff_dim]
+
+            keep = scores > self.conf
+            bboxes, scores, labels, mask_coeffs = (
+                bboxes[keep], scores[keep], labels[keep], mask_coeffs[keep]
+            )
+
+            if len(bboxes) > 0:
+                bboxes = scale_boxes(pred_shape, bboxes, orig_shapes[i])
+                masks = process_mask(
+                    proto[i], mask_coeffs, bboxes, pred_shape, upsample=True
+                )
+                masks = scale_image(pred_shape, masks, orig_shapes[i], ratio_pad=None)
+                boundary_points = self._contours_to_boundary(masks, orig_shapes[i])
+                predict_results.append(
+                    {
+                        "bboxs": bboxes,
+                        "scores": scores,
+                        "labels": labels,
+                        "boundary_points": boundary_points,
+                    }
+                )
+            else:
+                predict_results.append(
+                    {"bboxs": None, "scores": None, "labels": None, "masks": None}
+                )
+
+        return predict_results
+
+    @staticmethod
+    def _contours_to_boundary(
+        masks: np.ndarray, orig_shape: Tuple[int, int]
+    ) -> List[List[float]]:
+        """将掩码转换为归一化边界点列表"""
+        boundary_points: List[List[float]] = []
+        for mask in masks:
+            contours, _ = cv2.findContours(
+                mask.astype(np.uint8),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            if contours:
+                max_contour = max(contours, key=cv2.contourArea)
+                epsilon = 0.005 * cv2.arcLength(max_contour, closed=True)
+                approx_contour = cv2.approxPolyDP(max_contour, epsilon, closed=True)
+                h, w = orig_shape[0], orig_shape[1]
+                contour_points = approx_contour.squeeze().tolist()
+                normalized_points: List[float] = []
+                for p in contour_points:
+                    if isinstance(p, (list, np.ndarray)) and len(p) == 2:
+                        nx = round(float(p[0]) / w, 6)
+                        ny = round(float(p[1]) / h, 6)
+                        normalized_points.extend([nx, ny])
+                boundary_points.append(normalized_points)
+            else:
+                boundary_points.append([])
+        return boundary_points
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
         # 预处理阶段
@@ -432,7 +604,7 @@ class PoseDetectionPredictor(DetectionPredictor):
     ) -> List[Dict[str, Any]]:
         predict_results: List[Dict[str, Any]] = []
 
-        if self.model.metadata.get("end2end", False) == "True":
+        if self.is_end2end:
             bboxes, scores, clses, kpts = np.split(predictions, [4, 5, 6], 2)
             idxs = scores.max(axis=2) > self.conf
             for i in range(len(predictions)):
