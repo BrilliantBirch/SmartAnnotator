@@ -822,13 +822,23 @@ class MainWindow(QMainWindow):
                 config_data = json.load(f)
 
             if page_type == "convert":
+                warnings = self._validateConvertConfig(config_data)
                 self._applyConvertConfig(config_data)
-                LOGGER.info(f"转换配置导入成功: {file_path}")
-                showMessageBox(QMessageBox.Icon.Information, f"转换配置导入成功")
+                if warnings:
+                    msg = "转换配置导入成功，但以下路径不存在：\n\n" + "\n".join(warnings)
+                    showMessageBox(QMessageBox.Icon.Warning, msg)
+                else:
+                    LOGGER.info(f"转换配置导入成功: {file_path}")
+                    showMessageBox(QMessageBox.Icon.Information, "转换配置导入成功")
             elif page_type == "annotate":
+                warnings = self._validateAnnotateConfig(config_data)
                 self._applyAnnotateConfig(config_data)
-                LOGGER.info(f"标注配置导入成功: {file_path}")
-                showMessageBox(QMessageBox.Icon.Information, f"标注配置导入成功")
+                if warnings:
+                    msg = "标注配置导入成功，但以下路径不存在：\n\n" + "\n".join(warnings)
+                    showMessageBox(QMessageBox.Icon.Warning, msg)
+                else:
+                    LOGGER.info(f"标注配置导入成功: {file_path}")
+                    showMessageBox(QMessageBox.Icon.Information, "标注配置导入成功")
 
         except Exception as e:
             LOGGER.error(f"配置导入失败: {str(e)}")
@@ -873,6 +883,91 @@ class MainWindow(QMainWindow):
             LOGGER.error(f"配置导出失败: {str(e)}")
             showMessageBox(QMessageBox.Icon.Critical, f"配置导出失败: {str(e)}")
 
+    def _validateConvertConfig(self, config):
+        """
+        校验转换配置文件格式和路径，返回警告列表
+        """
+        warnings = []
+        required_keys = {
+            "input_dir": str,
+            "output_dir": str,
+            "source_format": str,
+            "classes": list,
+            "kpt": dict,
+            "visualize": bool,
+            "export": bool,
+            "train_ratio": (int, float),
+            "test_ratio": (int, float),
+            "val_ratio": (int, float),
+        }
+        for key, expected_type in required_keys.items():
+            if key not in config:
+                raise ValueError(f"缺少必要字段: {key}")
+            if not isinstance(config[key], expected_type):
+                raise ValueError(
+                    f"字段 {key} 类型错误: 期望 {expected_type.__name__}, "
+                    f"实际 {type(config[key]).__name__}"
+                )
+
+        if config["source_format"] not in ("json", "txt"):
+            raise ValueError(f"source_format 必须为 json 或 txt, 实际: {config['source_format']}")
+
+        ratios = config["train_ratio"] + config["val_ratio"] + config["test_ratio"]
+        if abs(ratios - 1.0) > 0.001:
+            raise ValueError(f"比例分配之和必须为1.0, 实际: {ratios:.3f}")
+
+        if config["input_dir"] and not os.path.exists(config["input_dir"]):
+            warnings.append(f"输入路径不存在: {config['input_dir']}")
+        if config["output_dir"] and not os.path.exists(config["output_dir"]):
+            warnings.append(f"输出路径不存在: {config['output_dir']}")
+
+        return warnings
+
+    def _validateAnnotateConfig(self, config):
+        """
+        校验标注配置文件格式和路径，返回警告列表
+        """
+        warnings = []
+        required_keys = {
+            "model_path": str,
+            "device": str,
+            "input_dir": str,
+            "output_dir": str,
+            "bbox_conf": (int, float),
+            "kpt_conf": (int, float),
+            "nms": (int, float),
+        }
+        for key, expected_type in required_keys.items():
+            if key not in config:
+                raise ValueError(f"缺少必要字段: {key}")
+            if not isinstance(config[key], expected_type):
+                raise ValueError(
+                    f"字段 {key} 类型错误: 期望 {expected_type.__name__}, "
+                    f"实际 {type(config[key]).__name__}"
+                )
+
+        if config["device"] not in ("GPU", "CPU"):
+            raise ValueError(f"device 必须为 GPU 或 CPU, 实际: {config['device']}")
+
+        if config["model_path"] and not os.path.exists(config["model_path"]):
+            warnings.append(f"模型文件不存在: {config['model_path']}")
+        if config["input_dir"] and not os.path.exists(config["input_dir"]):
+            warnings.append(f"图片路径不存在: {config['input_dir']}")
+        if config["output_dir"] and not os.path.exists(config["output_dir"]):
+            warnings.append(f"输出路径不存在: {config['output_dir']}")
+
+        bbox = config["bbox_conf"]
+        if not (0.0 <= bbox <= 1.0):
+            raise ValueError(f"bbox_conf 必须在 0.0~1.0 之间, 实际: {bbox}")
+        kpt = config["kpt_conf"]
+        if not (0.0 <= kpt <= 1.0):
+            raise ValueError(f"kpt_conf 必须在 0.0~1.0 之间, 实际: {kpt}")
+        nms = config["nms"]
+        if not (0.0 <= nms <= 1.0):
+            raise ValueError(f"nms 必须在 0.0~1.0 之间, 实际: {nms}")
+
+        return warnings
+
     def _collectConvertConfig(self):
         """
         收集当前转换配置
@@ -898,10 +993,10 @@ class MainWindow(QMainWindow):
         # 更新系统配置
         if "input_dir" in config:
             self.sysConfig.convertConfig.setInputDir(config["input_dir"])
-            self.mainWindow.convertInputEdit.setText(config["input_dir"])
+            self.mainWindow.convertInput.setText(config["input_dir"])
         if "output_dir" in config:
             self.sysConfig.convertConfig.setOutputDir(config["output_dir"])
-            self.mainWindow.convertOutputEdit.setText(config["output_dir"])
+            self.mainWindow.convertOutput.setText(config["output_dir"])
         if "source_format" in config:
             fmt = config["source_format"]
             if fmt == "json":
@@ -940,6 +1035,11 @@ class MainWindow(QMainWindow):
                 cwi = CustomItemWidget(self.mainWindow.kptListView, item)
                 item.setSizeHint(cwi.sizeHint())
                 self.mainWindow.kptListView.addItem(item)
+        # 扫描输入目录，更新标注文件列表
+        input_dir = config.get("input_dir", "")
+        fmt = config.get("source_format", self.sysConfig.convertConfig.sourceFormat)
+        if input_dir and os.path.exists(input_dir):
+            self.getConvertSource(input_dir, fmt)
 
     def _collectAnnotateConfig(self):
         """
@@ -947,7 +1047,7 @@ class MainWindow(QMainWindow):
         """
         config = {
             "model_path": self.sysConfig.annotateConfig.modelPath,
-            "device": self.sysConfig.annotateConfig.device.value,
+            "device": self.sysConfig.annotateConfig.device.name,
             "input_dir": self.sysConfig.annotateConfig.inputDir,
             "output_dir": self.sysConfig.annotateConfig.outputDir,
             "bbox_conf": self.sysConfig.annotateConfig.bboxConf,
@@ -962,9 +1062,9 @@ class MainWindow(QMainWindow):
         """
         if "model_path" in config:
             self.sysConfig.annotateConfig.setModel(config["model_path"])
-            self.mainWindow.modelInputEdit.setText(config["model_path"])
+            self.mainWindow.modelInput.setText(config["model_path"])
         if "device" in config:
-            dev = DEVICE(config["device"])
+            dev = DEVICE[config["device"]]
             self.sysConfig.annotateConfig.setDevice(dev)
             if dev == DEVICE.GPU:
                 self.mainWindow.gpuBtn.setChecked(True)
@@ -972,10 +1072,10 @@ class MainWindow(QMainWindow):
                 self.mainWindow.cpuBtn.setChecked(True)
         if "input_dir" in config:
             self.sysConfig.annotateConfig.inputDir = config["input_dir"]
-            self.mainWindow.annotateImgInputEdit.setText(config["input_dir"])
+            self.mainWindow.annotateImgInput.setText(config["input_dir"])
         if "output_dir" in config:
             self.sysConfig.annotateConfig.outputDir = config["output_dir"]
-            self.mainWindow.annotateOutputEdit.setText(config["output_dir"])
+            self.mainWindow.annotateOutput.setText(config["output_dir"])
         if "bbox_conf" in config:
             self.sysConfig.annotateConfig.bboxConf = config["bbox_conf"]
             self.mainWindow.bboxConfEdit.setText(str(config["bbox_conf"]))
@@ -985,6 +1085,16 @@ class MainWindow(QMainWindow):
         if "nms" in config:
             self.sysConfig.annotateConfig.nms = config["nms"]
             self.mainWindow.nmsEdit.setText(str(config["nms"]))
+        # 扫描图片目录，更新图片列表
+        input_dir = config.get("input_dir", "")
+        if input_dir and os.path.exists(input_dir):
+            imgFiles = getImageFilesInDir(input_dir)
+            dataModel = QtCore.QStringListModel()
+            dataModel.setStringList(imgFiles)
+            self.mainWindow.annoateImgListView.setModel(dataModel)
+            self.sysConfig.annotateConfig.annotationFiles = imgFiles
+            self.mainWindow.annotationImgNumLabel.setText(f"共有{len(imgFiles)}张图片")
+            LOGGER.info(f"导入配置：扫描到 {len(imgFiles)} 张图片")
 
     def annotate(self):
         """
