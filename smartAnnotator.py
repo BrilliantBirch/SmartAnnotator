@@ -973,16 +973,17 @@ class MainWindow(QMainWindow):
         收集当前转换配置
         """
         config = {
+            "mode": self.sysConfig.currentMode.name,
             "input_dir": self.sysConfig.convertConfig.inputDir,
             "output_dir": self.sysConfig.convertConfig.outputDir,
             "source_format": self.sysConfig.convertConfig.sourceFormat,
-            "classes": self.sysConfig.convertConfig.classes,
-            "kpt": self.sysConfig.convertConfig.kpt,
+            "classes": self.getconvertLabels(),
+            "kpt": self.getconvertKpt(),
             "visualize": self.sysConfig.convertConfig.visualized,
             "export": self.sysConfig.convertConfig.export,
-            "train_ratio": self.sysConfig.convertConfig.trainRatio,
-            "val_ratio": self.sysConfig.convertConfig.valRatio,
-            "test_ratio": self.sysConfig.convertConfig.testRatio,
+            "train_ratio": float(self.mainWindow.trainRatio.text()),
+            "val_ratio": float(self.mainWindow.valRatio.text()),
+            "test_ratio": float(self.mainWindow.testRatio.text()),
         }
         return config
 
@@ -990,7 +991,14 @@ class MainWindow(QMainWindow):
         """
         应用转换配置到界面
         """
-        # 更新系统配置
+        if "mode" in config:
+            mode = MODE[config["mode"]]
+            self.sysConfig.currentMode = mode
+            self.mainWindow.taskComBox.setCurrentIndex(mode.value)
+            if mode == MODE.POSE:
+                self.showkptConfig(True)
+            else:
+                self.showkptConfig(False)
         if "input_dir" in config:
             self.sysConfig.convertConfig.setInputDir(config["input_dir"])
             self.mainWindow.convertInput.setText(config["input_dir"])
@@ -999,6 +1007,7 @@ class MainWindow(QMainWindow):
             self.mainWindow.convertOutput.setText(config["output_dir"])
         if "source_format" in config:
             fmt = config["source_format"]
+            self.sysConfig.convertConfig.setSourceFormat(fmt)
             if fmt == "json":
                 self.mainWindow.jsonBtn.setChecked(True)
             elif fmt == "txt":
@@ -1018,24 +1027,30 @@ class MainWindow(QMainWindow):
         if "test_ratio" in config:
             self.sysConfig.convertConfig.testRatio = config["test_ratio"]
             self.mainWindow.testRatio.setText(str(config["test_ratio"]))
-        # 标签和关键点需要重新加载
         if "classes" in config:
             self.sysConfig.convertConfig.classes = config["classes"]
             self.mainWindow.labelListView.clear()
             for cls in config["classes"]:
-                item = QListWidgetItem(cls)
-                cwi = CustomItemWidget(self.mainWindow.labelListView, item)
-                item.setSizeHint(cwi.sizeHint())
+                item_widget = CustomItemWidget(cls, self.mainWindow.labelListView)
+                item = QListWidgetItem()
                 self.mainWindow.labelListView.addItem(item)
+                self.mainWindow.labelListView.setItemWidget(item, item_widget)
+                item.setSizeHint(item_widget.sizeHint())
         if "kpt" in config:
             self.sysConfig.convertConfig.kpt = config["kpt"]
             self.mainWindow.kptListView.clear()
-            for name, id_ in config["kpt"].items():
-                item = QListWidgetItem(f"{name} {id_}")
-                cwi = CustomItemWidget(self.mainWindow.kptListView, item)
-                item.setSizeHint(cwi.sizeHint())
+            for name, kpt_config in config["kpt"].items():
+                item_widget = CustomItemWidget(
+                    name,
+                    self.mainWindow.kptListView,
+                    check=True,
+                    checked=kpt_config.get("isChecked", False),
+                    bbox_size=kpt_config.get("bbox_size", 10)
+                )
+                item = QListWidgetItem()
                 self.mainWindow.kptListView.addItem(item)
-        # 扫描输入目录，更新标注文件列表
+                self.mainWindow.kptListView.setItemWidget(item, item_widget)
+                item.setSizeHint(item_widget.sizeHint())
         input_dir = config.get("input_dir", "")
         fmt = config.get("source_format", self.sysConfig.convertConfig.sourceFormat)
         if input_dir and os.path.exists(input_dir):
@@ -1046,6 +1061,7 @@ class MainWindow(QMainWindow):
         收集当前标注配置
         """
         config = {
+            "mode": self.sysConfig.currentMode.name,
             "model_path": self.sysConfig.annotateConfig.modelPath,
             "device": self.sysConfig.annotateConfig.device.name,
             "input_dir": self.sysConfig.annotateConfig.inputDir,
@@ -1060,6 +1076,14 @@ class MainWindow(QMainWindow):
         """
         应用标注配置到界面
         """
+        if "mode" in config:
+            mode = MODE[config["mode"]]
+            self.sysConfig.currentMode = mode
+            self.mainWindow.taskComBox.setCurrentIndex(mode.value)
+            if mode == MODE.POSE:
+                self.showkptConfig(True)
+            else:
+                self.showkptConfig(False)
         if "model_path" in config:
             self.sysConfig.annotateConfig.setModel(config["model_path"])
             self.mainWindow.modelInput.setText(config["model_path"])
@@ -1131,6 +1155,13 @@ def get_main_app(argv=[]):
     """
     app = QApplication(argv)
     app.setApplicationName(__APPNAME__)
+    
+    from utils import resource_path
+    app_icon_path = resource_path("resources/images/welcome.ico")
+    app_icon = QIcon(app_icon_path)
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
+    
     arg_parser = argparse.ArgumentParser()
     # arg_parser.add_argument("--lang", type=str, default="ch", nargs="?")
 

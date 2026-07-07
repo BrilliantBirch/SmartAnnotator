@@ -225,16 +225,17 @@ class YoloPoseConverter(TxtConverter):
             yolo_lines = []
             has_problem = False
             infos = set()
-            # 分离框和关键点
+
             boxes = []
             kpt_dict = dict()
             kpt_withoutBBox_dict = dict()
             grouped = []
+
             for shape in data["shapes"]:
                 label = shape["label"].lower()
                 if label not in self.class_mapping and label not in self.kpt:
                     continue
-                if shape.get("group_id", None):
+                if shape.get("group_id", None) is not None:
                     grouped.append(shape)
                     continue
                 if shape["shape_type"] == "rectangle":
@@ -255,17 +256,14 @@ class YoloPoseConverter(TxtConverter):
                     if label not in kpt_dict:
                         kpt_dict[label] = set()
                     kpt_dict[label].add((points, visible))
-            # 处理分组
+
             grouped_dict = {}
             for shape in grouped:
                 group_id = shape["group_id"]
-                # 确保group_id可哈希（避免None）
                 group_id = group_id if group_id is not None else "none"
                 if group_id not in grouped_dict:
                     grouped_dict[group_id] = []
                 grouped_dict[group_id].append(shape)
-
-            # 在这一步将框补充
 
             if self.kpt_withoutBBox and kpt_withoutBBox_dict:
                 for kpt_type, points_set in kpt_withoutBBox_dict.items():
@@ -276,8 +274,7 @@ class YoloPoseConverter(TxtConverter):
                         )
                         continue
                     for points, visible in points_set:
-                        # 补充框
-                        bboxSize = int(self.kpt[kpt_type].get("bbox_size"))
+                        bboxSize = int(self.kpt[kpt_type].get("bbox_size", 10))
                         x, y = points
                         x1 = max(0, x - bboxSize)
                         y1 = max(0, y - bboxSize)
@@ -287,15 +284,13 @@ class YoloPoseConverter(TxtConverter):
                         boxes.append({"label": label, "points": box_points})
 
             for group_id, shapes in grouped_dict.items():
-                # 分离组内的框和点
                 group_boxes = []
-                group_kpts = dict()  # 组内关键点：{label: {(x,y), visible}, ...}
+                group_kpts = dict()
 
                 for shape in shapes:
                     label = shape["label"].lower()
                     if shape["shape_type"] == "rectangle":
                         group_boxes.append(shape)
-
                     elif shape["shape_type"] in ["point", "points"]:
                         points = shape["points"]
                         description = (
@@ -309,7 +304,6 @@ class YoloPoseConverter(TxtConverter):
                             group_kpts[label] = set()
                         group_kpts[label].add((point, visible))
 
-                # 处理组内的框，只匹配组内的点
                 for box in group_boxes:
                     box_label = box["label"].lower()
                     if box_label not in self.class_mapping:
@@ -321,7 +315,6 @@ class YoloPoseConverter(TxtConverter):
                     x1, x2 = min(x1, x2), max(x1, x2)
                     y1, y2 = min(y1, y2), max(y1, y2)
 
-                    # 计算YOLO格式的框坐标
                     center_x = (x1 + x2) / (2 * image_width)
                     center_y = (y1 + y2) / (2 * image_height)
                     box_w = (x2 - x1) / image_width
@@ -334,12 +327,10 @@ class YoloPoseConverter(TxtConverter):
                         str(box_h),
                     ]
 
-                    # 匹配组内的关键点
                     for point_category in self.kpt:
                         if not point_category.split("_point")[0] == box_label:
                             line.extend(["0", "0", "0"])
                             continue
-                        # 只查找组内的点
                         if point_category in group_kpts:
                             matched = False
                             for point_info in list(group_kpts[point_category]):
@@ -353,12 +344,38 @@ class YoloPoseConverter(TxtConverter):
                                     matched = True
                                     break
                             if not matched:
-                                line.extend(["0", "0", "0"])  # 组内该点不存在于框内
+                                if point_category in kpt_dict:
+                                    for point_info in list(kpt_dict[point_category]):
+                                        point, visible = point_info
+                                        if is_point_in_box(point, box_points):
+                                            x, y = point
+                                            norm_x = x / image_width
+                                            norm_y = y / image_height
+                                            line.extend([str(norm_x), str(norm_y), visible])
+                                            kpt_dict[point_category].remove(point_info)
+                                            matched = True
+                                            break
+                                if not matched:
+                                    line.extend(["0", "0", "0"])
                         else:
-                            line.extend(["0", "0", "0"])  # 组内无此类型点
+                            if point_category in kpt_dict:
+                                matched = False
+                                for point_info in list(kpt_dict[point_category]):
+                                    point, visible = point_info
+                                    if is_point_in_box(point, box_points):
+                                        x, y = point
+                                        norm_x = x / image_width
+                                        norm_y = y / image_height
+                                        line.extend([str(norm_x), str(norm_y), visible])
+                                        kpt_dict[point_category].remove(point_info)
+                                        matched = True
+                                        break
+                                if not matched:
+                                    line.extend(["0", "0", "0"])
+                            else:
+                                line.extend(["0", "0", "0"])
                     yolo_lines.append(" ".join(line))
 
-                # 检查组内是否有未匹配的点（异常情况）
                 for label, points_set in group_kpts.items():
                     if points_set:
                         has_problem = True
@@ -370,7 +387,6 @@ class YoloPoseConverter(TxtConverter):
                 box_points = box["points"]
                 class_id = self.class_mapping[box_label]
 
-                # 计算框的中心点和宽高
                 x1, y1 = box_points[0]
                 x2, y2 = box_points[1]
 
@@ -387,11 +403,8 @@ class YoloPoseConverter(TxtConverter):
                     str(box_w),
                     str(box_h),
                 ]
-                # 处理关键点
+
                 for point_category in self.kpt:
-                    point_category = point_category
-                    box_label = box_label
-                    # if point_category.startswith(box_label):
                     if box_label == point_category.split("_point")[0]:
                         if point_category in kpt_dict:
                             for point_info in kpt_dict[point_category]:
@@ -402,17 +415,17 @@ class YoloPoseConverter(TxtConverter):
                                     norm_y = y / image_height
                                     line.extend(
                                         [str(norm_x), str(norm_y), visible]
-                                    )  # 可见
+                                    )
                                     kpt_dict[point_category].remove(point_info)
                                     break
                             else:
-                                # 该框内该点被遮挡了
-                                line.extend(["0", "0", "0"])  # 框内不存在点
+                                line.extend(["0", "0", "0"])
                         else:
-                            line.extend(["0", "0", "0"])  # 该点不存在
+                            line.extend(["0", "0", "0"])
                     else:
-                        line.extend(["0", "0", "0"])  # 不属于该类别
+                        line.extend(["0", "0", "0"])
                 yolo_lines.append(" ".join(line))
+
             for _, kpt_set in kpt_dict.items():
                 if kpt_set:
                     has_problem = True
@@ -421,7 +434,9 @@ class YoloPoseConverter(TxtConverter):
                         normalized_x = x / image_width
                         normalized_y = y / image_height
                         infos.add((normalized_x, normalized_y))
+
             return yolo_lines, has_problem, infos
+
         except Exception as ex:
             LOGGER.error(f"处理标注文件时出错：{str(ex)},记录到errorConvert.txt中")
             with open(self.output / "errorConvert.txt", "a") as f:

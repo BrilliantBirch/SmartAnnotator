@@ -92,6 +92,8 @@ class CustomItemWidget(QWidget):
         checkDesc="补充框",
         hideCheckEdit=False,
         placeholder="大小",
+        checked=False,
+        bbox_size=10,
     ):
         super().__init__(parent)
         self.list_widget = list_widget  # 保存列表引用
@@ -105,8 +107,9 @@ class CustomItemWidget(QWidget):
             self.edit.setPlaceholderText("请以_point{idx}结尾")
             self.edit.editingFinished.connect(self.on_edit_finished)
             self.check = QCheckBox(checkDesc)
+            self.check.setChecked(checked)
             if not hideCheckEdit:
-                self.checkEdit = QLineEdit("")
+                self.checkEdit = QLineEdit(str(bbox_size))
                 self.checkEdit.setPlaceholderText(placeholder)
                 self.checkEdit.setStyleSheet(
                     "border: 1px solid #ddd; border-radius: 3px;"
