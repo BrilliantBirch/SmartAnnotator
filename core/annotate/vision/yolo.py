@@ -59,13 +59,11 @@ class BasePredictor:
         """
         自动检测模型版本，识别是否为端到端（YOLOv26）模型
 
-        检测优先级：
-        1. 模型元数据中的 end2end 标志
-        2. 模型输出张量形状推断（端到端输出通常为 (batch, N, 6) 或 (batch, N, 4+1+1+kpt*3)）
-        3. 默认按传统模型处理
+        仅通过模型元数据中的 end2end 标志判断，不依赖输出张量形状
         """
         if not self.model or not self.model.metadata:
             self.is_end2end = False
+            LOGGER.info("模型无元数据，按传统YOLO模型处理")
             return
 
         metadata = self.model.metadata
@@ -73,24 +71,9 @@ class BasePredictor:
         if metadata.get("end2end", "False") == "True":
             self.is_end2end = True
             LOGGER.info("检测到端到端（YOLOv26）模型（元数据标志）")
-            return
-
-        output_shape = self._get_output_shape()
-        if output_shape is not None:
-            ndim = len(output_shape)
-            if ndim == 3:
-                last_dim = output_shape[-1]
-                if last_dim == 6:
-                    self.is_end2end = True
-                    LOGGER.info(f"检测到端到端检测模型（输出形状: {output_shape}）")
-                    return
-                if last_dim >= 7:
-                    self.is_end2end = True
-                    LOGGER.info(f"检测到端到端姿态/分割模型（输出形状: {output_shape}）")
-                    return
-
-        self.is_end2end = False
-        LOGGER.info("检测到传统YOLO模型（非端到端）")
+        else:
+            self.is_end2end = False
+            LOGGER.info("检测到传统YOLO模型（非端到端）")
 
     def _get_output_shape(self) -> Optional[Tuple[int, ...]]:
         """获取模型输出张量形状，用于推断模型版本"""
@@ -361,8 +344,19 @@ class DetectionPredictor(BasePredictor):
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
         # 预处理阶段
         try:
-            preprocess_input = self.preprocess(input_data)
+            actual_batch = len(input_data)
+            model_batch = self.batch
+
+            if actual_batch < model_batch:
+                pad_img = np.zeros((self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype)
+                padded_data = list(input_data) + [pad_img] * (model_batch - actual_batch)
+                preprocess_input = self.preprocess(padded_data)
+            else:
+                preprocess_input = self.preprocess(input_data)
+
             predictions = self.model.predict(preprocess_input)[0]
+            predictions = predictions[:actual_batch]
+
             orig_shapes = [x.shape[:2] for x in input_data]
             results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
             return results
@@ -662,8 +656,19 @@ class PoseDetectionPredictor(DetectionPredictor):
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
         # 预处理阶段
         try:
-            preprocess_input = self.preprocess(input_data)
+            actual_batch = len(input_data)
+            model_batch = self.batch
+
+            if actual_batch < model_batch:
+                pad_img = np.zeros((self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype)
+                padded_data = list(input_data) + [pad_img] * (model_batch - actual_batch)
+                preprocess_input = self.preprocess(padded_data)
+            else:
+                preprocess_input = self.preprocess(input_data)
+
             predictions = self.model.predict(preprocess_input)[0]
+            predictions = predictions[:actual_batch]
+
             orig_shapes = [x.shape[:2] for x in input_data]
             results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
             return results

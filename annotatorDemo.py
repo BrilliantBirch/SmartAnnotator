@@ -7,12 +7,14 @@ sysConfig.currentMode = MODE.DETECT
 sysConfig.annotateConfig = AnnotateConfig()
 sysConfig.annotateConfig.device = DEVICE.GPU
 # sysConfig.annotateConfig.modelPath = r"D:\VSS\05安装\VAI_10\01 运行环境\Equiment Vision AI System\VAI_Crane\Resources\CPS\CPS_11m_736x1280_BS2_FP32_20260113.engine"
-sysConfig.annotateConfig.modelPath = r"C:\Users\99056\Desktop\LianYunGang_person_yolov8s_640x640_bs1_fp32_Datasets0530.onnx"
-sysConfig.annotateConfig.inputDir = "D:\data\JSD\SpreaderDetect"
-sysConfig.annotateConfig.outputDir = "D:\data\JSD\SpreaderDetect"
+sysConfig.annotateConfig.modelPath = r"D:\VSS\05安装\VAI_10\01 运行环境\Equiment Vision AI System\VAI_Crane\Resources\JSD\NBBY_JSD_IntrusionDetection_11m_736x1280_BS2_FP32_20260626.engine"
+sysConfig.annotateConfig.inputDir = "D:\data\JSD\temp"
+sysConfig.annotateConfig.outputDir = "D:\data\JSD\temp\output"
 sysConfig.annotateConfig.annotationFiles = getImageFilesInDir(
     sysConfig.annotateConfig.inputDir
 )
+sysConfig.annotateConfig.videoFiles = getVideoFilesInDir(
+    sysConfig.annotateConfig.inputDir)
 
 
 def progress_callback(status: str, progress: float) -> bool:

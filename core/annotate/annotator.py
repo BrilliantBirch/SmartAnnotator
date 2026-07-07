@@ -2,7 +2,7 @@
 Description：自动标注工具-支持多种模型的目标检测、姿态估计等
 Author: BaiBinnan
 Date: 2025/06/09
-LastEdit: 2026/06/24
+LastEdit: 2026/07/07
 LastEditBy: BaiBinnan
 E-mail: baibinnan@chuanfeng.com
 update：
@@ -10,6 +10,7 @@ update：
     2. 2026/06/24: 预分配内存复用，减少批处理GC开销
     3. 2026/06/24: 完善类型提示，增强代码可读性
     4. 2026/06/24: 添加模型加载失败检查，避免静默崩溃
+    5. 2026/07/07: 添加视频文件处理支持，实现智能抽帧和冗余帧过滤
 """
 
 import cv2
@@ -22,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from cfg import SysConfig, AnnotateConfig, MODE, LOGGER, LABELME_VERSION
 from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
 from .formatters import FormatterFactory, BaseFormatter
+from .videoprocessor import VideoProcessor
 from utils.tool import yolo_to_labelme, generate_labelme_file
 
 
@@ -97,38 +99,91 @@ class Annotator:
         """
 
         def annotation_generator(
-            img_list: List[Any], batch: int = 1
+            img_iter, batch: int = 1
         ) -> Generator[List[Path], None, None]:
             if batch <= 0:
                 raise ValueError("批处理大小无效")
-            for i in range(0, len(img_list), batch):
-                batch_paths = [Path(img) for img in img_list[i : i + batch]]
+            batch_paths = []
+            for img in img_iter:
+                batch_paths.append(Path(img))
+                if len(batch_paths) >= batch:
+                    yield batch_paths
+                    batch_paths = []
+            if batch_paths:
                 yield batch_paths
 
         if not isinstance(self.config, AnnotateConfig):
             LOGGER.error("标注配置错误，无法解析图片")
             return False
 
-        annotation_gen = annotation_generator(
-            self.config.annotationFiles, self.model.batch
-        )
-
         self.output = Path(self.config.outputDir)
         self.output.mkdir(parents=True, exist_ok=True)
-        total = len(self.config.annotationFiles)
 
-        for idx, annotation_pathList in enumerate(annotation_gen):
-            try:
-                if not callback(
-                    "正处理第{}批标注数据".format(idx + 1),
-                    (idx + 1) * self.model.batch / total,
-                ):
-                    return False
-                self._label(annotation_pathList)
-            except Exception as e:
-                LOGGER.error(f"处理第{idx}批标注数据时出错: {e}")
+        success = True
+        image_files = self.config.annotationFiles
+        video_files = self.config.videoFiles
+        total_tasks = len(image_files) + len(video_files)
+        processed_tasks = 0
 
-        return True
+        if image_files:
+            annotation_gen = annotation_generator(image_files, self.model.batch)
+            total_images = len(image_files)
+
+            for idx, annotation_pathList in enumerate(annotation_gen):
+                try:
+                    progress = processed_tasks / total_tasks if total_tasks > 0 else 0
+                    if not callback(
+                        f"正处理第{idx+1}批图片数据",
+                        progress,
+                    ):
+                        return False
+                    self._label(annotation_pathList)
+                    processed_tasks += len(annotation_pathList)
+                except Exception as e:
+                    LOGGER.error(f"处理第{idx}批图片数据时出错: {e}")
+                    success = False
+
+        if video_files:
+            video_processor = VideoProcessor(
+                frame_interval=self.config.frameInterval,
+                diff_threshold=self.config.diffThreshold,
+            )
+            total_video_frames = 0
+            total_skipped_frames = 0
+
+            for video_idx, video_path in enumerate(video_files):
+                try:
+                    progress = processed_tasks / total_tasks if total_tasks > 0 else 0
+                    if not callback(
+                        f"正处理视频 {video_idx+1}/{len(video_files)}: {Path(video_path).name}",
+                        progress,
+                    ):
+                        return False
+
+                    frame_iter = video_processor.extract_frames_iter(
+                        Path(video_path), self.output
+                    )
+                    annotation_gen = annotation_generator(
+                        frame_iter, self.model.batch
+                    )
+                    for idx, annotation_pathList in enumerate(annotation_gen):
+                        try:
+                            self._label(annotation_pathList)
+                        except Exception as e:
+                            LOGGER.error(f"处理视频帧时出错: {e}")
+
+                    total_video_frames += video_processor.extracted_count
+                    total_skipped_frames += video_processor.skipped_count
+                    processed_tasks += 1
+                except Exception as e:
+                    LOGGER.error(f"处理视频 {video_path} 时出错: {e}")
+                    success = False
+
+            LOGGER.info(
+                f"视频标注完成 - 总抽取帧数: {total_video_frames}, 跳过冗余帧数: {total_skipped_frames}"
+            )
+
+        return success
 
     def _label(self, image_pathList: List[Path]) -> None:
         """

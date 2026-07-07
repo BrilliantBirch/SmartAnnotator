@@ -22,6 +22,7 @@ from utils import (
     showMessageBox,
     checkAnnotationFiles,
     getImageFilesInDir,
+    getVideoFilesInDir,
     resource_path,
     CustomItemWidget,
 )
@@ -673,14 +674,27 @@ class MainWindow(QMainWindow):
             self.sysConfig.annotateConfig.inputDir
         )
         self.mainWindow.annotateImgInput.setText(self.sysConfig.annotateConfig.inputDir)
-        # 获取目录下所有图片文件 并更新预览到前端
         imgFiles = getImageFilesInDir(self.sysConfig.annotateConfig.inputDir)
+        videoFiles = getVideoFilesInDir(self.sysConfig.annotateConfig.inputDir)
         dataModel = QtCore.QStringListModel()
-        dataModel.setStringList(imgFiles)
+        dataModel.setStringList(imgFiles + videoFiles)
         self.mainWindow.annoateImgListView.setModel(dataModel)
         self.sysConfig.annotateConfig.annotationFiles = imgFiles
-        self.mainWindow.annotationImgNumLabel.setText(f"共有{len(imgFiles)}张图片")
-        LOGGER.info(f"共有{len(imgFiles)}张图片")
+        self.sysConfig.annotateConfig.videoFiles = videoFiles
+        self.mainWindow.annotationImgNumLabel.setText(
+            f"共有{len(imgFiles)}张图片，{len(videoFiles)}个视频"
+        )
+        LOGGER.info(f"共有{len(imgFiles)}张图片，{len(videoFiles)}个视频")
+        if videoFiles:
+            self.mainWindow.frameIntervalEdit.setVisible(True)
+            self.mainWindow.frameIntervalLabel.setVisible(True)
+            self.mainWindow.diffThresholdEdit.setVisible(True)
+            self.mainWindow.diffThresholdLabel.setVisible(True)
+        else:
+            self.mainWindow.frameIntervalEdit.setVisible(False)
+            self.mainWindow.frameIntervalLabel.setVisible(False)
+            self.mainWindow.diffThresholdEdit.setVisible(False)
+            self.mainWindow.diffThresholdLabel.setVisible(False)
 
     def updateAnnotateOutputDir(self):
         """
@@ -717,8 +731,8 @@ class MainWindow(QMainWindow):
         if not self.sysConfig.annotateConfig.inputDir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择标注输入目录")
             return False
-        if not self.sysConfig.annotateConfig.annotationFiles:
-            showMessageBox(QMessageBox.Icon.Warning, "源目录没有图像文件")
+        if not self.sysConfig.annotateConfig.annotationFiles and not self.sysConfig.annotateConfig.videoFiles:
+            showMessageBox(QMessageBox.Icon.Warning, "源目录没有图像文件或视频文件")
             return False
         if not self.sysConfig.annotateConfig.outputDir:
             result = showMessageBox(
@@ -755,6 +769,21 @@ class MainWindow(QMainWindow):
             self.sysConfig.annotateConfig.kptConf = float(
                 self.mainWindow.keyConfEdit.text()
             )
+        if hasattr(self.mainWindow, 'frameIntervalEdit') and self.mainWindow.frameIntervalEdit.isVisible():
+            if not self.mainWindow.frameIntervalEdit.text():
+                showMessageBox(QMessageBox.Icon.Warning, "请输入抽帧间隔")
+                return False
+            else:
+                self.sysConfig.annotateConfig.frameInterval = int(
+                    self.mainWindow.frameIntervalEdit.text()
+                )
+            if not self.mainWindow.diffThresholdEdit.text():
+                showMessageBox(QMessageBox.Icon.Warning, "请输入差异阈值")
+                return False
+            else:
+                self.sysConfig.annotateConfig.diffThreshold = float(
+                    self.mainWindow.diffThresholdEdit.text()
+                )
 
         return True
 
@@ -1069,6 +1098,8 @@ class MainWindow(QMainWindow):
             "bbox_conf": self.sysConfig.annotateConfig.bboxConf,
             "kpt_conf": self.sysConfig.annotateConfig.kptConf,
             "nms": self.sysConfig.annotateConfig.nms,
+            "frame_interval": self.sysConfig.annotateConfig.frameInterval,
+            "diff_threshold": self.sysConfig.annotateConfig.diffThreshold,
         }
         return config
 
@@ -1109,16 +1140,28 @@ class MainWindow(QMainWindow):
         if "nms" in config:
             self.sysConfig.annotateConfig.nms = config["nms"]
             self.mainWindow.nmsEdit.setText(str(config["nms"]))
+        if "frame_interval" in config:
+            self.sysConfig.annotateConfig.frameInterval = config["frame_interval"]
+            if hasattr(self.mainWindow, 'frameIntervalEdit'):
+                self.mainWindow.frameIntervalEdit.setText(str(config["frame_interval"]))
+        if "diff_threshold" in config:
+            self.sysConfig.annotateConfig.diffThreshold = config["diff_threshold"]
+            if hasattr(self.mainWindow, 'diffThresholdEdit'):
+                self.mainWindow.diffThresholdEdit.setText(str(config["diff_threshold"]))
         # 扫描图片目录，更新图片列表
         input_dir = config.get("input_dir", "")
         if input_dir and os.path.exists(input_dir):
             imgFiles = getImageFilesInDir(input_dir)
+            videoFiles = getVideoFilesInDir(input_dir)
             dataModel = QtCore.QStringListModel()
-            dataModel.setStringList(imgFiles)
+            dataModel.setStringList(imgFiles + videoFiles)
             self.mainWindow.annoateImgListView.setModel(dataModel)
             self.sysConfig.annotateConfig.annotationFiles = imgFiles
-            self.mainWindow.annotationImgNumLabel.setText(f"共有{len(imgFiles)}张图片")
-            LOGGER.info(f"导入配置：扫描到 {len(imgFiles)} 张图片")
+            self.sysConfig.annotateConfig.videoFiles = videoFiles
+            self.mainWindow.annotationImgNumLabel.setText(
+                f"共有{len(imgFiles)}张图片，{len(videoFiles)}个视频"
+            )
+            LOGGER.info(f"导入配置：扫描到 {len(imgFiles)} 张图片，{len(videoFiles)} 个视频")
 
     def annotate(self):
         """

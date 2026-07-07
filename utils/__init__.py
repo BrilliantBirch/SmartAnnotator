@@ -24,7 +24,7 @@ MACOS, LINUX, WINDOWS = (platform.system() == x for x in ["Darwin", "Linux", "Wi
 
 
 from .qt import chooseDir, chooseFile, showMessageBox, CustomItemWidget
-from .files import checkAnnotationFiles, getImageFilesInDir
+from .files import checkAnnotationFiles, getImageFilesInDir, getVideoFilesInDir
 from .tool import (
     is_point_in_box,
     is_rect_inside,

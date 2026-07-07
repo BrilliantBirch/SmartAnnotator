@@ -75,9 +75,12 @@ class AnnotateConfig:
         self.inputDir = ""
         self.outputDir = ""
         self.annotationFiles = []
+        self.videoFiles = []
         self.bboxConf = 0.5
         self.kptConf = 0.5
         self.nms = 0.25
+        self.frameInterval = 30
+        self.diffThreshold = 10.0
 
     def setModel(self, modelPath):
 
