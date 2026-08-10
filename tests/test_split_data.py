@@ -10,7 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 import pytest
-from utils.tool import (
+from smart_annotator.utils.tool import (
     split_data,
     _read_label_classes,
     _collect_class_ids,

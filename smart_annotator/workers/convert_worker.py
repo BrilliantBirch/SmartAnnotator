@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""
+转换线程 - 避免阻塞 UI 线程
+
+在后台线程中运行格式转换任务。移植自旧版 core/convert/__init__.py，
+仅改 PyQt5 → PySide6、cfg → smart_annotator.config 导入。
+
+作者: BaiBinnan
+创建日期: 2026-08-10
+"""
+
+from smart_annotator.config import SysConfig
+from smart_annotator.utils import LOGGER
+from .base_worker import BaseWorker
+from smart_annotator.core.convert.converter import Converter
+from PySide6.QtCore import QMutexLocker
+
+
+class ConvertWorker(BaseWorker):
+    """转换线程 - 在后台线程中运行格式转换任务，避免阻塞 UI。"""
+
+    def __init__(self):
+        """初始化转换线程。"""
+        super().__init__()
+        self.config: "SysConfig | None" = None
+
+    def setConfig(self, config: SysConfig) -> None:
+        """设置转换配置。
+
+        Args:
+            config: 系统配置对象。
+        """
+        self.config = config
+
+    def run(self) -> None:
+        """线程主逻辑（安全响应暂停/停止）。"""
+        try:
+            # 初始检查：配置是否设置 + 是否已被停止
+            with QMutexLocker(self.mutex):
+                if self.config is None:
+                    raise ValueError("转换配置未设置")
+                if self.stopped:
+                    return
+
+            # 初始化转换器并执行任务
+            converter = Converter(self.config)
+            continue_running = converter.run(self.run_callback)
+
+            # 任务结束：区分正常完成和被停止
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.progress_desc.emit("转换任务手动终止")
+                    self.progress_updated.emit(0.0)
+                elif continue_running:
+                    self.progress_desc.emit("转换任务完成")
+                    self.progress_updated.emit(1.0)
+                else:
+                    self.progress_desc.emit("转换任务异常中断")
+
+        except ValueError as e:
+            LOGGER.error(f"转换配置错误: {str(e)}")
+            self.error_occurred.emit(f"配置错误: {str(e)}")
+        except Exception as e:
+            error_msg = f"转换线程执行异常: {str(e)}"
+            LOGGER.error(error_msg)
+            self.error_occurred.emit(error_msg)
+        finally:
+            self.task_finished.emit()
+            # 清理工作：重置标志位（方便线程复用）
+            with QMutexLocker(self.mutex):
+                self.paused = False
+                self.stopped = False

@@ -1,4 +1,6 @@
 # GPU额外依赖（仅使用GPU推理时需要安装）
 # 需要先安装对应版本的CUDA和cuDNN
-cuda-python==12.3.0
+# 当前环境: CUDA 12.9 + cuDNN 9.x + TensorRT 10.13.3.9
+cuda-python==12.9.0
 tensorrt==10.13.3.9
+pynvml==12.0.0

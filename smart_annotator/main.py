@@ -1,0 +1,72 @@
+# -*- coding: utf-8 -*-
+"""
+VAI_E_SmartAnnotator - 程序入口
+
+启动 PySide6 GUI 主窗口，提供 LabelMe↔YOLO 格式转换与 ONNX/TensorRT 自动标注功能。
+
+支持两种运行方式：
+    - 开发模式: python -m smart_annotator.main
+    - 打包模式: VAI_E_SmartAnnotator.exe（PyInstaller 处理路径）
+
+作者: BaiBinnan
+创建日期: 2026-08-10
+"""
+import ctypes
+import sys
+from pathlib import Path
+
+# 将项目根目录添加到 sys.path（开发模式），打包后由 PyInstaller 处理
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication
+
+from smart_annotator.app import MainWindow
+from smart_annotator.utils.paths import resource_path
+
+
+def _resolve_icon_path() -> Path:
+    """解析应用图标路径（兼容开发与打包两种模式）。
+
+    打包模式下图标作为数据文件打包，位于 PyInstaller 的 _MEIPASS 内容目录；
+    开发模式下使用 build 目录下的 app.ico。
+
+    Returns:
+        图标文件路径。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "app.ico"
+    return Path(resource_path("build/app.ico"))
+
+
+def main() -> None:
+    """程序入口 — 创建 QApplication 并显示主窗口。"""
+    app = QApplication(sys.argv)
+    app.setApplicationName("VAI_E_SmartAnnotator")
+    app.setOrganizationName("武汉川丰软件")
+
+    # 设置窗口/任务栏图标（Windows 下绑定 AppUserModelID，避免任务栏无图标/分组错误）
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "CFSoft.VAI_E_SmartAnnotator"
+            )
+        except (AttributeError, OSError):
+            pass  # 非 Windows 或设置失败时忽略，不影响主功能
+
+    icon_path = _resolve_icon_path()
+    if icon_path.exists():
+        icon = QIcon(str(icon_path))
+        app.setWindowIcon(icon)
+
+    window = MainWindow()
+    if icon_path.exists():
+        window.set_window_icon(QIcon(str(icon_path)))
+    window.show()
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

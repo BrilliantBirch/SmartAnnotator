@@ -1,236 +1,174 @@
 # VAI_E_SmartAnnotator v1.2.0
 
-## 1. 软件概述
-本工具是一个基于 Qt 框架开发的智能标注软件。
-本工具旨在简化数据集处理流程，提供自动标注、格式转换等核心功能，同时支持后续功能扩展，适用于计算机视觉领域（如目标检测、姿态估计、图像分割、光学字符识别）的数据集制备场景。
+基于 PySide6 的智能标注工具，提供 LabelMe ↔ YOLO 格式转换与 ONNX/TensorRT 自动标注功能。
 
-![weclome](assets\examples\welcome.jpg)
+## 1. 功能概述
 
-## 2. 更新日志
+| 功能 | 说明 |
+|------|------|
+| **格式转换** | LabelMe JSON ↔ YOLO TXT 双向转换，支持目标检测/姿态估计/实例分割 |
+| **自动标注** | 加载 ONNX/TensorRT 模型，对图片/视频批量推理并输出 LabelMe 标注文件 |
+| **数据集划分** | 按 train/val/test 比例分层抽样划分 YOLO 数据集 |
+| **配置管理** | JSON 格式导入/导出，兼容旧版 camelCase 键 |
 
-### v1.2.0 (2026-07-07)
-- **视频标注功能**：支持从视频文件（.mp4/.avi/.mov）中智能抽帧并标注
-- **智能抽帧算法**：基于帧间差异比对，自动过滤冗余帧，提升数据集质量
-- **迭代器模式优化**：视频抽帧采用流式处理，边抽边标，大幅降低内存占用
-- **批处理修复**：修复最后一批图片不足 batch_size 时的索引越界问题
-- **模型格式检测优化**：仅依赖元数据判断端到端模型，避免误判
+### 支持的任务模式
 
-### v1.1.0 (2026-06-24)
-- **前端界面重设计**：现代化 QSS 样式表，统一字体、颜色、控件风格，界面自适应窗口大小
-- **布局优化**：按钮固定右下角排列，进度条自然延展，推理参数紧凑水平排列
-- **日志区优化**：白底深灰字配色，不同级别日志颜色区分，护眼清晰
-- **页面标题提示**：切换任务时顶部显示当前界面类型（格式转换/自动标注/标注修改/数据集导出）
-- **配置导入导出**：转换页和标注页新增 JSON 格式配置导入/导出功能，避免重复输入
-- **性能优化**：线程池并行图片解码、内存预分配、异步推理，提升检测与转换效率
-- **TensorRT 10.x 适配**：支持 `set_tensor_address` + `execute_async_v3` 新 API
+| 模式 | 说明 | 转换 | 标注 |
+|------|------|------|------|
+| `DETECT` | 目标检测 | ✓ | ✓ |
+| `POSE` | 姿态估计（关键点） | ✓ | ✓ |
+| `SEGMENT` | 实例分割 | ✓ | ✓ |
+| `OCR` | 光学字符识别 | ✓ | 未来版本 |
 
-### v1.0.0 (2025-08-25)
-- 初始版本发布，支持自动标注、格式转换核心功能
+## 2. 技术栈
 
-## 3. 快速开始
+| 项目 | 版本 |
+|------|------|
+| Python | 3.12.10（严格锁定） |
+| PySide6 | 6.11.1 |
+| numpy | 2.4.6 |
+| opencv-python | 4.13.0.92 |
+| onnxruntime | 1.28.0 |
+| pywin32 | 312 |
 
-### 3.1 环境要求
-- Python 3.8+
-- PyQt5
-- Ultralytics YOLOv8+
-- CUDA + cuDNN（GPU 推理可选）
-- TensorRT 10.x（engine 格式模型可选）
+完整依赖见 [requirements.txt](requirements.txt)，GPU 额外依赖见 [requirements-gpu.txt](requirements-gpu.txt)。
 
-### 3.2 安装与启动
+## 3. 项目结构
+
+```
+VAI_E_SmartAnnotator/
+├── smart_annotator/              # 主包
+│   ├── __init__.py               # 应用常量
+│   ├── __main__.py               # python -m smart_annotator 入口
+│   ├── main.py                   # QApplication 入口
+│   ├── app.py                    # MainWindow 主窗口
+│   ├── styles.py                 # 全局 QSS 样式表
+│   ├── config.py                 # dataclass 配置 + 枚举
+│   ├── version_manager.py        # 版本号管理
+│   ├── pages/                    # 三页界面（欢迎/转换/标注）
+│   ├── widgets/                  # 公共控件（按钮/卡片/字段/对话框）
+│   ├── workers/                  # QThread 工作线程
+│   ├── core/                     # 业务逻辑（转换/标注算法）
+│   └── utils/                    # 工具（日志/文件/路径/颜色）
+├── build/                        # 打包脚本
+│   ├── build.py                  # PyInstaller 打包脚本
+│   └── app.ico                   # 应用图标
+├── resources/                    # 资源文件
+│   └── images/                   # 图标资源
+├── assets/                       # 示例图片
+├── requirements.txt              # 依赖列表
+├── requirements-gpu.txt          # GPU 额外依赖
+└── README.md
+```
+
+## 4. 安装与运行
+
+### 4.1 环境准备
+
 ```bash
+# 创建 conda 虚拟环境（Python 3.12.10）
+conda create -n VAI_E_SmartAnnotator python=3.12.10
+conda activate VAI_E_SmartAnnotator
+
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动程序
-python smartAnnotator.py
+# GPU 推理需额外安装（需先安装 CUDA + cuDNN）
+pip install -r requirements-gpu.txt
 ```
 
-### 3.3 界面布局说明
-启动后主界面分为四个区域：
-- **顶部标题栏**：显示当前所在页面（格式转换/自动标注/标注修改/数据集导出）
-- **任务类型选择**：下拉框切换 DETECT / POSE / SEG 任务模式
-- **主功能区**：通过菜单栏或侧边栏切换各个功能页面
-- **底部日志区**：实时显示运行日志，不同颜色区分级别
-## 4. 核心功能说明
-### 4.1 自动标注功能
-#### 4.1.1 支持范围
+### 4.2 运行
 
-* 模型类型：兼容 Ultralytics YOLOv8 及以上版本的检测（detect）、姿态估计（pose）、分割（seg）任务预标注模型​
-* 模型格式：支持导入 onnx、engine 等格式的预训练模型​
-* 推理硬件：支持 CPU 推理，同时兼容英伟达（NVIDIA）显卡的 GPU 推理​
+```bash
+# 方式一：模块入口
+python -m smart_annotator
 
-#### 4.1.2 操作流程
-1. 导入预标注模型（onnx/engine 格式）​
-2. 指定待标注图片的存储路径​
-3. 选择推理硬件（CPU/GPU）​
-4. 启动自动标注任务​
-5. 标注结果会在 用户指定目录 生成 LabelMe 格式的数据集（含 json 标注文件与对应图片）​   
-![annotation](assets\examples\annotation.jpg)    
-
-#### 4.1.3 结果用途  
-
-生成的 LabelMe 格式数据集可直接供标注人员进行人工审核、微调修改，减少手动标注工作量。
-
-#### 4.1.4 视频标注功能
-
-**v1.2.0 新增**，支持从视频文件中智能抽帧并自动标注。
-
-**支持格式**：.mp4、.avi、.mov 等常见视频格式
-
-**操作流程**：
-1. 选择包含视频文件的目录（可同时包含图片和视频）
-2. 系统自动检测视频文件并显示数量统计
-3. 当检测到视频时，界面自动显示"抽帧间隔"和"差异阈值"参数输入框
-4. 设置抽帧参数后启动标注任务
-5. 系统先处理所有图片，再处理视频文件
-6. 抽取的帧图像命名格式：`视频名称_帧索引.jpg`（如 `sample_video_001.jpg`）
-
-**智能抽帧算法**：
-- 基于帧间差异比对，计算当前帧与上一帧的像素差异平均值
-- 当差异值低于设定阈值时，自动跳过该帧，避免冗余数据
-- 采用迭代器模式流式处理，边抽边标，大幅降低内存占用
-
-**抽帧差异阈值推荐值与设置依据**：
-
-| 场景                      | 推荐阈值    | 设置依据                           |
-| ------------------------- | ----------- | ---------------------------------- |
-| 静态场景（监控摄像头）    | 5.0 - 8.0   | 背景变化小，低阈值即可捕捉目标移动 |
-| 一般场景（行人/车辆）     | 10.0 - 15.0 | 中等运动速度，平衡数据量与多样性   |
-| 快速运动场景（体育运动）  | 15.0 - 25.0 | 高阈值确保捕捉关键动作帧           |
-| 复杂背景（树叶摇晃/水面） | 20.0 - 30.0 | 高阈值过滤背景噪声干扰             |
-
-**参数说明**：
-- **抽帧间隔**：每隔 N 帧检测一次（默认30帧，约1秒@30fps）
-- **差异阈值**：帧间像素差异平均值，低于此值视为冗余帧（默认10.0）
-
-**标注统计**：视频处理完成后，日志区会显示：
-- 总抽取帧数
-- 跳过的冗余帧数
-
-### 4.2 数据集格式互相转换功能
-#### 4.2.1 支持格式
-* 正向转换：YOLO txt 格式数据集 → LabelMe json 格式数据集​
-* 反向转换：LabelMe json 格式数据集 → YOLO txt 格式数据集​
-    
-#### 4.2.2 标注文件审核功能  
-转换过程中自动触发审核机制，包括但不限于：​  
-* 格式审核：检查标注文件（txt/json）的语法规范性、字段完整性（如 YOLO txt 的 “类别 ID x y w h” 格式、LabelMe json 的 “shapes” 字段）​  
-* 关键点位置审核：针对姿态估计（pose）类标注，检查关键点坐标是否在BBOx  内（0~1 归一化后），避免超出边界的无效标注​  
-* 类别名称审核：检查标注框类别名称是否与预定义类别列表匹配，避免使用不存在的类别​  
-* 标注框位置审核：检查标注框位置是否正确，避免标注框超出图片边界​  
-* 标注框大小审核：检查标注框大小是否合理，避免标注框过小或过大​  
-
-#### 4.2.3 操作流程
-1. 导入待转换的数据集（YOLO txt 或 LabelMe json 格式）  
-* yolo数据集目录结构如下：
+# 方式二：直接运行
+python smart_annotator/main.py
 ```
-├── data
-│   ├── images
-│   │   ├── xx.jpg
-│   │   ├── yy.jpg
-│   ├── labels
-│   │   ├── xx.txt
-│   │   ├── yy.txt
-```  
-* labelme数据集目录结构如下：
-```
-├── data
-│   ├── xx.jpg
-│   ├── xx.json
-│   ├── yy.jpg
-│   ├── yy.json
-```  
 
-2. 选择源格式（YOLO txt  或 LabelMe json ）​
-3. 配置转换参数（如类别名称列表、图片存储路径等）​
-4. 启动转换任务​
-5. 转换完成后，查看转换结果（标注文件、图片）  
-   ​  
-![convert](assets\examples\convert.png)
-![convert1](assets\examples\convert1.png)
+## 5. 配置文件格式
 
-#### 4.2.4 输出结果
-转换完成后，自动生成 符合 YOLO 训练标准的数据集目录结构，同时生成 dataset.yaml 文件（包含数据集路径、类别名称、类别数量等训练必要配置），可直接用于 YOLO 模型训练。​  
+### 5.1 格式转换配置（convert_config.json）
 
-### 4.3 配置导入导出功能
-**v1.1.0 新增**，避免用户每次重复输入参数。
-
-#### 4.3.1 使用方式
-1. 在转换页或标注页填写好参数后，点击底部 **导出配置** 按钮，保存为 JSON 文件
-2. 下次使用时，点击 **导入配置** 按钮，选择之前保存的 JSON 文件即可恢复所有参数
-
-#### 4.3.2 配置文件格式
-**转换配置样例** (`convert_config.json`)：
 ```json
 {
-  "input_dir": "E:/data/images",
-  "output_dir": "E:/data/output",
-  "source_format": "json",
-  "classes": ["person", "car", "dog"],
-  "kpt": {"nose": 0, "left_eye": 1},
-  "visualize": true,
-  "export": true,
+  "source_format": "LABELME",
+  "target_format": "YOLO",
+  "classes": ["cat", "dog"],
+  "kpt": { "nose_point0": { "isChecked": true, "bbox_size": 10 } },
+  "visualize": false,
+  "export": false,
+  "input_dir": "",
+  "output_dir": "",
   "train_ratio": 0.8,
   "val_ratio": 0.1,
   "test_ratio": 0.1
 }
 ```
 
-**标注配置样例** (`annotate_config.json`)：
+### 5.2 自动标注配置（annotate_config.json）
+
 ```json
 {
-  "model_path": "E:/models/yolo.engine",
   "device": "GPU",
-  "input_dir": "E:/data/images",
-  "output_dir": "E:/data/annotations",
-  "bbox_conf": 0.25,
+  "model_path": "",
+  "image_path": "",
+  "dataset_path": "",
+  "conf": 0.25,
   "kpt_conf": 0.5,
   "nms": 0.7,
   "frame_interval": 30,
-  "diff_threshold": 10.0
+  "diff_threshold": 10.0,
+  "task_type": "DETECT"
 }
 ```
 
-#### 4.3.3 默认路径
-- 导入/导出文件对话框默认打开至输出目录（如已设置）
-- 导出文件名自动填充为 `convert_config.json` 或 `annotate_config.json`
+> 配置导入兼容旧版 camelCase 键名（如 `modelPath` → `model_path`）。
 
-### 5. 待开发功能
-​
+## 6. 打包
 
-#### 5.1 LabelMe json 批修改
-支持对 LabelMe 格式的 json 标注文件进行批量编辑（如批量修改类别名称、调整标注框位置等）​
-待开发
-#### 5.2 视频文件导出图片数据集
-支持从视频文件中提取图片生成数据集，含多进程加速导出、稀疏导出（按指定间隔提取帧）功能​
-待开发​
-​
-## 6. 使用前准备
+```bash
+cd build
+python build.py
+```
 
-### 6.1 硬件要求：  
-* CPU：无特殊要求（满足基础计算即可）​
-* GPU（可选）：英伟达（NVIDIA）显卡（需提前安装对应版本的 CUDA、cuDNN）​ 
+打包产物位于 `build/dist/VAI_E_SmartAnnotator/`：
+- `VAI_E_SmartAnnotator.exe` — 可执行文件
+- `VAI_E_SmartAnnotator/` — 依赖包目录
+- `py_packages_list.txt` — 依赖文件清单
 
-## 7. 常见问题（FAQ）
+版本号策略：
+- 文件版本：`年.月.日.构建次数`（如 `26.8.10.0`），自动递增
+- 产品版本：`1.2.0.0`（固定）
 
-**Q：GPU 推理失败怎么办？**   
-A： 
-   1. 检查 CUDA、cuDNN 版本是否与要求匹配；  
-   2. 确认 onnx模型是由 ultralytics 导出的，metadata完整；   
+## 7. 架构设计
 
-**Q：转换后标注文件缺失如何排查？**  
-A： 
-1. 检查原始数据集路径是否正确（无中文 / 特殊字符）；  
-2. 查看审核日志，确认是否因格式错误被过滤；
-3. 确认目标存储目录有写入权限。
+### 7.1 分层架构
 
-**Q：如何避免每次重复输入参数？**  
-A：使用 v1.1.0 新增的配置导入/导出功能：
-1. 填好参数后点击底部 **导出配置** 按钮，保存为 JSON 文件
-2. 下次使用时点击 **导入配置** 按钮，选择该 JSON 文件即可一键恢复
+```
+pages/（界面层）→ workers/（线程层）→ core/（算法层）
+     ↑                ↑                  ↑
+     └── widgets/     └── base_worker    └── utils/
+```
 
-**Q：日志文字看不清怎么办？**  
-A：v1.1.0 已将日志区优化为白底深灰字，不同级别用不同颜色区分（INFO=深青、WARNING=深橙、ERROR=深红），如仍不清晰可调整 `resources/styles/app.qss` 中的配色。
+- **界面层**（pages/）：BasePage 基类 + 三页，通过 Signal 与 worker 通信
+- **线程层**（workers/）：BaseWorker(QThread) 提供暂停/恢复/停止控制
+- **算法层**（core/）：纯 Python 算法，无 Qt 依赖，可独立测试
+- **工具层**（utils/）：日志（LOGGER 纯 Python + QtLogHandler Qt 适配）、文件扫描、路径解析
 
-**Q：控件显示不全或被截断？**  
-A：v1.1.0 已移除大部分控件的固定宽度限制，界面会随窗口大小自适应。如仍有问题，请尝试拉宽窗口或反馈具体控件名称。
+### 7.2 配置管理
+
+基于 `@dataclass` 的配置类（`ConvertConfig`/`AnnotateConfig`/`SysConfig`），支持 `to_dict()`/`from_dict()` 序列化与旧版 camelCase 键迁移。
+
+### 7.3 响应式 UI
+
+- 窗口宽度 ≥ 768px：显示侧边栏导航
+- 窗口宽度 < 768px：切换为底部标签栏
+- 内容区使用 QScrollArea 包裹，小屏不溢出
+
+## 8. 作者
+
+BaiBinnan（baibinnan@chuanfeng.com）
+
+武汉川丰软件
