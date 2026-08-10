@@ -180,7 +180,7 @@ class TxtConverter:
                     self.class_mapping,
                     self.kpt,
                     self.splitRatio,
-                    exportcallback,
+                    callback=exportcallback,
                 )
                 LOGGER.info(f"导出数据集完成")
 

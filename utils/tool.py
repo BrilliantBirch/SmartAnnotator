@@ -4,6 +4,8 @@ import yaml
 import json
 import os
 import sys
+import random
+from collections import Counter, defaultdict
 
 
 # region 标注检查
@@ -81,81 +83,308 @@ def classMapping(classes):
 
 
 # region 数据集分割与yaml文件生成
-def split_data(data_dir, split_ratios, callback=None):
+
+
+def _read_label_classes(label_path):
     """
-    划分YOLO格式的数据集
+    读取YOLO格式标签文件，返回该图片包含的class_id集合（去重）
+
+    Args:
+        label_path: 标签文件路径
+
+    Returns:
+        set: 该图片包含的类别ID集合
+    """
+    classes = set()
+    try:
+        with open(label_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if parts:
+                    classes.add(int(float(parts[0])))
+    except Exception as e:
+        print(f"  [警告] 读取标注失败 {label_path}: {e}")
+    return classes
+
+
+def _collect_class_ids(samples):
+    """
+    收集全数据集中出现的所有class_id，返回连续索引列表
+
+    Args:
+        samples: 样本列表，每个元素为(image_path, label_path)
+
+    Returns:
+        list: 从0到最大ID的连续索引列表
+    """
+    ids = set()
+    for img, lab in samples:
+        ids.update(_read_label_classes(lab))
+    if not ids:
+        return []
+    max_id = max(ids)
+    return list(range(0, max_id + 1))
+
+
+def _count_instances(samples, class_ids):
+    """
+    统计每个类别的实例总数和包含该类的图片数
+
+    Args:
+        samples: 样本列表
+        class_ids: 类别ID列表
+
+    Returns:
+        tuple: (实例计数器, 图片计数器, 多类别图片数)
+    """
+    inst_counter = Counter()
+    img_counter = Counter()
+    multi_label = 0
+
+    for img, lab in samples:
+        classes = _read_label_classes(lab)
+        if len(classes) > 1:
+            multi_label += 1
+        for c in classes:
+            inst_counter[c] += 1
+            img_counter[c] += 1
+
+    return inst_counter, img_counter, multi_label
+
+
+def _stratified_split(samples, ratio, seed):
+    """
+    图片级分层采样，保证train/val/test各类别分布与原数据一致
+
+    Args:
+        samples: 样本列表，每个元素为(image_path, label_path)
+        ratio: (train_ratio, val_ratio, test_ratio) 比例元组
+        seed: 随机种子
+
+    Returns:
+        tuple: (train_samples, val_samples, test_samples)
+    """
+    rng = random.Random(seed)
+    r0, r1, r2 = ratio
+
+    # 按图片包含的类别组合分组（stratum）
+    strata = defaultdict(list)
+    for img, lab in samples:
+        classes = tuple(sorted(_read_label_classes(lab)))
+        strata[classes].append((img, lab))
+
+    train, val, test = [], [], []
+
+    for classes, group in strata.items():
+        rng.shuffle(group)
+        n = len(group)
+        n_train = max(1, int(round(n * r0)))
+        n_val = max(1, int(round(n * r1)))
+
+        # 确保val/test至少可保留样本
+        n_val = min(n_val, n - n_train)
+        n_test = n - n_train - n_val
+        if n_test < 0:
+            n_test = 0
+            n_val = n - n_train
+
+        train.extend(group[:n_train])
+        val.extend(group[n_train:n_train + n_val])
+        test.extend(group[n_train + n_val:])
+
+    return train, val, test
+
+
+def _generate_split_report(train, val, test, class_ids, class_names=None, callback=None):
+    """
+    生成数据集划分的统计报告
+
+    Args:
+        train: 训练集样本列表
+        val: 验证集样本列表
+        test: 测试集样本列表
+        class_ids: 类别ID列表
+        class_names: 类别名称映射 {class_id: class_name}，用于报告显示；为None时使用class_{id}占位
+        callback: 回调函数，用于输出报告
+
+    Returns:
+        tuple: (report_dict, report_text) 统计报告字典与格式化文本
+    """
+    report = {
+        "total": len(train) + len(val) + len(test),
+        "train": len(train),
+        "val": len(val),
+        "test": len(test),
+        "class_stats": {}
+    }
+
+    # 统计各子集的类别分布
+    for split_name, split_data in [("train", train), ("val", val), ("test", test)]:
+        inst_counter, img_counter, multi_label = _count_instances(split_data, class_ids)
+        report["class_stats"][split_name] = {
+            "instances": dict(inst_counter),
+            "images": dict(img_counter),
+            "multi_label": multi_label
+        }
+
+    # 生成格式化报告文本
+    lines = []
+    lines.append("=== 数据集划分统计报告 ===")
+    lines.append(f"总样本数: {report['total']}")
+    lines.append(f"训练集: {report['train']} | 验证集: {report['val']} | 测试集: {report['test']}")
+    lines.append(f"{'类别':<20}{'训练实例':>10}{'验证实例':>10}{'测试实例':>10}")
+
+    for cid in class_ids:
+        cname = class_names.get(cid, f"class_{cid}") if class_names else f"class_{cid}"
+        train_inst = report["class_stats"]["train"]["instances"].get(cid, 0)
+        val_inst = report["class_stats"]["val"]["instances"].get(cid, 0)
+        test_inst = report["class_stats"]["test"]["instances"].get(cid, 0)
+        lines.append(f"{cname:<20}{train_inst:>10}{val_inst:>10}{test_inst:>10}")
+
+    report_text = "\n".join(lines)
+
+    # 通过回调函数输出报告
+    if callback:
+        callback(report_text, 1.0)
+
+    return report, report_text
+
+
+def split_data(data_dir, split_ratios, random_seed=42, class_names=None, callback=None):
+    """
+    划分YOLO格式的数据集（采用分层抽样策略）
 
     Args:
         data_dir: 数据集根目录，包含images和labels文件夹
-        split_ratios: 训练集、验证集、测试集的比例
-        random_seed: 随机种子，确保结果可重现
+        split_ratios: 训练集、验证集、测试集的比例，如(0.7, 0.2, 0.1)
+        random_seed: 随机种子，确保结果可重现，默认42
+        class_names: 类别名称映射 {class_id: class_name}，用于报告显示；为None时使用class_{id}占位
+        callback: 回调函数，签名callback(message, progress)，用于进度和报告输出
+
+    Returns:
+        dict: 包含划分统计信息的字典，失败时返回None
     """
     try:
         data_dir = Path(data_dir)
-        # 路径设置
-        images_dir = Path(data_dir) / "images"
-        labels_dir = Path(data_dir) / "labels"
+        images_dir = data_dir / "images"
+        labels_dir = data_dir / "labels"
+
+        # 验证目录存在
+        if not images_dir.exists() or not labels_dir.exists():
+            raise FileNotFoundError(f"数据集目录结构不完整，需要images和labels子目录")
 
         # 获取所有图片文件
-        image_extensions = [".jpg", ".jpeg", ".png", ".bmp"]
-        image_files = [
-            f for f in images_dir.iterdir() if f.suffix.lower() in image_extensions
-        ]
-        import random
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+        image_files = {
+            f.stem: f for f in images_dir.iterdir()
+            if f.suffix.lower() in image_extensions
+        }
 
-        random.seed(42)
-        # 随机打乱文件列表
-        random.shuffle(image_files)
+        # 配对图片和标注文件
+        samples = []
+        for stem, img_path in image_files.items():
+            label_path = labels_dir / f"{stem}.txt"
+            if label_path.exists():
+                samples.append((img_path, label_path))
 
-        # 计算各集合的数量
-        total_count = len(image_files)
-        train_count = int(total_count * split_ratios[0])
-        val_count = int(total_count * split_ratios[1])
-        test_count = total_count - train_count - val_count
+        if not samples:
+            raise ValueError("未找到有效的图片-标注配对，请检查目录结构")
 
-        # 分割文件列表
-        train_files = image_files[:train_count]
-        val_files = image_files[train_count : train_count + val_count]
-        test_files = image_files[train_count + val_count :]
+        if callback:
+            callback(f"发现 {len(samples)} 个有效样本", 0.1)
+
+        # 收集类别信息
+        class_ids = _collect_class_ids(samples)
+        if not class_ids:
+            raise ValueError("未在标注中找到任何有效类别")
+
+        if callback:
+            callback(f"检测到 {len(class_ids)} 个类别", 0.2)
+
+        # 全数据集统计
+        inst_counter, img_counter, multi_label = _count_instances(samples, class_ids)
+        if callback:
+            lines = [f"\n=== 全数据集统计（共 {sum(inst_counter.values())} 实例） ==="]
+            lines.append(f"含多类别标注的图片数: {multi_label}")
+            lines.append(f"{'类别':<20}{'实例数':>10}{'含该类图片':>12}")
+            for cid in class_ids:
+                cname = class_names.get(cid, f"class_{cid}") if class_names else f"class_{cid}"
+                lines.append(f"{cname:<20}{inst_counter[cid]:>10}{img_counter[cid]:>12}")
+            callback("\n".join(lines), 0.3)
+
+        # 分层抽样划分
+        if callback:
+            callback("正在进行分层抽样划分...", 0.4)
+
+        train_samples, val_samples, test_samples = _stratified_split(
+            samples, split_ratios, random_seed
+        )
+
+        if callback:
+            callback(f"划分完成: train={len(train_samples)}, val={len(val_samples)}, test={len(test_samples)}", 0.5)
+
+        # 生成统计报告（必须在文件移动之前，此时标签文件仍在原位可读取）
+        report, report_text = _generate_split_report(
+            train_samples, val_samples, test_samples, class_ids,
+            class_names=class_names, callback=callback
+        )
+
+        # 将报告写入输出目录（数据集根目录）
+        report_path = data_dir / "split_report.txt"
+        try:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(report_text)
+        except Exception as e:
+            print(f"  [警告] 写入报告文件失败 {report_path}: {e}")
+
+        # 将报告输出到日志（延迟导入 LOGGER，避免循环导入）
+        try:
+            from utils import LOGGER
+            for line in report_text.splitlines():
+                LOGGER.info(f"[数据集划分] {line}")
+            LOGGER.info(f"[数据集划分] 报告文件已保存至: {report_path}")
+        except Exception as e:
+            print(f"  [警告] 日志输出失败: {e}")
 
         # 创建输出目录结构
-        splits = ["train", "val", "test"]
-        for split in splits:
-            (data_dir / split).mkdir(parents=True, exist_ok=True)
+        for split in ["train", "val", "test"]:
             (data_dir / split / "images").mkdir(parents=True, exist_ok=True)
             (data_dir / split / "labels").mkdir(parents=True, exist_ok=True)
 
-        # 复制文件到对应目录
-        def move_files(files, split_name, callback=None):
-            total = len(files)
-            for idx, file in enumerate(files):
-                if callback:
-                    callback(f"正在处理{split_name}数据集", (idx + 1) / total)
-                # 图片文件
-                img_src = images_dir / file
-                img_dst = data_dir / split_name / "images" / file.name
-                shutil.move(img_src, img_dst)
+        # 移动文件到对应目录
+        def move_files(samples_list, split_name, start_progress, end_progress):
+            total = len(samples_list)
+            for idx, (img_path, lab_path) in enumerate(samples_list):
+                if callback and idx % max(1, total // 10) == 0:
+                    progress = start_progress + (end_progress - start_progress) * (idx / total)
+                    callback(f"正在处理{split_name}数据集", progress)
 
-                # 对应的标注文件
-                label_file = file.with_suffix(".txt")
-                label_src = labels_dir / label_file.name
-                label_dst = (
-                    data_dir / split_name / "labels" / label_file.name
-                ).absolute()
-                if label_src.exists():
-                    shutil.move(label_src, label_dst)
+                # 移动图片
+                shutil.move(img_path, data_dir / split_name / "images" / img_path.name)
+                # 移动标注文件
+                shutil.move(lab_path, data_dir / split_name / "labels" / lab_path.name)
 
-        # 复制各集合文件
-        move_files(train_files, "train", callback)
-        move_files(val_files, "val", callback)
-        move_files(test_files, "test", callback)
-        # 删除源
+        move_files(train_samples, "train", 0.5, 0.7)
+        move_files(val_samples, "val", 0.7, 0.85)
+        move_files(test_samples, "test", 0.85, 0.95)
+
+        # 删除源目录
         shutil.rmtree(images_dir)
         shutil.rmtree(labels_dir)
 
-        return True
+        if callback:
+            callback(f"报告已保存至: {report_path}", 1.0)
+            callback("数据集划分完成！", 1.0)
+
+        return report
+
     except Exception as e:
-        return False
+        if callback:
+            callback(f"数据集划分失败: {str(e)}", 0.0)
+        return None
 
 
 def create_yaml(data_dir: Path, classMapping, kpt):
@@ -191,17 +420,28 @@ def create_yaml(data_dir: Path, classMapping, kpt):
 
 
 def export(
-    data_dir: Path, classMapping, kpt, split_ratios=(0.7, 0.2, 0.1), callback=None
+    data_dir: Path, classMapping, kpt, split_ratios=(0.7, 0.2, 0.1), random_seed=42, callback=None
 ):
     """
     导出YOLO格式的数据集配置文件
 
     Args:
         data_dir: 数据集根目录
-        class_dict: 类别名称到索引的映射
-        split_ratios: 训练集、验证集、测试集的比例
+        classMapping: 类别名称到索引的映射 {class_name: class_id}
+        kpt: 关键点信息（可选）
+        split_ratios: 训练集、验证集、测试集的比例，默认(0.7, 0.2, 0.1)
+        random_seed: 随机种子，确保结果可重现，默认42
+        callback: 回调函数，签名callback(message, progress)，用于进度和报告输出
     """
-    if split_data(data_dir, split_ratios, callback):
+    # 翻转为 {class_id: class_name}，供报告显示真实类别名
+    class_names = {v: k for k, v in classMapping.items()}
+    report = split_data(
+        data_dir, split_ratios,
+        random_seed=random_seed,
+        class_names=class_names,
+        callback=callback,
+    )
+    if report is not None:
         create_yaml(data_dir, classMapping, kpt)
     else:
         raise Exception("数据集分割失败")
