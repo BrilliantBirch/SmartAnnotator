@@ -155,7 +155,7 @@ def set_logging(name="LOGGING_NAME"):
             return super().format(record)
 
     # 创建日志目录
-    log_dir = os.path.join(ROOT, "Logs")
+    log_dir = os.path.join(ROOT, "Log")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
     file_handler = TimedRotatingFileHandler(
