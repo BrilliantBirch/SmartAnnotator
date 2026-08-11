@@ -50,9 +50,11 @@ VAI_E_SmartAnnotator/
 │   ├── workers/                  # QThread 工作线程
 │   ├── core/                     # 业务逻辑（转换/标注算法）
 │   └── utils/                    # 工具（日志/文件/路径/颜色）
-├── build/                        # 打包脚本
-│   ├── build.py                  # PyInstaller 打包脚本
-│   └── app.ico                   # 应用图标
+├── build.py                      # PyInstaller 打包脚本（项目根目录）
+├── installer.iss                 # Inno Setup 离线安装器脚本
+├── installer_online.iss          # Inno Setup 在线安装器脚本
+├── download_config.ini           # Gitee Release 下载 URL 配置
+├── app.ico                       # 应用图标
 ├── resources/                    # 资源文件
 │   └── images/                   # 图标资源
 ├── assets/                       # 示例图片
@@ -129,14 +131,19 @@ python smart_annotator/main.py
 ## 6. 打包
 
 ```bash
-cd build
-python build.py
+# 在项目根目录执行
+python build.py --mode all      # 构建 CPU + GPU 离线安装器 + 在线安装器
+python build.py --mode cpu      # 仅构建 CPU 离线安装器
+python build.py --mode gpu      # 仅构建 GPU 离线安装器
+python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gitee 后使用）
 ```
 
-打包产物位于 `build/dist/VAI_E_SmartAnnotator/`：
+打包产物位于 `build/dist_{mode}/VAI_E_SmartAnnotator/`：
 - `VAI_E_SmartAnnotator.exe` — 可执行文件
 - `VAI_E_SmartAnnotator/` — 依赖包目录
 - `py_packages_list.txt` — 依赖文件清单
+
+安装程序输出到 `build/installer_output/`，zip 分发包输出到 `build/packages/`。
 
 版本号策略：
 - 文件版本：`年.月.日.构建次数`（如 `26.8.10.0`），自动递增

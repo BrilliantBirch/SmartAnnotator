@@ -14,12 +14,9 @@ __pycache__/
 *.egg
 MANIFEST
 
-# PyInstaller 构建产物（保留 build/build.py 与 build/app.ico）
-build/dist/
-build/build_temp/
-build/version_info.txt
-build/version_counter.txt
-build/*.spec
+# 构建产物目录（dist_*, build_temp_*, installer_output, packages, *.spec 等均在此目录下）
+# 配置文件（build.py, installer.iss, installer_online.iss, download_config.ini, app.ico）位于项目根目录
+build/
 dist/
 
 # Installer logs
