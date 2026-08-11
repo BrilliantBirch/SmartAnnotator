@@ -102,7 +102,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Fla
 Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillApp"
 
 [UninstallDelete]
-; 卸载时清理用户配置与日志（Type: filesandordirs 会删除目录及内容）
+; 删除整个安装目录（包含 exe、依赖文件夹、运行时生成的 Log 等）
+; filesandordirs 会递归删除目录及所有内容，无论 Inno Setup 是否记录了这些文件
+Type: filesandordirs; Name: "{app}"
+; 清理用户配置与日志（运行时在 %APPDATA% 中生成）
 Type: filesandordirs; Name: "{userappdata}\{#MyAppPublisher}\{#MyAppName}"
 
 [Code]
@@ -116,4 +119,25 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
+end;
+
+// ============================================================================
+// 卸载步骤回调：确保完全清理
+// ============================================================================
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // 卸载开始前：强制关闭程序并等待文件句柄释放
+    ShellExec('open', 'taskkill', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1000);  // 等待 1 秒确保 OS 释放文件句柄
+  end;
+
+  if CurUninstallStep = usPostUninstall then
+  begin
+    // 备用清理：删除 [UninstallDelete] 可能因文件锁定遗漏的残留
+    DelTree(ExpandConstant('{app}'), True, True, True);
+  end;
 end;

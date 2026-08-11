@@ -105,7 +105,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Fla
 Filename: "taskkill"; Parameters: "/F /IM {#MyAppExeName}"; Flags: runhidden; RunOnceId: "KillApp"
 
 [UninstallDelete]
-; 卸载时清理用户配置与日志
+; 在线安装器无 [Files] 段，Inno Setup 不知道解压的文件
+; 必须显式删除整个安装目录（包含 exe、依赖文件夹、运行时生成的 Log 等）
+Type: filesandordirs; Name: "{app}"
+; 清理用户配置与日志（运行时在 %APPDATA% 中生成）
 Type: filesandordirs; Name: "{userappdata}\{#MyAppPublisher}\{#MyAppName}"
 
 [Code]
@@ -322,4 +325,29 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
+end;
+
+// ============================================================================
+// 卸载步骤回调：确保完全清理
+// 在线安装器无 [Files] 段，Inno Setup 未记录解压文件，文件锁定会导致
+// [UninstallDelete] 删除失败，因此需要：
+//   1. 卸载前强制关闭程序并等待文件句柄释放
+//   2. 卸载后使用 DelTree 二次清理残留（含运行时生成的 Log 目录）
+// ============================================================================
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // 卸载开始前：强制关闭程序并等待文件句柄释放
+    ShellExec('open', 'taskkill', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1000);  // 等待 1 秒确保 OS 释放文件句柄
+  end;
+
+  if CurUninstallStep = usPostUninstall then
+  begin
+    // 备用清理：删除 [UninstallDelete] 可能因文件锁定遗漏的残留
+    DelTree(ExpandConstant('{app}'), True, True, True);
+  end;
 end;
