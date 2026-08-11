@@ -401,38 +401,102 @@ def _create_zip(source_dir: Path, zip_path: Path) -> int:
     return zip_path.stat().st_size
 
 
-def _read_download_urls() -> tuple[str | None, str | None]:
-    """从 download_config.ini 读取 Gitee Release 的 CPU/GPU 下载 URL。
+# Gitee Release 单文件限制 100 MB，留 5 MB 余量
+MAX_PART_SIZE = 95 * 1024 * 1024
+
+
+def _split_zip(zip_path: Path, max_part_size: int = MAX_PART_SIZE) -> int:
+    """将大 zip 文件分割成多个分卷，以适应 Gitee Release 单文件 100 MB 限制。
+
+    分卷命名格式: filename.zip.part001, filename.zip.part002, ...
+    原始 zip 文件在分卷后删除，仅保留分卷文件。
+
+    Args:
+        zip_path: 原始 zip 文件路径。
+        max_part_size: 每个分卷最大字节数（默认 95 MB）。
+
+    Returns:
+        分卷数量。如果不需要分卷（文件 <= max_part_size），返回 1（保留原文件）。
+    """
+    file_size = zip_path.stat().st_size
+    if file_size <= max_part_size:
+        return 1  # 不需要分卷
+
+    num_parts = (file_size + max_part_size - 1) // max_part_size
+    print(f"  zip 文件 {file_size / 1024 / 1024:.1f} MB 超过 {max_part_size / 1024 / 1024:.0f} MB 限制，分割为 {num_parts} 个分卷")
+
+    with open(zip_path, "rb") as f:
+        data = f.read()
+
+    for i in range(num_parts):
+        start = i * max_part_size
+        end = min(start + max_part_size, file_size)
+        part_path = zip_path.parent / f"{zip_path.name}.part{i + 1:03d}"
+        with open(part_path, "wb") as f:
+            f.write(data[start:end])
+        print(f"  分卷 {i + 1}/{num_parts}: {part_path.name} ({(end - start) / 1024 / 1024:.1f} MB)")
+
+    # 删除原始 zip 文件（分卷已生成）
+    zip_path.unlink()
+    return num_parts
+
+
+def _read_download_config() -> dict:
+    """从 download_config.ini 读取 Gitee Release 下载配置。
 
     配置文件位于项目根目录，格式:
         [urls]
-        cpu_url = https://gitee.com/...
-        gpu_url = https://gitee.com/...
-
-    若配置文件不存在或 URL 仍为占位符（含 'your-account'），返回 None 并提示。
+        cpu_url = https://gitee.com/.../CPU_1.2.0.zip      ; parts=1 时为完整 URL
+        cpu_parts = 1
+        gpu_url = https://gitee.com/.../GPU_1.2.0.zip.part  ; parts>1 时为基础 URL（追加 001/002/...）
+        gpu_parts = 6
 
     Returns:
-        (cpu_url, gpu_url) 元组，任一未配置则为 None。
+        dict: {"cpu_url": str|None, "gpu_url": str|None, "cpu_parts": int, "gpu_parts": int}
     """
     config_path = PROJECT_ROOT / "download_config.ini"
     if not config_path.exists():
         print(f"  [警告] 下载配置文件不存在: {config_path}")
-        return None, None
+        return {"cpu_url": None, "gpu_url": None, "cpu_parts": 1, "gpu_parts": 1}
 
     cp = configparser.ConfigParser()
     cp.read(config_path, encoding="utf-8")
 
     cpu_url = cp.get("urls", "cpu_url", fallback=None)
     gpu_url = cp.get("urls", "gpu_url", fallback=None)
+    cpu_parts = cp.getint("urls", "cpu_parts", fallback=1)
+    gpu_parts = cp.getint("urls", "gpu_parts", fallback=1)
 
     # 检测占位符（用户尚未替换实际 Gitee 账号）
     for url in (cpu_url, gpu_url):
         if url and "your-account" in url:
             print(f"  [警告] 下载 URL 仍为占位符，请编辑 download_config.ini 替换 'your-account'")
             print(f"         当前 URL: {url}")
-            return None, None
+            return {"cpu_url": None, "gpu_url": None, "cpu_parts": 1, "gpu_parts": 1}
 
-    return cpu_url, gpu_url
+    return {"cpu_url": cpu_url, "gpu_url": gpu_url, "cpu_parts": cpu_parts, "gpu_parts": gpu_parts}
+
+
+def _update_download_config_parts(mode: str, parts: int) -> None:
+    """更新 download_config.ini 中指定模式的分卷数量。
+
+    构建后自动写入，供后续 --mode online 读取。
+
+    Args:
+        mode: "cpu" 或 "gpu"。
+        parts: 分卷数量。
+    """
+    config_path = PROJECT_ROOT / "download_config.ini"
+    if not config_path.exists():
+        return
+
+    cp = configparser.ConfigParser()
+    cp.read(config_path, encoding="utf-8")
+    if not cp.has_section("urls"):
+        cp.add_section("urls")
+    cp.set("urls", f"{mode}_parts", str(parts))
+    with open(config_path, "w", encoding="utf-8") as f:
+        cp.write(f)
 
 
 def _find_iscc() -> str | None:
@@ -639,12 +703,31 @@ def _build_package(
     packages_list_path = exe_dir / "py_packages_list.txt"
     packages_list_path.write_text(packages_list_content, encoding="utf-8")
 
-    # ===== 创建 zip 压缩包（用于在线分发）=====
+    # ===== 创建 zip 压缩包（用于在线分发，超过 95 MB 自动分卷）=====
     print(f"\n  [{mode_upper}] 创建 zip 压缩包...")
     app_version = "1.2.0"
     zip_path = BUILD_DIR / "packages" / f"VAI_E_SmartAnnotator_{mode.upper()}_{app_version}.zip"
     zip_size = _create_zip(exe_dir, zip_path)
     print(f"  zip 文件: {zip_path.name} ({zip_size / 1024 / 1024:.1f} MB)")
+
+    # 自动分卷（Gitee Release 单文件 100 MB 限制）
+    num_parts = _split_zip(zip_path)
+    if num_parts > 1:
+        # 分卷后 URL 需追加 .part001/.part002/...，更新配置中的基础 URL
+        _update_download_config_parts(mode, num_parts)
+        # 更新 download_config.ini 中的 URL 为分卷基础 URL（以 .part 结尾）
+        config_path = PROJECT_ROOT / "download_config.ini"
+        if config_path.exists():
+            cp = configparser.ConfigParser()
+            cp.read(config_path, encoding="utf-8")
+            old_url = cp.get("urls", f"{mode}_url", fallback="")
+            if old_url and not old_url.endswith(".part"):
+                cp.set("urls", f"{mode}_url", old_url + ".part")
+                with open(config_path, "w", encoding="utf-8") as f:
+                    cp.write(f)
+                print(f"  已更新 download_config.ini: {mode}_url → 分卷基础 URL, {mode}_parts = {num_parts}")
+    else:
+        _update_download_config_parts(mode, 1)
 
     # 打印目录总大小
     total_size = sum(f.stat().st_size for f in exe_dir.rglob("*") if f.is_file())
@@ -728,15 +811,17 @@ def main() -> None:
     # ===== 编译在线安装器（all 或 online 模式）=====
     if args.mode in ("all", "online"):
         print(f"\n  --- 在线安装器 ---")
-        # 从 download_config.ini 读取 Gitee Release 下载 URL
-        cpu_url, gpu_url = _read_download_urls()
+        # 从 download_config.ini 读取 Gitee Release 下载配置（URL + 分卷数）
+        dl_config = _read_download_config()
         online_defines: dict[str, str] = {}
-        if cpu_url:
-            online_defines["CPU_DOWNLOAD_URL"] = cpu_url
-            print(f"  CPU 下载 URL: {cpu_url}")
-        if gpu_url:
-            online_defines["GPU_DOWNLOAD_URL"] = gpu_url
-            print(f"  GPU 下载 URL: {gpu_url}")
+        if dl_config["cpu_url"]:
+            online_defines["CPU_DOWNLOAD_URL"] = dl_config["cpu_url"]
+            online_defines["CPU_PARTS"] = str(dl_config["cpu_parts"])
+            print(f"  CPU 下载 URL: {dl_config['cpu_url']} (分卷: {dl_config['cpu_parts']})")
+        if dl_config["gpu_url"]:
+            online_defines["GPU_DOWNLOAD_URL"] = dl_config["gpu_url"]
+            online_defines["GPU_PARTS"] = str(dl_config["gpu_parts"])
+            print(f"  GPU 下载 URL: {dl_config['gpu_url']} (分卷: {dl_config['gpu_parts']})")
         if not online_defines:
             print("  [提示] 未配置实际下载 URL，将使用 installer_online.iss 中的占位符 URL")
             print("         上传 zip 到 Gitee Release 后，编辑 download_config.ini 替换 URL，重新编译")

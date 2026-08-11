@@ -21,11 +21,18 @@
 ; ===== 下载 URL 配置（可通过 /D 命令行参数覆盖）=====
 ; 默认 URL 指向 Gitee Release（build.py 编译时通过 /D 参数覆盖为 download_config.ini 中的值）
 ; 格式: https://gitee.com/{用户}/{仓库}/releases/download/{版本}/{文件名}
+; 分卷: parts>1 时 URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
 #ifndef CPU_DOWNLOAD_URL
-  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/1.2.0_cpu/VAI_E_SmartAnnotator_CPU_1.2.0.zip"
+  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v1.2.0/VAI_E_SmartAnnotator_CPU_1.2.0.zip"
 #endif
 #ifndef GPU_DOWNLOAD_URL
-  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/1.2.0_gpu/VAI_E_SmartAnnotator_GPU_1.2.0.zip"
+  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v1.2.0/VAI_E_SmartAnnotator_GPU_1.2.0.zip.part"
+#endif
+#ifndef CPU_PARTS
+  #define CPU_PARTS "1"
+#endif
+#ifndef GPU_PARTS
+  #define GPU_PARTS "6"
 #endif
 
 [Setup]
@@ -125,7 +132,7 @@ begin
     True, False
   );
   ModePage.Add('CPU 版（推荐，无需 NVIDIA GPU，下载约 94 MB）');
-  ModePage.Add('GPU 版（需要 NVIDIA GPU + CUDA 12.x，下载约 250 MB）');
+  ModePage.Add('GPU 版（需要 NVIDIA GPU + CUDA 12.x，下载约 549 MB，分 6 个分卷）');
   ModePage.SelectedValueIndex := 0;  // 默认选中 CPU 版
 
   // 创建下载页面（3 参数：标题、描述、进度回调或 nil）
@@ -139,36 +146,60 @@ begin
 end;
 
 // ============================================================================
-// 版本选择页面的"下一步"按钮：触发下载
+// 版本选择页面的"下一步"按钮：触发下载（支持分卷下载与合并）
 // ============================================================================
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   DownloadUrl: String;
   FileName: String;
+  PartCount: Integer;
+  PartIndex: Integer;
+  PartSuffix: String;
+  MergeZipName: String;
+  ResultCode: Integer;
+  PowerShellCmd: String;
+  TmpDir: String;
 begin
   // 仅在版本选择页面点击下一步时触发下载
   if CurPageID = ModePage.ID then
   begin
-    // 根据用户选择确定下载 URL
+    // 根据用户选择确定下载 URL 和分卷数
     if ModePage.SelectedValueIndex = 0 then
     begin
       SelectedMode := 'CPU';
       DownloadUrl := '{#CPU_DOWNLOAD_URL}';
+      PartCount := StrToInt('{#CPU_PARTS}');
     end
     else
     begin
       SelectedMode := 'GPU';
       DownloadUrl := '{#GPU_DOWNLOAD_URL}';
+      PartCount := StrToInt('{#GPU_PARTS}');
     end;
 
-    // 从 URL 提取文件名（Gitee Release URL 最后一段即为文件名）
-    FileName := ExtractFileName(DownloadUrl);
-    DownloadedZipPath := ExpandConstant('{tmp}\') + FileName;
-
-    // 清空下载页面并添加下载任务
-    // Add(Url, FileName, RequiredSHA256) — SHA256 传空字符串表示不校验
+    TmpDir := ExpandConstant('{tmp}');
     DownloadPage.Clear;
-    DownloadPage.Add(DownloadUrl, FileName, '');
+
+    if PartCount = 1 then
+    begin
+      // 单文件下载（CPU 版或小体积包）
+      FileName := ExtractFileName(DownloadUrl);
+      DownloadedZipPath := TmpDir + '\' + FileName;
+      DownloadPage.Add(DownloadUrl, FileName, '');
+    end
+    else
+    begin
+      // 分卷下载：URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
+      // 下载后合并为单个 zip 文件
+      MergeZipName := 'VAI_E_SmartAnnotator_' + SelectedMode + '.zip';
+      DownloadedZipPath := TmpDir + '\' + MergeZipName;
+      for PartIndex := 1 to PartCount do
+      begin
+        PartSuffix := Format('%.3d', [PartIndex]);
+        // URL: 基础URL + 001/002/...，保存文件名: xxx.zip.part001
+        DownloadPage.Add(DownloadUrl + PartSuffix, MergeZipName + '.part' + PartSuffix, '');
+      end;
+    end;
 
     // 显示下载页面并执行下载（阻塞直到完成或取消）
     DownloadPage.Show;
@@ -179,7 +210,6 @@ begin
         // 下载失败时显示详细错误信息
         SuppressibleMsgBox(
           '下载失败！请检查网络连接后重试。' + #13#10 + #13#10 +
-          '下载地址: ' + DownloadUrl + #13#10 + #13#10 +
           '错误信息: ' + GetExceptionMessage,
           mbError, MB_OK, IDOK
         );
@@ -190,7 +220,31 @@ begin
       DownloadPage.Hide;
     end;
 
-    // 验证下载文件确实存在
+    // 分卷合并（仅 PartCount > 1 时）
+    if PartCount > 1 then
+    begin
+      WizardForm.StatusLabel.Caption := '正在合并 ' + IntToStr(PartCount) + ' 个分卷文件...';
+      WizardForm.ProgressGauge.Style := npbstMarquee;
+      // PowerShell: 按文件名排序读取所有分卷，合并为单个 zip
+      PowerShellCmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
+        '$parts = Get-ChildItem -Path ''' + TmpDir + '\' + MergeZipName + '.part*'' | Sort-Object Name; ' +
+        '$out = [System.IO.File]::Create(''' + DownloadedZipPath + '''); ' +
+        'foreach ($p in $parts) { $in = [System.IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }; ' +
+        '$out.Close()' +
+        '"';
+      if not ShellExec('open', 'powershell.exe', PowerShellCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      begin
+        SuppressibleMsgBox(
+          '分卷合并失败！PowerShell 退出码: ' + IntToStr(ResultCode) + #13#10 +
+          '请确保系统已安装 PowerShell 且磁盘空间充足。',
+          mbError, MB_OK, IDOK
+        );
+        Result := False;
+        Exit;
+      end;
+    end;
+
+    // 验证合并后的 zip 文件存在
     if not FileExists(DownloadedZipPath) then
     begin
       SuppressibleMsgBox(
