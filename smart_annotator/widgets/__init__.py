@@ -14,8 +14,9 @@ widgets 子包 — 公共控件封装
 
 from .buttons import PrimaryButton, SecondaryButton
 from .cards import Card
-from .fields import PathField, LabeledSpin, CustomItemWidget
+from .fields import PathField, LabeledSpin, CustomItemWidget, apply_click_to_focus
 from .dialogs import chooseDir, chooseFile, showMessageBox
+from .preview import FilePreviewWidget
 
 __all__ = [
     "PrimaryButton",
@@ -24,6 +25,8 @@ __all__ = [
     "PathField",
     "LabeledSpin",
     "CustomItemWidget",
+    "apply_click_to_focus",
+    "FilePreviewWidget",
     "chooseDir",
     "chooseFile",
     "showMessageBox",

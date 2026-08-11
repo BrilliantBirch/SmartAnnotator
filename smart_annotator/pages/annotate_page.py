@@ -35,7 +35,8 @@ from PySide6.QtCore import Signal, Qt
 from .base_page import BasePage
 from ..widgets.buttons import PrimaryButton, SecondaryButton
 from ..widgets.cards import Card
-from ..widgets.fields import PathField, LabeledSpin
+from ..widgets.fields import PathField, LabeledSpin, apply_click_to_focus
+from ..widgets.preview import FilePreviewWidget
 from ..widgets.dialogs import showMessageBox
 from ..config import SysConfig, AnnotateConfig, MODE, DEVICE
 from ..utils import LOGGER, getImageFilesInDir, getVideoFilesInDir
@@ -96,11 +97,14 @@ class AnnotatePage(BasePage):
         self._build_path_card()
         self._build_param_card()
         self._build_action_card()
+        self._build_preview_card()
         self._build_progress_card()
 
         # 初始状态：同步参数可见性与设备可用性
         self._on_task_changed()
         self._sync_device_state()
+        # 焦点策略：所有数值控件改为点击获焦，防止悬停滚轮误改值
+        apply_click_to_focus(self)
 
     # -------------------------- 卡片构建 --------------------------
     def _build_device_card(self) -> None:
@@ -197,6 +201,18 @@ class AnnotatePage(BasePage):
         self.action_card.addLayout(right_row)
         self.add_widget(self.action_card)
 
+    def _build_preview_card(self) -> None:
+        """构建文件列表与图像预览卡。
+
+        扫描输入目录后展示图片与视频文件列表，支持选择预览。
+        预览区自适应缩放，适配不同屏幕分辨率。
+        """
+        self.preview_card = Card("文件列表与图像预览")
+        self.preview_widget = FilePreviewWidget()
+        self.preview_widget.setMinimumHeight(280)
+        self.preview_card.addWidget(self.preview_widget)
+        self.add_widget(self.preview_card)
+
     def _build_progress_card(self) -> None:
         """构建进度与日志卡。"""
         self.progress_card = Card("进度与日志")
@@ -241,12 +257,13 @@ class AnnotatePage(BasePage):
         self.spin_kpt_conf.label.setVisible(is_pose)
 
     def _on_input_changed(self, path: str) -> None:
-        """输入目录变化时统计图片/视频数量并切换视频参数可见性。"""
+        """输入目录变化时统计图片/视频数量、切换视频参数可见性并填充预览列表。"""
         if not path or not Path(path).exists():
             self.spin_frame_interval.setVisible(True)
             self.spin_frame_interval.label.setVisible(True)
             self.spin_diff_threshold.setVisible(True)
             self.spin_diff_threshold.label.setVisible(True)
+            self.preview_widget.clear()
             return
         images = getImageFilesInDir(path)
         videos = getVideoFilesInDir(path)
@@ -256,6 +273,9 @@ class AnnotatePage(BasePage):
         self.spin_frame_interval.label.setVisible(has_video)
         self.spin_diff_threshold.setVisible(has_video)
         self.spin_diff_threshold.label.setVisible(has_video)
+        # 填充文件预览列表（图片 + 视频，去重排序）
+        all_files = sorted(set(images + videos))
+        self.preview_widget.set_files(all_files)
         LOGGER.info(f"扫描目录: {len(images)} 张图片, {len(videos)} 个视频")
 
     # -------------------------- 配置读写 --------------------------
@@ -325,7 +345,10 @@ class AnnotatePage(BasePage):
 
     # -------------------------- 配置导入导出 --------------------------
     def _on_import_config(self) -> None:
-        """导入 JSON 配置文件并回填界面。"""
+        """导入 JSON 配置文件并回填界面。
+
+        兼容旧版 ``mode`` 键与新版 ``task_type`` 键。
+        """
         path, _ = QFileDialog.getOpenFileName(
             None, "导入标注配置", "", "JSON 配置 (*.json)"
         )
@@ -337,10 +360,15 @@ class AnnotatePage(BasePage):
             ac = AnnotateConfig.from_dict(data)
             sys_config = SysConfig()
             sys_config.annotate_config = ac
-            if "task_type" in data:
-                from ..config import _coerce_mode
+            # 任务类型兼容：优先 task_type（新版），回退 mode（旧版），再回退 ac.task_type
+            from ..config import _coerce_mode
 
+            if "task_type" in data:
                 sys_config.task_type = _coerce_mode(data["task_type"])
+            elif "mode" in data:
+                sys_config.task_type = _coerce_mode(data["mode"])
+            else:
+                sys_config.task_type = ac.task_type
             self.apply_config(sys_config)
             self.append_log(f"[配置] 已导入配置: {path}")
         except Exception as e:
@@ -349,7 +377,10 @@ class AnnotatePage(BasePage):
             showMessageBox(QMessageBox.Icon.Critical, f"导入配置失败:\n{e}")
 
     def _on_export_config(self) -> None:
-        """收集界面配置并导出为 JSON 文件。"""
+        """收集界面配置并导出为 JSON 文件。
+
+        同时写入 ``mode`` 与 ``task_type`` 以兼容旧版与新版配置读取。
+        """
         path, _ = QFileDialog.getSaveFileName(
             None, "导出标注配置", "annotate_config.json", "JSON 配置 (*.json)"
         )
@@ -359,6 +390,8 @@ class AnnotatePage(BasePage):
             sys_config = SysConfig()
             self.collect_config(sys_config)
             data = sys_config.annotate_config.to_dict()
+            # 同时写入 mode（旧版兼容）与 task_type（新版）
+            data["mode"] = sys_config.task_type.name
             data["task_type"] = sys_config.task_type.name
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

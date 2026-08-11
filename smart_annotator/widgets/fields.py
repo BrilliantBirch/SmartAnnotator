@@ -23,10 +23,67 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QListWidget,
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QObject, QEvent
 
 from .buttons import SecondaryButton
 from .dialogs import chooseDir, chooseFile
+
+
+class FocusAwareSpinBox(QSpinBox):
+    """焦点感知的整数输入框 - 仅在已获焦时响应鼠标滚轮。
+
+    重写 wheelEvent：未获焦时忽略滚轮事件，防止鼠标悬停滚轮误改值。
+    配合 StrongFocus 策略，确保滚轮仅在点击/Tab 获焦后生效。
+    """
+
+    def wheelEvent(self, event):
+        """仅当控件已获焦时才将滚轮事件传递给父类处理（stepBy）。"""
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class FocusAwareDoubleSpinBox(QDoubleSpinBox):
+    """焦点感知的浮点数输入框 - 仅在已获焦时响应鼠标滚轮。
+
+    重写 wheelEvent：未获焦时忽略滚轮事件，防止鼠标悬停滚轮误改值。
+    配合 StrongFocus 策略，确保滚轮仅在点击/Tab 获焦后生效。
+    """
+
+    def wheelEvent(self, event):
+        """仅当控件已获焦时才将滚轮事件传递给父类处理（stepBy）。"""
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _WheelGuardFilter(QObject):
+    """滚轮守卫事件过滤器 - 对未使用 FocusAware 子类的数值控件提供兜底保护。
+
+    拦截 Wheel 事件：仅当目标控件已获焦时放行，否则忽略，防止悬停滚轮误改值。
+    作为 apply_click_to_focus 的补充，覆盖非 LabeledSpin 创建的数值控件。
+    """
+
+    def eventFilter(self, obj, event):
+        """拦截未获焦控件的滚轮事件。
+
+        Args:
+            obj: 被监控的控件。
+            event: 事件对象。
+
+        Returns:
+            True 表示拦截事件（不传递给控件），False 表示放行。
+        """
+        if event.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return False
+
+
+# 滚轮守卫过滤器单例（避免为每个控件重复创建）
+_wheel_guard = _WheelGuardFilter()
 
 
 class PathField(QWidget):
@@ -140,16 +197,19 @@ class LabeledSpin(QWidget):
         layout.addWidget(self.label)
 
         if spin_type == "double":
-            self.spin = QDoubleSpinBox()
+            self.spin = FocusAwareDoubleSpinBox()
             self.spin.setDecimals(2)
             self.spin.setRange(float(minimum), float(maximum))
             self.spin.setSingleStep(float(step))
             self.spin.setValue(float(value))
         else:
-            self.spin = QSpinBox()
+            self.spin = FocusAwareSpinBox()
             self.spin.setRange(int(minimum), int(maximum))
             self.spin.setSingleStep(int(step))
             self.spin.setValue(int(value))
+        # 焦点策略：StrongFocus（点击/Tab 获焦），禁用 WheelFocus
+        # 配合 FocusAware 子类的 wheelEvent 重写，确保滚轮仅在获焦后生效
+        self.spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.spin.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -277,3 +337,35 @@ class CustomItemWidget(QWidget):
         """文本编辑完成校验（关键点命名须以 _point 结尾）。"""
         if len(self.get_text().split("_point")) < 2:
             self.edit.setText("")
+
+
+def apply_click_to_focus(root: QWidget) -> int:
+    """递归将 root 下所有数值输入控件设为点击获焦 + 滚轮守卫。
+
+    对每个 QSpinBox/QDoubleSpinBox：
+        1. 设置 StrongFocus 策略（点击/Tab 获焦，禁用滚轮悬停获焦）
+        2. 若非 FocusAware 子类，安装 _WheelGuardFilter 拦截未获焦时的滚轮事件
+
+    确保所有数值控件遵循"点击获焦后滚轮方可调值"的交互规则。
+
+    Args:
+        root: 待处理的根控件（通常为页面或对话框）。
+
+    Returns:
+        已处理的控件数量。
+    """
+    from PySide6.QtWidgets import QSpinBox, QDoubleSpinBox
+
+    count = 0
+    for spin in root.findChildren(QSpinBox):
+        spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # 非 FocusAware 子类需安装滚轮守卫过滤器兜底
+        if not isinstance(spin, FocusAwareSpinBox):
+            spin.installEventFilter(_wheel_guard)
+        count += 1
+    for spin in root.findChildren(QDoubleSpinBox):
+        spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        if not isinstance(spin, FocusAwareDoubleSpinBox):
+            spin.installEventFilter(_wheel_guard)
+        count += 1
+    return count

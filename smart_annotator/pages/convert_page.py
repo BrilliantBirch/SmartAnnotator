@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QMessageBox,
     QWidget,
+    QFrame,
 )
 from PySide6.QtGui import QFont
 from PySide6.QtCore import Signal, Qt
@@ -31,7 +32,8 @@ from PySide6.QtCore import Signal, Qt
 from .base_page import BasePage
 from ..widgets.buttons import PrimaryButton, SecondaryButton
 from ..widgets.cards import Card
-from ..widgets.fields import PathField, LabeledSpin, CustomItemWidget
+from ..widgets.fields import PathField, LabeledSpin, CustomItemWidget, apply_click_to_focus
+from ..widgets.preview import FilePreviewWidget
 from ..widgets.dialogs import chooseDir, showMessageBox
 from ..config import SysConfig, ConvertConfig, MODE, Format, RANDOM_SEED
 from ..utils import LOGGER, getJsonFilesInDir, getTxtFilesInDir, getImageFilesInDir
@@ -58,10 +60,14 @@ class ConvertPage(BasePage):
 
         self._build_basic_card()
         self._build_advanced_card()
+        self._build_preview_card()
         self._build_progress_card()
 
-        # 初始状态：同步目标格式与高级卡可见性
+        # 初始状态：同步目标格式、高级卡可见性与任务类型联动（关键点列表仅 POSE 显示）
         self._on_source_changed()
+        self._on_task_changed()
+        # 焦点策略：所有数值控件改为点击获焦，防止悬停滚轮误改值
+        apply_click_to_focus(self)
 
     def _build_basic_card(self) -> None:
         """构建基础卡：源/目标格式、任务类型、输入输出目录、开始/停止。"""
@@ -135,22 +141,29 @@ class ConvertPage(BasePage):
         self.advanced_card.addLayout(class_row)
 
         self.class_list = QListWidget()
-        self.class_list.setMinimumHeight(100)
+        # 最小高度 200px，确保类别项清晰展示（约 6 项），避免内容被压缩
+        self.class_list.setMinimumHeight(200)
         self.advanced_card.addWidget(self.class_list)
 
-        # 关键点编辑器（仅 POSE）
+        # 关键点编辑器（仅 POSE 显示，整体包装为容器便于显隐）
+        self.kpt_container = QFrame()
+        self.kpt_container.setStyleSheet("QFrame { border: 0; }")
+        kpt_layout = QVBoxLayout(self.kpt_container)
+        kpt_layout.setContentsMargins(0, 0, 0, 0)
+        kpt_layout.setSpacing(8)
         self.kpt_label = QLabel("关键点列表（须以 _point{idx} 结尾）")
         self.kpt_label.setStyleSheet("color: #71717a;")
-        self.advanced_card.addWidget(self.kpt_label)
+        kpt_layout.addWidget(self.kpt_label)
         kpt_row = QHBoxLayout()
         kpt_row.addStretch()
         self.btn_add_kpt = SecondaryButton("+ 添加关键点")
         self.btn_add_kpt.clicked.connect(self._on_add_kpt)
         kpt_row.addWidget(self.btn_add_kpt)
-        self.advanced_card.addLayout(kpt_row)
+        kpt_layout.addLayout(kpt_row)
         self.kpt_list = QListWidget()
-        self.kpt_list.setMinimumHeight(100)
-        self.advanced_card.addWidget(self.kpt_list)
+        self.kpt_list.setMinimumHeight(140)
+        kpt_layout.addWidget(self.kpt_list)
+        self.advanced_card.addWidget(self.kpt_container)
 
         # 分割比例
         ratio_row = QHBoxLayout()
@@ -183,6 +196,18 @@ class ConvertPage(BasePage):
         self.advanced_card.addLayout(cfg_row)
 
         self.add_widget(self.advanced_card)
+
+    def _build_preview_card(self) -> None:
+        """构建文件列表与图像预览卡。
+
+        扫描输入目录后展示标注文件与图片文件列表，支持选择预览。
+        预览区自适应缩放，适配不同屏幕分辨率。
+        """
+        self.preview_card = Card("文件列表与图像预览")
+        self.preview_widget = FilePreviewWidget()
+        self.preview_widget.setMinimumHeight(280)
+        self.preview_card.addWidget(self.preview_widget)
+        self.add_widget(self.preview_card)
 
     def _build_progress_card(self) -> None:
         """构建进度与日志卡。"""
@@ -225,26 +250,35 @@ class ConvertPage(BasePage):
         self.advanced_card.setVisible(True)
 
     def _on_task_changed(self) -> None:
-        """任务类型变化时切换关键点编辑器可见性。"""
+        """任务类型变化时切换关键点编辑器可见性。
+
+        仅 POSE 任务显示关键点列表；DETECT/SEGMENT 等任务整体隐藏，
+        避免残留空白区域。
+        """
         mode = self.task_combo.currentData()
         is_pose = mode == MODE.POSE
-        self.kpt_label.setVisible(is_pose)
-        self.kpt_list.setVisible(is_pose)
-        self.btn_add_kpt.setVisible(is_pose)
+        self.kpt_container.setVisible(is_pose)
 
     def _on_input_changed(self, path: str) -> None:
-        """输入目录变化时统计文件数量。"""
+        """输入目录变化时统计文件数量并填充预览列表。"""
         if not path or not Path(path).exists():
             self.count_label.setText("未选择目录")
+            self.preview_widget.clear()
             return
         source = self.source_combo.currentData()
         if source == Format.LABELME:
-            files = getJsonFilesInDir(path)
+            anno_files = getJsonFilesInDir(path)
             label = "JSON 标注"
         else:
-            files = getTxtFilesInDir(path)
+            anno_files = getTxtFilesInDir(path)
             label = "TXT 标注"
-        self.count_label.setText(f"已扫描到 {len(files)} 个 {label} 文件")
+        image_files = getImageFilesInDir(path)
+        self.count_label.setText(
+            f"已扫描到 {len(anno_files)} 个 {label} 文件，{len(image_files)} 张图片"
+        )
+        # 合并标注与图片文件（去重后按名称排序），填充预览列表
+        all_files = sorted(set(anno_files + image_files))
+        self.preview_widget.set_files(all_files)
 
     # -------------------------- 类别/关键点编辑器 --------------------------
     def _on_add_class(self) -> None:
@@ -377,7 +411,13 @@ class ConvertPage(BasePage):
 
     # -------------------------- 配置导入导出 --------------------------
     def _on_import_config(self) -> None:
-        """导入 JSON 配置文件并回填界面。"""
+        """导入 JSON 配置文件并回填界面。
+
+        兼容旧版配置（参考 D:\\data\\CCA\\convert_config.json）：
+            - ``mode`` 键作为任务类型（旧版），``task_type`` 键（新版），两者均接受
+            - ``source_format`` 接受 "json"/"txt" 别名或 "LABELME"/"YOLO" 枚举名
+            - 旧版 camelCase 键（sourceFormat/visualized）自动迁移
+        """
         from PySide6.QtWidgets import QFileDialog
 
         path, _ = QFileDialog.getOpenFileName(
@@ -391,10 +431,13 @@ class ConvertPage(BasePage):
             cc = ConvertConfig.from_dict(data)
             sys_config = SysConfig()
             sys_config.convert_config = cc
-            if "task_type" in data:
-                from ..config import _coerce_mode
+            # 任务类型兼容：优先 task_type（新版），回退 mode（旧版参考标准）
+            from ..config import _coerce_mode
 
+            if "task_type" in data:
                 sys_config.task_type = _coerce_mode(data["task_type"])
+            elif "mode" in data:
+                sys_config.task_type = _coerce_mode(data["mode"])
             self.apply_config(sys_config)
             self.append_log(f"[配置] 已导入配置: {path}")
         except Exception as e:
@@ -403,7 +446,10 @@ class ConvertPage(BasePage):
             showMessageBox(QMessageBox.Icon.Critical, f"导入配置失败:\n{e}")
 
     def _on_export_config(self) -> None:
-        """收集界面配置并导出为 JSON 文件。"""
+        """收集界面配置并导出为 JSON 文件。
+
+        同时写入 ``mode`` 与 ``task_type`` 以兼容旧版与新版配置读取。
+        """
         from PySide6.QtWidgets import QFileDialog
 
         path, _ = QFileDialog.getSaveFileName(
@@ -415,6 +461,8 @@ class ConvertPage(BasePage):
             sys_config = SysConfig()
             self.collect_config(sys_config)
             data = sys_config.convert_config.to_dict()
+            # 同时写入 mode（旧版兼容）与 task_type（新版）
+            data["mode"] = sys_config.task_type.name
             data["task_type"] = sys_config.task_type.name
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

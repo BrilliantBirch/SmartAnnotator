@@ -142,7 +142,7 @@ begin
   // 传 nil 使用内置进度显示，TDownloadWizardPage 自带进度条和取消按钮
   DownloadPage := CreateDownloadPage(
     '正在下载安装包',
-    '请稍候，正在从 Gitee Release 下载安装文件...',
+    '请稍候，正在下载安装文件...',
     nil
   );
   DownloadPage.ShowBaseNameInsteadOfUrl := True;

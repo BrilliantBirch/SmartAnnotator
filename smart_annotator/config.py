@@ -249,10 +249,26 @@ def _coerce_device(value: Any) -> DEVICE:
 
 
 def _coerce_format(value: Any) -> Format:
-    """将值转换为 Format 枚举（接受枚举、名称字符串、整数值）。"""
+    """将值转换为 Format 枚举（接受枚举、名称字符串、整数值、旧版别名）。
+
+    兼容旧版配置文件中的别名：
+        - "json" / "JSON" → Format.LABELME（LabelMe 标注为 .json 文件）
+        - "txt"  / "TXT"  → Format.YOLO（YOLO 标注为 .txt 文件）
+        - "labelme" / "yolo"（大小写不敏感）→ 对应枚举
+    """
     if isinstance(value, Format):
         return value
     if isinstance(value, str):
+        # 旧版别名映射（参考 D:\\data\\CCA\\convert_config.json 的 source_format: "json"）
+        _ALIAS = {
+            "json": Format.LABELME,
+            "txt": Format.YOLO,
+            "labelme": Format.LABELME,
+            "yolo": Format.YOLO,
+        }
+        key = value.strip().lower()
+        if key in _ALIAS:
+            return _ALIAS[key]
         try:
             return Format[value]
         except KeyError:
