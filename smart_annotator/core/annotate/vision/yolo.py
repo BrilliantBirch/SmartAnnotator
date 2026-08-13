@@ -162,11 +162,14 @@ class BasePredictor:
         """模型预热，减少首次推理延迟。
 
         仅需 2 轮即可达到稳定状态，避免不必要的预热开销。
+        使用与模型批次大小一致的数量创建 dummy 图像。
         """
         imgSize = self.imgSize
-        img = [np.ones((imgSize[0], imgSize[1], 3), dtype=np.float32)]
-        for _ in range(self.batch - 1):
-            img.extend(img)
+        # 直接创建 batch 张 dummy 图像，避免 extend 导致列表翻倍
+        img = [
+            np.ones((imgSize[0], imgSize[1], 3), dtype=np.float32)
+            for _ in range(self.batch)
+        ]
         for _ in range(2):
             self.predict(img)
 
@@ -340,14 +343,60 @@ class DetectionPredictor(BasePredictor):
         return predict_results
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
-        # 预处理阶段
+        """对输入图像进行预测，自动处理批次不匹配。
+
+        实际批次超过模型批次时分块推理，不足时补零填充。
+
+        Args:
+            input_data: 图像列表。
+
+        Returns:
+            预测结果列表，失败返回 None。
+        """
+        try:
+            actual_batch = len(input_data)
+            model_batch = self.batch
+
+            # 实际批次超过模型批次时，分块推理后合并结果
+            if actual_batch > model_batch:
+                all_results: List[Dict[str, Any]] = []
+                for i in range(0, actual_batch, model_batch):
+                    chunk = input_data[i : i + model_batch]
+                    chunk_results = self._predict_single_batch(chunk)
+                    if chunk_results is None:
+                        return None
+                    all_results.extend(chunk_results)
+                return all_results
+
+            return self._predict_single_batch(input_data)
+        except Exception as ex:
+            LOGGER.error(f"预测过程出错: {str(ex)}")
+            return None
+
+    def _predict_single_batch(
+        self, input_data: List[np.ndarray]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """对单批次图像执行预处理→推理→后处理。
+
+        实际批次不足模型批次时自动补齐零填充，推理后截取有效结果。
+
+        Args:
+            input_data: 图像列表（长度 ≤ model.batch）。
+
+        Returns:
+            预测结果列表，失败返回 None。
+        """
         try:
             actual_batch = len(input_data)
             model_batch = self.batch
 
             if actual_batch < model_batch:
-                pad_img = np.zeros((self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype)
-                padded_data = list(input_data) + [pad_img] * (model_batch - actual_batch)
+                pad_img = np.zeros(
+                    (self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype
+                )
+                padded_data = list(input_data) + [
+                    pad_img
+                ] * (model_batch - actual_batch)
                 preprocess_input = self.preprocess(padded_data)
             else:
                 preprocess_input = self.preprocess(input_data)
@@ -553,13 +602,69 @@ class SegmentationPredictor(DetectionPredictor):
         return boundary_points
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
-        # 预处理阶段
+        """对输入图像进行预测，自动处理批次不匹配。
+
+        实际批次超过模型批次时分块推理，不足时补零填充。
+
+        Args:
+            input_data: 图像列表。
+
+        Returns:
+            预测结果列表，失败返回 None。
+        """
         try:
-            preprocess_input = self.preprocess(input_data)
+            actual_batch = len(input_data)
+            model_batch = self.batch
+
+            # 实际批次超过模型批次时，分块推理后合并结果
+            if actual_batch > model_batch:
+                all_results: List[Dict[str, Any]] = []
+                for i in range(0, actual_batch, model_batch):
+                    chunk = input_data[i : i + model_batch]
+                    chunk_results = self._predict_single_batch(chunk)
+                    if chunk_results is None:
+                        return None
+                    all_results.extend(chunk_results)
+                return all_results
+
+            return self._predict_single_batch(input_data)
+        except Exception as ex:
+            LOGGER.error(f"预测过程出错: {str(ex)}")
+            return None
+
+    def _predict_single_batch(
+        self, input_data: List[np.ndarray]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """对单批次图像执行预处理→推理→后处理。
+
+        实际批次不足模型批次时自动补齐零填充，推理后截取有效结果。
+
+        Args:
+            input_data: 图像列表（长度 ≤ model.batch）。
+
+        Returns:
+            预测结果列表，失败返回 None。
+        """
+        try:
+            actual_batch = len(input_data)
+            model_batch = self.batch
+
+            if actual_batch < model_batch:
+                pad_img = np.zeros(
+                    (self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype
+                )
+                padded_data = list(input_data) + [
+                    pad_img
+                ] * (model_batch - actual_batch)
+                preprocess_input = self.preprocess(padded_data)
+            else:
+                preprocess_input = self.preprocess(input_data)
+
             predictions = self.model.predict(preprocess_input)
             orig_shapes = [x.shape[:2] for x in input_data]
             results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
-            return results
+            # 截取有效结果（补零部分无效）
+            return results[:actual_batch]
         except Exception as ex:
             LOGGER.error(f"预测过程出错: {str(ex)}")
             return None
@@ -652,24 +757,32 @@ class PoseDetectionPredictor(DetectionPredictor):
         return predict_results
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
-        # 预处理阶段
+        """对输入图像进行预测，自动处理批次不匹配。
+
+        实际批次超过模型批次时分块推理，不足时补零填充。
+        复用 DetectionPredictor._predict_single_batch 避免重复逻辑。
+
+        Args:
+            input_data: 图像列表。
+
+        Returns:
+            预测结果列表，失败返回 None。
+        """
         try:
             actual_batch = len(input_data)
             model_batch = self.batch
 
-            if actual_batch < model_batch:
-                pad_img = np.zeros((self.imgSize[0], self.imgSize[1], 3), dtype=input_data[0].dtype)
-                padded_data = list(input_data) + [pad_img] * (model_batch - actual_batch)
-                preprocess_input = self.preprocess(padded_data)
-            else:
-                preprocess_input = self.preprocess(input_data)
+            if actual_batch > model_batch:
+                all_results: List[Dict[str, Any]] = []
+                for i in range(0, actual_batch, model_batch):
+                    chunk = input_data[i : i + model_batch]
+                    chunk_results = self._predict_single_batch(chunk)
+                    if chunk_results is None:
+                        return None
+                    all_results.extend(chunk_results)
+                return all_results
 
-            predictions = self.model.predict(preprocess_input)[0]
-            predictions = predictions[:actual_batch]
-
-            orig_shapes = [x.shape[:2] for x in input_data]
-            results = self.postprocess(predictions, self.model.imgsz, orig_shapes)
-            return results
+            return self._predict_single_batch(input_data)
         except Exception as ex:
             LOGGER.error(f"预测过程出错: {str(ex)}")
             return None

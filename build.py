@@ -161,12 +161,20 @@ HIDDEN_IMPORTS = [
 ]
 
 # ===== GPU 模式额外的隐藏导入 =====
+# cuda-python 包内部 Cython 模块（from cuda import cuda, cudart 时动态加载）
+# PyInstaller 无法自动检测，必须显式声明，否则打包后报
+# "No module named 'cuda.bindings.cydriver'"
 GPU_EXTRA_HIDDEN_IMPORTS = [
     "pynvml",
     "tensorrt",
     "cuda",
+    "cuda.bindings",
     "cuda.bindings.driver",
     "cuda.bindings.runtime",
+    "cuda.bindings.cydriver",
+    "cuda.bindings.cyruntime",
+    "cuda.cuda",
+    "cuda.cudart",
 ]
 
 
