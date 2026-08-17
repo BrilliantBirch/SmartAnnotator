@@ -1,4 +1,4 @@
-# VAI_E_SmartAnnotator v1.2.0
+# SmartAnnotator v1.2.0
 
 基于 PySide6 的智能标注工具，提供 LabelMe ↔ YOLO 格式转换与 ONNX/TensorRT 自动标注功能。
 
