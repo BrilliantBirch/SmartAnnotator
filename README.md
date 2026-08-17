@@ -175,7 +175,5 @@ pages/（界面层）→ workers/（线程层）→ core/（算法层）
 - 内容区使用 QScrollArea 包裹，小屏不溢出
 
 ## 8. 作者
+BriiliantBirch
 
-BaiBinnan（baibinnan@chuanfeng.com）
-
-武汉川丰软件
