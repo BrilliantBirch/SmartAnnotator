@@ -27,6 +27,9 @@
 作者: BaiBinnan
 创建日期: 2026-08-10
 更新: 2026-08-11 迁移至项目根目录，新增 --mode online 选项
+更新: 2026-08-25 GPU 模式优化：完整复制 cuda/tensorrt 原生绑定包修复 CUDA 检测；
+      删除冗余 CUDA DLL（onnxruntime CUDA EP/cuDNN/cuBLAS/cuFFT，GPU 推理走 TensorRT），
+      打包体积从约 2.6 GB 降至约 730 MB
 """
 import argparse
 import configparser
@@ -187,18 +190,22 @@ GPU_EXTRA_HIDDEN_IMPORTS = [
 # - tensorrt: 缺 __init__.py 与 plugin/（import 变成空命名空间包，调用必挂）
 GPU_NATIVE_PACKAGES = ["cuda", "tensorrt"]
 
-# ===== cuDNN 子组件 DLL（onnxruntime CUDA EP 运行时依赖）=====
-# cudnn64_9.dll 仅是 0.3 MB 的加载器壳，真正的实现在以下子组件中。
-# PyInstaller 只收集到壳 DLL，子组件缺失会导致 CUDA EP 初始化失败。
-CUDNN_SUBCOMPONENT_DLLS = [
-    "cudnn64_9.dll",
-    "cudnn_adv64_9.dll",
-    "cudnn_cnn64_9.dll",
-    "cudnn_engines_precompiled64_9.dll",
-    "cudnn_engines_runtime_compiled64_9.dll",
-    "cudnn_graph64_9.dll",
-    "cudnn_heuristic64_9.dll",
-    "cudnn_ops64_9.dll",
+# ===== GPU 模式需要删除的冗余 CUDA DLL（前缀匹配，递归遍历整个打包目录）=====
+# GPU 推理完全走 TensorRT 引擎（yolo.py: engine 加载 / onnx→engine 转换），
+# onnxruntime 仅在 CPU 模式使用（CPUExecutionProvider 内置于 onnxruntime.dll 主库），
+# 因此以下 DLL 可安全删除（经 PE 静态导入表分析确认 TensorRT 10 链路不依赖它们）：
+# - onnxruntime_providers_cuda.dll (306 MB): onnxruntime CUDA 后端（含静态链接的 cuDNN）
+# - onnxruntime_providers_shared.dll: provider 动态加载器壳
+# - onnxruntime_providers_tensorrt.dll: onnxruntime TRT 后端（直接用 tensorrt 包）
+# - cudnn*.dll / cublas*.dll / cufft*.dll: 仅 CUDA EP 需要，TensorRT 10 不依赖
+# 注意：cudart64_*.dll、nvinfer*.dll、nvonnxparser*.dll 为必需，不得删除
+GPU_REDUNDANT_DLL_PATTERNS = [
+    "onnxruntime_providers_cuda",
+    "onnxruntime_providers_shared",
+    "onnxruntime_providers_tensorrt",
+    "cudnn",
+    "cublas",
+    "cufft",
 ]
 
 
@@ -388,6 +395,11 @@ def _fix_gpu_native_packages(packages_dir: Path) -> int:
 
     处理方式：删除依赖目录中的残缺包，从 site-packages 完整复制（跳过 __pycache__）。
 
+    同时将 PyInstaller 收集到 exe 根目录的 TensorRT DLL 移入 tensorrt.libs/ 子目录：
+    tensorrt 10.x 的 __init__.py 通过 find_lib 加载 DLL，仅搜索 PATH 与
+    <包目录>/../tensorrt.libs 两处。DLL 留在 exe 根目录时，用户机器上
+    （无 CUDA Toolkit，PATH 不含 TensorRT）会报 "Could not find: nvinfer_10.dll"。
+
     Args:
         packages_dir: 依赖包目录路径（VAI_E_SmartAnnotator 子目录）。
 
@@ -427,68 +439,52 @@ def _fix_gpu_native_packages(packages_dir: Path) -> int:
         _copy_tree(src_dir, dst_dir)
         print(f"  已完整复制 {pkg_name} 包（累计 {copied_size / 1024 / 1024:.1f} MB）")
 
+    # ===== 将 TensorRT DLL 移入 tensorrt.libs/（修复用户机器加载失败）=====
+    # PyInstaller 从构建机 PATH（CUDA Toolkit lib 目录）收集 nvinfer*.dll，
+    # 放置位置不确定（exe 根目录或 contents 目录均出现过），
+    # 但 tensorrt 的 find_lib 只搜索 PATH 与 <包>/../tensorrt.libs，必须统一移入
+    trt_libs_dir = packages_dir / "tensorrt.libs"
+    trt_libs_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for base in (packages_dir, packages_dir.parent):
+        for dll in list(base.glob("nvinfer*.dll")) + list(base.glob("nvonnxparser*.dll")):
+            shutil.move(str(dll), str(trt_libs_dir / dll.name))
+            moved += 1
+    if moved:
+        print(f"  已移动 {moved} 个 TensorRT DLL 到 tensorrt.libs/（nvinfer/nvonnxparser）")
+
     return copied_size
 
 
-def _copy_cudnn_dlls(packages_dir: Path) -> int:
-    """GPU 模式专用：从系统 CUDNN 安装目录复制子组件 DLL 到依赖目录。
+def _cleanup_gpu_redundant_dlls(exe_dir: Path) -> int:
+    """GPU 模式专用：递归删除冗余的 CUDA 推理 DLL，大幅减小打包体积。
 
-    onnxruntime CUDA EP 依赖 cuDNN 9 的子组件 DLL（cudnn_graph/engines/ops 等，
-    合计约 960 MB）。PyInstaller 仅收集到 0.3 MB 的 cudnn64_9.dll 加载器壳，
-    子组件缺失会导致 CUDA EP 初始化失败。
+    GPU 推理完全走 TensorRT 引擎，onnxruntime 的 CUDA EP 及其 cuDNN/cuBLAS/cuFFT
+    依赖均不被使用（onnxruntime 仅保留 CPU EP 用于 CPU 模式与回退）。
+    删除内容参见 GPU_REDUNDANT_DLL_PATTERNS 注释。
 
-    搜索顺序：
-        1. CUDNN_HOME / CUDNN_PATH 环境变量指定的目录
-        2. C:\\Program Files\\NVIDIA\\CUDNN\\v*\\bin\\（官方安装默认位置，取最新版本）
+    注意：DLL 分布在打包目录的多个位置（exe 根目录、onnxruntime/capi/ 等），
+    必须对整个 exe 目录递归遍历。
 
     Args:
-        packages_dir: 依赖包目录路径（DLL 复制到该目录根部，与 cudnn64_9.dll 同级）。
+        exe_dir: 打包输出目录路径（dist_{mode}/VAI_E_SmartAnnotator）。
 
     Returns:
-        复制的文件总字节数，未找到 cuDNN 目录返回 0 并打印警告。
+        已删除文件的总字节数。
     """
-    # 候选 cuDNN bin 目录
-    candidates: list[Path] = []
-    for env_var in ("CUDNN_HOME", "CUDNN_PATH"):
-        env_val = os.environ.get(env_var)
-        if env_val:
-            candidates.append(Path(env_val))
-            candidates.append(Path(env_val) / "bin")
-
-    # 官方安装默认位置（版本号倒序遍历，优先使用最新版本）
-    cudnn_root = Path("C:/Program Files/NVIDIA/CUDNN")
-    if cudnn_root.exists():
-        for version_dir in sorted(cudnn_root.iterdir(), reverse=True):
-            bin_dir = version_dir / "bin"
-            if bin_dir.is_dir():
-                # bin 下可能直接是 DLL，也可能有 CUDA 版本子目录（如 12.9）
-                candidates.append(bin_dir)
-                candidates.extend(d for d in bin_dir.iterdir() if d.is_dir())
-
-    # 在候选目录中查找包含 cudnn 子组件 DLL 的目录
-    cudnn_bin_dir = None
-    for cand in candidates:
-        if cand.is_dir() and (cand / "cudnn_graph64_9.dll").exists():
-            cudnn_bin_dir = cand
-            break
-
-    if cudnn_bin_dir is None:
-        print("  [警告] 未找到 cuDNN 子组件 DLL 目录（cudnn_graph64_9.dll）")
-        print("         CUDA EP 可能因缺少 cuDNN 而初始化失败")
-        print("         请安装 cuDNN 9 或设置 CUDNN_HOME 环境变量")
+    if not exe_dir.exists():
         return 0
 
-    copied_size = 0
-    for dll_name in CUDNN_SUBCOMPONENT_DLLS:
-        src = cudnn_bin_dir / dll_name
-        if src.exists():
-            copied_size += src.stat().st_size
-            shutil.copy2(src, packages_dir / dll_name)
-        else:
-            print(f"  [警告] cuDNN 子组件缺失: {src}")
+    removed_size = 0
+    for dll in exe_dir.rglob("*.dll"):
+        dll_name = dll.stem  # 不含扩展名
+        for pattern in GPU_REDUNDANT_DLL_PATTERNS:
+            if dll_name.startswith(pattern):
+                removed_size += dll.stat().st_size
+                dll.unlink()
+                break
 
-    print(f"  已复制 cuDNN 子组件 DLL（{copied_size / 1024 / 1024:.1f} MB，来源: {cudnn_bin_dir}）")
-    return copied_size
+    return removed_size
 
 
 def _build_packages_list(packages_dir: Path) -> str:
@@ -851,13 +847,14 @@ def _build_package(
         removed_gpu = _cleanup_gpu_dlls(packages_dir)
         print(f"  已清理 GPU 推理 DLL，释放 {removed_gpu / 1024 / 1024:.1f} MB")
 
-    # ===== GPU 模式修复 PyInstaller 收集不完整问题 =====
+    # ===== GPU 模式修复 PyInstaller 收集不完整问题 + 清理冗余 CUDA DLL =====
     if mode == "gpu":
         print(f"\n  [GPU] 修复原生绑定包（cuda / tensorrt 完整复制）...")
         packages_dir = exe_dir / PACKAGES_DIR_NAME
         _fix_gpu_native_packages(packages_dir)
-        print(f"\n  [GPU] 复制 cuDNN 子组件 DLL...")
-        _copy_cudnn_dlls(packages_dir)
+        print(f"\n  [GPU] 清理冗余 CUDA DLL（onnxruntime CUDA EP + cuDNN/cuBLAS/cuFFT）...")
+        removed_redundant = _cleanup_gpu_redundant_dlls(exe_dir)
+        print(f"  已清理冗余 CUDA DLL，释放 {removed_redundant / 1024 / 1024:.1f} MB")
 
     # ===== 生成 py_packages_list.txt =====
     print(f"\n  [{mode_upper}] 生成 py_packages_list.txt...")

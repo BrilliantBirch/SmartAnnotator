@@ -46,23 +46,20 @@ from ..utils.qt_logger import add_qt_handler
 def _cuda_available() -> bool:
     """检测当前环境是否存在可用的 CUDA 推理后端。
 
-    GPU 模式依赖三个组件：
-    1. onnxruntime-gpu 提供 CUDAExecutionProvider（ONNX 推理加速）
-    2. tensorrt（GPU 模式实际使用 TensorRT engine 推理）
-    3. cuda-python（cuda.bindings.cydriver / cyruntime，TensorRT 后端 CUDA 内存操作）
+    GPU 模式依赖两个组件：
+    1. tensorrt（GPU 模式实际使用 TensorRT engine 推理）
+    2. cuda-python（cuda.bindings.cydriver / cyruntime，TensorRT 后端 CUDA 内存操作）
 
-    任一缺失则返回 False，并在日志中记录缺失项。
+    onnxruntime 仅用于 CPU 模式推理（CPUExecutionProvider），
+    不依赖 onnxruntime CUDA EP，只需确认可导入即可。
+    任一组件缺失则返回 False，并在日志中记录缺失项。
 
     Returns:
-        True 表示 CUDA + TensorRT + cuda-python 均可用，否则 False。
+        True 表示 TensorRT + cuda-python 均可用，否则 False。
     """
-    # 检查 onnxruntime CUDA 支持
+    # 检查 onnxruntime 可导入（CPU 模式推理 / GPU 模式回退使用）
     try:
-        import onnxruntime as ort
-
-        if "CUDAExecutionProvider" not in ort.get_available_providers():
-            LOGGER.warning("CUDA 检测: onnxruntime 未提供 CUDAExecutionProvider，请安装 onnxruntime-gpu")
-            return False
+        import onnxruntime as ort  # noqa: F401
     except Exception as e:
         LOGGER.warning(f"CUDA 检测: onnxruntime 导入失败: {e}")
         return False
