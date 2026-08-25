@@ -175,6 +175,30 @@ GPU_EXTRA_HIDDEN_IMPORTS = [
     "cuda.bindings.cyruntime",
     "cuda.cuda",
     "cuda.cudart",
+    # cuda-python 的 DLL 加载器（cuda/bindings/_lib/windll.pxd）依赖
+    # ctypes.wintypes，PyInstaller 的 ctypes hook 不会自动收集
+    "ctypes.wintypes",
+]
+
+# ===== GPU 模式需要完整复制的 Python 原生绑定包 =====
+# 这些包含大量动态加载的 Cython 子模块（.pyd）与 __init__.py 引导逻辑，
+# PyInstaller 的静态分析只能收集到部分 .pyd，会遗漏关键子包导致运行时报错：
+# - cuda: 缺 cuda.bindings._bindings（from cuda import cuda, cudart 失败）
+# - tensorrt: 缺 __init__.py 与 plugin/（import 变成空命名空间包，调用必挂）
+GPU_NATIVE_PACKAGES = ["cuda", "tensorrt"]
+
+# ===== cuDNN 子组件 DLL（onnxruntime CUDA EP 运行时依赖）=====
+# cudnn64_9.dll 仅是 0.3 MB 的加载器壳，真正的实现在以下子组件中。
+# PyInstaller 只收集到壳 DLL，子组件缺失会导致 CUDA EP 初始化失败。
+CUDNN_SUBCOMPONENT_DLLS = [
+    "cudnn64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_ops64_9.dll",
 ]
 
 
@@ -354,6 +378,119 @@ def _cleanup_gpu_dlls(packages_dir: Path) -> int:
     return removed_size
 
 
+def _fix_gpu_native_packages(packages_dir: Path) -> int:
+    """GPU 模式专用：从当前 Python 环境完整复制原生绑定包，替换 PyInstaller 的不完整收集。
+
+    PyInstaller 静态分析无法收集 cuda / tensorrt 包中动态加载的 Cython 子模块，
+    典型缺失：
+    - cuda/bindings/_bindings/ 子包与 __init__.py（导致 cuda-python 导入失败）
+    - tensorrt/__init__.py 与 plugin/（导致 import 后为空命名空间包）
+
+    处理方式：删除依赖目录中的残缺包，从 site-packages 完整复制（跳过 __pycache__）。
+
+    Args:
+        packages_dir: 依赖包目录路径（VAI_E_SmartAnnotator 子目录）。
+
+    Returns:
+        复制的文件总字节数。
+    """
+    import sysconfig
+
+    site_packages = Path(sysconfig.get_paths()["purelib"])
+    copied_size = 0
+
+    for pkg_name in GPU_NATIVE_PACKAGES:
+        src_dir = site_packages / pkg_name
+        dst_dir = packages_dir / pkg_name
+        if not src_dir.exists():
+            print(f"  [警告] site-packages 中未找到 {pkg_name} 包: {src_dir}")
+            continue
+
+        # 删除 PyInstaller 收集的残缺版本
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+
+        # 完整复制（忽略 __pycache__ 与 Cython 源文件，减小体积）
+        def _copy_tree(src: Path, dst: Path) -> None:
+            nonlocal copied_size
+            dst.mkdir(parents=True, exist_ok=True)
+            for item in src.iterdir():
+                if item.name == "__pycache__":
+                    continue
+                target = dst / item.name
+                if item.is_dir():
+                    _copy_tree(item, target)
+                elif item.suffix in (".pyd", ".py", ".dll"):
+                    copied_size += item.stat().st_size
+                    shutil.copy2(item, target)
+
+        _copy_tree(src_dir, dst_dir)
+        print(f"  已完整复制 {pkg_name} 包（累计 {copied_size / 1024 / 1024:.1f} MB）")
+
+    return copied_size
+
+
+def _copy_cudnn_dlls(packages_dir: Path) -> int:
+    """GPU 模式专用：从系统 CUDNN 安装目录复制子组件 DLL 到依赖目录。
+
+    onnxruntime CUDA EP 依赖 cuDNN 9 的子组件 DLL（cudnn_graph/engines/ops 等，
+    合计约 960 MB）。PyInstaller 仅收集到 0.3 MB 的 cudnn64_9.dll 加载器壳，
+    子组件缺失会导致 CUDA EP 初始化失败。
+
+    搜索顺序：
+        1. CUDNN_HOME / CUDNN_PATH 环境变量指定的目录
+        2. C:\\Program Files\\NVIDIA\\CUDNN\\v*\\bin\\（官方安装默认位置，取最新版本）
+
+    Args:
+        packages_dir: 依赖包目录路径（DLL 复制到该目录根部，与 cudnn64_9.dll 同级）。
+
+    Returns:
+        复制的文件总字节数，未找到 cuDNN 目录返回 0 并打印警告。
+    """
+    # 候选 cuDNN bin 目录
+    candidates: list[Path] = []
+    for env_var in ("CUDNN_HOME", "CUDNN_PATH"):
+        env_val = os.environ.get(env_var)
+        if env_val:
+            candidates.append(Path(env_val))
+            candidates.append(Path(env_val) / "bin")
+
+    # 官方安装默认位置（版本号倒序遍历，优先使用最新版本）
+    cudnn_root = Path("C:/Program Files/NVIDIA/CUDNN")
+    if cudnn_root.exists():
+        for version_dir in sorted(cudnn_root.iterdir(), reverse=True):
+            bin_dir = version_dir / "bin"
+            if bin_dir.is_dir():
+                # bin 下可能直接是 DLL，也可能有 CUDA 版本子目录（如 12.9）
+                candidates.append(bin_dir)
+                candidates.extend(d for d in bin_dir.iterdir() if d.is_dir())
+
+    # 在候选目录中查找包含 cudnn 子组件 DLL 的目录
+    cudnn_bin_dir = None
+    for cand in candidates:
+        if cand.is_dir() and (cand / "cudnn_graph64_9.dll").exists():
+            cudnn_bin_dir = cand
+            break
+
+    if cudnn_bin_dir is None:
+        print("  [警告] 未找到 cuDNN 子组件 DLL 目录（cudnn_graph64_9.dll）")
+        print("         CUDA EP 可能因缺少 cuDNN 而初始化失败")
+        print("         请安装 cuDNN 9 或设置 CUDNN_HOME 环境变量")
+        return 0
+
+    copied_size = 0
+    for dll_name in CUDNN_SUBCOMPONENT_DLLS:
+        src = cudnn_bin_dir / dll_name
+        if src.exists():
+            copied_size += src.stat().st_size
+            shutil.copy2(src, packages_dir / dll_name)
+        else:
+            print(f"  [警告] cuDNN 子组件缺失: {src}")
+
+    print(f"  已复制 cuDNN 子组件 DLL（{copied_size / 1024 / 1024:.1f} MB，来源: {cudnn_bin_dir}）")
+    return copied_size
+
+
 def _build_packages_list(packages_dir: Path) -> str:
     """递归遍历依赖目录，生成完整包清单文本。
 
@@ -445,7 +582,17 @@ def _split_zip(zip_path: Path, max_part_size: int = MAX_PART_SIZE) -> int:
         print(f"  分卷 {i + 1}/{num_parts}: {part_path.name} ({(end - start) / 1024 / 1024:.1f} MB)")
 
     # 删除原始 zip 文件（分卷已生成）
-    zip_path.unlink()
+    # 容错处理：杀毒软件/索引服务可能短暂锁定文件，重试后再失败仅告警不中断构建
+    for attempt in range(5):
+        try:
+            zip_path.unlink()
+            break
+        except (FileNotFoundError, PermissionError) as e:
+            if attempt == 4:
+                print(f"  [警告] 原始 zip 删除失败（{e}），可手动删除: {zip_path}")
+            else:
+                import time
+                time.sleep(1)
     return num_parts
 
 
@@ -703,6 +850,14 @@ def _build_package(
         packages_dir = exe_dir / PACKAGES_DIR_NAME
         removed_gpu = _cleanup_gpu_dlls(packages_dir)
         print(f"  已清理 GPU 推理 DLL，释放 {removed_gpu / 1024 / 1024:.1f} MB")
+
+    # ===== GPU 模式修复 PyInstaller 收集不完整问题 =====
+    if mode == "gpu":
+        print(f"\n  [GPU] 修复原生绑定包（cuda / tensorrt 完整复制）...")
+        packages_dir = exe_dir / PACKAGES_DIR_NAME
+        _fix_gpu_native_packages(packages_dir)
+        print(f"\n  [GPU] 复制 cuDNN 子组件 DLL...")
+        _copy_cudnn_dlls(packages_dir)
 
     # ===== 生成 py_packages_list.txt =====
     print(f"\n  [{mode_upper}] 生成 py_packages_list.txt...")
