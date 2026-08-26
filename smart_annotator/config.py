@@ -138,6 +138,7 @@ class AnnotateConfig:
         frame_interval: 视频抽帧间隔。
         diff_threshold: 帧间差异阈值。
         task_type: 任务模式（DETECT/POSE/SEGMENT）。
+        selected_classes: 用户选择检测的类别 id 列表；空列表表示不过滤（检测所有类别）。
         annotation_files: 运行期扫描到的图片文件（不序列化）。
         video_files: 运行期扫描到的视频文件（不序列化）。
     """
@@ -152,6 +153,7 @@ class AnnotateConfig:
     frame_interval: int = 30
     diff_threshold: float = 10.0
     task_type: MODE = MODE.DETECT
+    selected_classes: list = field(default_factory=list)
     # 运行期字段（不参与序列化）
     annotation_files: list = field(default_factory=list, repr=False)
     video_files: list = field(default_factory=list, repr=False)
@@ -169,6 +171,7 @@ class AnnotateConfig:
             "frame_interval": self.frame_interval,
             "diff_threshold": self.diff_threshold,
             "task_type": self.task_type.name,
+            "selected_classes": list(self.selected_classes),
         }
 
     @classmethod

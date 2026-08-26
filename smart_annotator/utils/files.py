@@ -101,3 +101,50 @@ def move_files(filelist, splitname, output):
             shutil.copy(lbl_src, lbl_dst)
         except Exception as ex:
             raise RuntimeError(f"移动文件{file_name}时失败：{str(ex)}")
+
+
+def getModelClasses(model_path) -> dict:
+    """从模型文件元数据中读取类别映射（不加载推理会话，轻量解析）。
+
+    解析 ONNX 模型 metadata_props 中的 "names" 字段（YOLO 导出格式，
+    形如 "{0: 'person', 1: 'car', ...}" 的字符串字面量）。
+    TensorRT engine 文件不保留元数据，自动回退到同名 .onnx 文件。
+
+    Args:
+        model_path: 模型文件路径（.onnx 或 .engine）。
+
+    Returns:
+        类别映射 {class_id: name}；无法读取时返回空字典。
+    """
+    import ast
+
+    path = Path(model_path) if model_path else None
+    if path is None or not path.exists():
+        return {}
+
+    # engine 文件不含元数据，回退到同名 .onnx（onnx→engine 转换产物场景）
+    if path.suffix.lower() == ".engine":
+        onnx_path = path.with_suffix(".onnx")
+        if onnx_path.exists():
+            path = onnx_path
+        else:
+            return {}
+
+    if path.suffix.lower() != ".onnx":
+        return {}
+
+    try:
+        import onnx
+
+        # load_external_data=False: 仅解析 proto 结构，不加载外部权重，速度极快
+        model = onnx.load(str(path), load_external_data=False)
+        for prop in model.metadata_props:
+            if prop.key == "names":
+                mapping = ast.literal_eval(prop.value)
+                if isinstance(mapping, dict):
+                    return {int(k): str(v) for k, v in mapping.items()}
+                break
+    except Exception:
+        return {}
+
+    return {}

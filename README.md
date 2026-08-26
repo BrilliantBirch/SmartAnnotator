@@ -4,32 +4,33 @@
 
 ## 1. 功能概述
 
-| 功能 | 说明 |
-|------|------|
-| **格式转换** | LabelMe JSON ↔ YOLO TXT 双向转换，支持目标检测/姿态估计/实例分割 |
-| **自动标注** | 加载 ONNX/TensorRT 模型，对图片/视频批量推理并输出 LabelMe 标注文件 |
-| **数据集划分** | 按 train/val/test 比例分层抽样划分 YOLO 数据集 |
-| **配置管理** | JSON 格式导入/导出，兼容旧版 camelCase 键 |
+| 功能             | 说明                                                                     |
+| ---------------- | ------------------------------------------------------------------------ |
+| **格式转换**     | LabelMe JSON ↔ YOLO TXT 双向转换，支持目标检测/姿态估计/实例分割         |
+| **自动标注**     | 加载 ONNX/TensorRT 模型，对图片/视频批量推理并输出 LabelMe 标注文件      |
+| **检测类别选择** | 模型加载后自动解析元数据类别，支持复选/全选/取消全选，按类别过滤推理结果 |
+| **数据集划分**   | 按 train/val/test 比例分层抽样划分 YOLO 数据集                           |
+| **配置管理**     | JSON 格式导入/导出，兼容旧版 camelCase 键                                |
 
 ### 支持的任务模式
 
-| 模式 | 说明 | 转换 | 标注 |
-|------|------|------|------|
-| `DETECT` | 目标检测 | ✓ | ✓ |
-| `POSE` | 姿态估计（关键点） | ✓ | ✓ |
-| `SEGMENT` | 实例分割 | ✓ | ✓ |
-| `OCR` | 光学字符识别 | ✓ | 未来版本 |
+| 模式      | 说明               | 转换 | 标注     |
+| --------- | ------------------ | ---- | -------- |
+| `DETECT`  | 目标检测           | ✓    | ✓        |
+| `POSE`    | 姿态估计（关键点） | ✓    | ✓        |
+| `SEGMENT` | 实例分割           | ✓    | ✓        |
+| `OCR`     | 光学字符识别       | ✓    | 未来版本 |
 
 ## 2. 技术栈
 
-| 项目 | 版本 |
-|------|------|
-| Python | 3.12.10（严格锁定） |
-| PySide6 | 6.11.1 |
-| numpy | 2.4.6 |
-| opencv-python | 4.13.0.92 |
-| onnxruntime | 1.28.0 |
-| pywin32 | 312 |
+| 项目          | 版本                |
+| ------------- | ------------------- |
+| Python        | 3.12.10（严格锁定） |
+| PySide6       | 6.11.1              |
+| numpy         | 2.4.6               |
+| opencv-python | 4.13.0.92           |
+| onnxruntime   | 1.28.0              |
+| pywin32       | 312                 |
 
 完整依赖见 [requirements.txt](requirements.txt)，GPU 额外依赖见 [requirements-gpu.txt](requirements-gpu.txt)。
 
@@ -46,7 +47,7 @@ VAI_E_SmartAnnotator/
 │   ├── config.py                 # dataclass 配置 + 枚举
 │   ├── version_manager.py        # 版本号管理
 │   ├── pages/                    # 三页界面（欢迎/转换/标注）
-│   ├── widgets/                  # 公共控件（按钮/卡片/字段/对话框）
+│   ├── widgets/                  # 公共控件（按钮/卡片/字段/对话框/类别选择）
 │   ├── workers/                  # QThread 工作线程
 │   ├── core/                     # 业务逻辑（转换/标注算法）
 │   └── utils/                    # 工具（日志/文件/路径/颜色）
@@ -57,7 +58,7 @@ VAI_E_SmartAnnotator/
 ├── app.ico                       # 应用图标
 ├── resources/                    # 资源文件
 │   └── images/                   # 图标资源
-├── assets/                       # 示例图片
+├── docs/                         # 文档（用户说明书）
 ├── requirements.txt              # 依赖列表
 ├── requirements-gpu.txt          # GPU 额外依赖
 └── README.md
@@ -122,16 +123,18 @@ python smart_annotator/main.py
   "nms": 0.7,
   "frame_interval": 30,
   "diff_threshold": 10.0,
-  "task_type": "DETECT"
+  "task_type": "DETECT",
+  "selected_classes": [0, 1, 2]
 }
 ```
 
 > 配置导入兼容旧版 camelCase 键名（如 `modelPath` → `model_path`）。
+> `selected_classes` 为用户选择检测的类别 id 列表，空列表表示不过滤（检测所有类别）。
 
 ## 6. 打包
 
 ```bash
-# 在项目根目录执行
+# 在项目根目录执行（GPU 模式需在 VAI_E_Vision_FrameWork conda 环境中运行）
 python build.py --mode all      # 构建 CPU + GPU 离线安装器 + 在线安装器
 python build.py --mode cpu      # 仅构建 CPU 离线安装器
 python build.py --mode gpu      # 仅构建 GPU 离线安装器
@@ -144,6 +147,10 @@ python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gite
 - `py_packages_list.txt` — 依赖文件清单
 
 安装程序输出到 `build/installer_output/`，zip 分发包输出到 `build/packages/`。
+
+GPU 模式构建优化（2026-08-25）：
+- GPU 推理完全走 TensorRT 引擎，构建后自动清理冗余 CUDA DLL（onnxruntime CUDA EP / cuDNN / cuBLAS / cuFFT），打包体积从约 2.6 GB 降至约 734 MB，安装器约 220 MB
+- `nvinfer*.dll` 自动移入 `tensorrt.libs/`，确保无 CUDA Toolkit 的目标机器可正常加载 TensorRT
 
 版本号策略：
 - 文件版本：`年.月.日.构建次数`（如 `26.8.10.0`），自动递增
@@ -174,6 +181,19 @@ pages/（界面层）→ workers/（线程层）→ core/（算法层）
 - 窗口宽度 < 768px：切换为底部标签栏
 - 内容区使用 QScrollArea 包裹，小屏不溢出
 
-## 8. 作者
-BriiliantBirch
+### 7.4 类别选择链路
+
+```
+模型路径选择 → getModelClasses()（onnx 轻量解析 metadata["names"]，
+              engine 自动回退同名 .onnx）→ ClassSelectorWidget（复选列表）
+→ AnnotateConfig.selected_classes → Annotator._filter_by_classes()
+→ 推理结果按类别过滤（bboxs/scores/labels/keypoints/boundary_points 同步）
+```
+
+## 8. 文档
+
+- 用户使用说明书：[docs/VAI_E_SmartAnnotator_用户说明书.pdf](docs/VAI_E_SmartAnnotator_用户说明书.pdf)
+
+## 9. 作者
+BaiBinnan
 

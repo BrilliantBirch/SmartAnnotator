@@ -26,6 +26,7 @@ from .files import (
     getVideoFilesInDir,
     checkAnnotationFiles,
     move_files,
+    getModelClasses,
 )
 from .tool import (
     is_point_in_box,
@@ -56,6 +57,7 @@ __all__ = [
     "getVideoFilesInDir",
     "checkAnnotationFiles",
     "move_files",
+    "getModelClasses",
     "is_point_in_box",
     "is_rect_inside",
     "detect_anomalies",

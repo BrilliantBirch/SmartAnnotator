@@ -10,6 +10,7 @@
     3. 2026-06-24 完善类型提示，增强代码可读性
     4. 2026-06-24 添加模型加载失败检查，避免静默崩溃
     5. 2026-07-07 添加视频文件处理支持，实现智能抽帧和冗余帧过滤
+    6. 2026-08-26 支持按用户选择的类别过滤推理结果（selected_classes）
 """
 
 import cv2
@@ -63,6 +64,13 @@ class Annotator:
 
         self.model = model
         self.formatter: BaseFormatter = FormatterFactory.create(self.mode)
+
+        # 用户选择的检测类别（空 = 不过滤，检测所有类别）
+        self._selected_classes = set(self.config.selected_classes) if self.config.selected_classes else None
+        if self._selected_classes is not None:
+            LOGGER.info(
+                f"按选定类别过滤检测: {sorted(self._selected_classes)}"
+            )
 
         # 模型预热
         self.model.warm_up()
@@ -233,6 +241,10 @@ class Annotator:
             if pred.get("bboxs") is None:
                 continue
 
+            # 按用户选择的类别过滤（同步过滤所有与检测框对齐的字段）
+            if self._selected_classes is not None:
+                pred = self._filter_by_classes(pred, self._selected_classes)
+
             # 使用策略模式格式化，根据任务类型自动选择对应的格式化器
             kpt_shape = (
                 self.model.kpt_shape[0] if self.mode == MODE.POSE else None
@@ -267,3 +279,37 @@ class Annotator:
             dest_path = self.output / image_path.name
             if image_path.resolve() != dest_path.resolve():
                 shutil.copy(image_path, dest_path)
+
+    @staticmethod
+    def _filter_by_classes(pred: Dict[str, Any], allowed: set) -> Dict[str, Any]:
+        """按类别 id 集合过滤单张图像的预测结果。
+
+        同步过滤所有第一维与 labels 对齐的字段：
+        - ndarray 字段: bboxs / scores / labels / keypoints（掩码索引）
+        - list 字段: boundary_points（SEGMENT 变长多边形，逐项筛选）
+
+        Args:
+            pred: 单张图像的预测字典（含 bboxs/scores/labels 等）。
+            allowed: 允许的类别 id 集合。
+
+        Returns:
+            过滤后的预测字典（全保留时原样返回）。
+        """
+        labels = pred.get("labels")
+        if labels is None or len(labels) == 0:
+            return pred
+
+        keep = np.isin(np.asarray(labels), list(allowed))
+        if keep.all():
+            return pred
+
+        keep_idx = np.nonzero(keep)[0]
+        filtered: Dict[str, Any] = {}
+        for key, value in pred.items():
+            if isinstance(value, np.ndarray) and value.shape[:1] == np.asarray(labels).shape[:1]:
+                filtered[key] = value[keep]
+            elif isinstance(value, list) and len(value) == len(labels):
+                filtered[key] = [value[i] for i in keep_idx]
+            else:
+                filtered[key] = value
+        return filtered

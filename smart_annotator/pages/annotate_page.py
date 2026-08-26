@@ -2,15 +2,17 @@
 """
 自动标注页 - AnnotatePage
 
-按 UI 文档 §5.3 与计划 §2.6：5 卡片布局。
+按 UI 文档 §5.3 与计划 §2.6：6 卡片布局。
 1. 运行设备：CPU/GPU 单选（默认 GPU 若 CUDA 可用，否则 CPU 并禁用 GPU）
 2. 路径设置：模型路径 / 图片目录 / 输出目录
-3. 推理参数：BBox 置信度、NMS、关键点置信度(POSE)、抽帧间隔、差异阈值(视频)
-4. 操作区：导入/导出配置、任务类型、开始/停止
-5. 进度与日志：进度条 + 日志面板
+3. 检测类别：模型加载后自动读取元数据类别，复选列表 + 全选/取消全选
+4. 推理参数：BBox 置信度、NMS、关键点置信度(POSE)、抽帧间隔、差异阈值(视频)
+5. 操作区：导入/导出配置、任务类型、开始/停止
+6. 进度与日志：进度条 + 日志面板
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-08-26 新增检测类别卡片（模型元数据解析 + 类别选择 + 后端过滤）
 """
 
 import json
@@ -35,11 +37,12 @@ from PySide6.QtCore import Signal, Qt
 from .base_page import BasePage
 from ..widgets.buttons import PrimaryButton, SecondaryButton
 from ..widgets.cards import Card
+from ..widgets.class_selector import ClassSelectorWidget
 from ..widgets.fields import PathField, LabeledSpin, apply_click_to_focus
 from ..widgets.preview import FilePreviewWidget
 from ..widgets.dialogs import showMessageBox
 from ..config import SysConfig, AnnotateConfig, MODE, DEVICE
-from ..utils import LOGGER, getImageFilesInDir, getVideoFilesInDir
+from ..utils import LOGGER, getImageFilesInDir, getVideoFilesInDir, getModelClasses
 from ..utils.qt_logger import add_qt_handler
 
 
@@ -103,6 +106,7 @@ class AnnotatePage(BasePage):
 
         self._build_device_card()
         self._build_path_card()
+        self._build_class_card()
         self._build_param_card()
         self._build_action_card()
         self._build_preview_card()
@@ -152,7 +156,16 @@ class AnnotatePage(BasePage):
         self.path_card.addWidget(self._labeled("图片目录", self.image_field))
         self.output_field = PathField(browse_type="dir", placeholder="选择标注输出目录")
         self.path_card.addWidget(self._labeled("输出目录", self.output_field))
+        # 模型路径变化时自动读取类别
+        self.model_field.path_changed.connect(self._on_model_changed)
         self.add_widget(self.path_card)
+
+    def _build_class_card(self) -> None:
+        """构建检测类别卡：模型类别复选列表 + 全选/取消全选。"""
+        self.class_card = Card("检测类别")
+        self.class_selector = ClassSelectorWidget()
+        self.class_card.addWidget(self.class_selector)
+        self.add_widget(self.class_card)
 
     def _build_param_card(self) -> None:
         """构建推理参数卡：置信度/NMS/抽帧/差异阈值/关键点置信度。"""
@@ -264,6 +277,25 @@ class AnnotatePage(BasePage):
         self.spin_kpt_conf.setVisible(is_pose)
         self.spin_kpt_conf.label.setVisible(is_pose)
 
+    def _on_model_changed(self, path: str) -> None:
+        """模型路径变化时读取模型元数据中的类别信息并填充选择组件。
+
+        Args:
+            path: 模型文件路径。
+        """
+        if not path or not Path(path).exists():
+            self.class_selector.set_classes({})
+            return
+        classes = getModelClasses(path)
+        if classes:
+            self.class_selector.set_classes(classes)
+            LOGGER.info(f"已加载模型类别，共 {len(classes)} 个类别")
+        else:
+            self.class_selector.set_classes({})
+            LOGGER.warning(
+                f"未能从模型元数据读取类别信息: {path}（将检测所有类别）"
+            )
+
     def _on_input_changed(self, path: str) -> None:
         """输入目录变化时统计图片/视频数量、切换视频参数可见性并填充预览列表。"""
         if not path or not Path(path).exists():
@@ -305,6 +337,8 @@ class AnnotatePage(BasePage):
         ac.frame_interval = int(self.spin_frame_interval.value())
         ac.diff_threshold = self.spin_diff_threshold.value()
         ac.task_type = sys_config.task_type
+        # 用户选择的检测类别（空 = 不过滤全部检测）
+        ac.selected_classes = self.class_selector.selected_ids()
         # 扫描输入目录的图片与视频文件
         self._scan_input_files(ac)
 
@@ -344,6 +378,11 @@ class AnnotatePage(BasePage):
         self.output_field.set_path(ac.dataset_path)
         if ac.image_path:
             self._on_input_changed(ac.image_path)
+        # 检测类别（set_path 不触发信号，需手动读取模型类别再回填勾选）
+        if ac.model_path:
+            self._on_model_changed(ac.model_path)
+        if ac.selected_classes:
+            self.class_selector.set_selected_ids(ac.selected_classes)
         # 参数
         self.spin_conf.set_value(ac.conf)
         self.spin_kpt_conf.set_value(ac.kpt_conf)
@@ -444,6 +483,12 @@ class AnnotatePage(BasePage):
             return
         if not ac.annotation_files and not ac.video_files:
             showMessageBox(QMessageBox.Icon.Warning, "输入目录未扫描到图片或视频")
+            return
+        # 已加载类别但一个都没选时阻止开始（防止误操作产出空标注）
+        if self.class_selector.has_classes() and not ac.selected_classes:
+            showMessageBox(
+                QMessageBox.Icon.Warning, "请至少选择一个检测类别（或点击全选）"
+            )
             return
         self._worker.setConfig(sys_config)
         self.progress_bar.setValue(0)
