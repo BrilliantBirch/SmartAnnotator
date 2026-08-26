@@ -30,6 +30,8 @@
 更新: 2026-08-25 GPU 模式优化：完整复制 cuda/tensorrt 原生绑定包修复 CUDA 检测；
       删除冗余 CUDA DLL（onnxruntime CUDA EP/cuDNN/cuBLAS/cuFFT，GPU 推理走 TensorRT），
       打包体积从约 2.6 GB 降至约 730 MB
+更新: 2026-08-26 CPU 模式修复：清理 exe 根目录混入的 CUDA DLL（约 1 GB，
+      构建机 onnxruntime-gpu 依赖链引入，原清理逻辑仅遍历依赖子目录未覆盖根目录）
 """
 import argparse
 import configparser
@@ -206,6 +208,20 @@ GPU_REDUNDANT_DLL_PATTERNS = [
     "cudnn",
     "cublas",
     "cufft",
+]
+
+# ===== CPU 模式需要删除的冗余 CUDA DLL（前缀匹配，递归遍历整个打包目录）=====
+# CPU 推理仅用 onnxruntime.dll 内置的 CPUExecutionProvider，所有 CUDA DLL 均无用。
+# PyInstaller 会因构建机 onnxruntime-gpu / PATH 中的 CUDA Toolkit 将以下 DLL 收集到
+# exe 根目录（实测: cublasLt64_12.dll 636MB / cufft64_11.dll 274MB / cublas64_12.dll 98MB），
+# 必须以 exe 目录为根递归清理（_cleanup_gpu_dlls 只遍历依赖子目录，覆盖不到根目录）。
+# GPU_REDUNDANT_DLL_PATTERNS 之外额外增加 cudart（CPU 模式无任何 CUDA 调用）。
+CPU_REDUNDANT_DLL_PATTERNS = GPU_REDUNDANT_DLL_PATTERNS + [
+    "cudart",
+    "cupti",
+    "nvrtc",
+    "nvjit",
+    "nvvm",
 ]
 
 
@@ -472,13 +488,43 @@ def _cleanup_gpu_redundant_dlls(exe_dir: Path) -> int:
     Returns:
         已删除文件的总字节数。
     """
-    if not exe_dir.exists():
+    return _remove_dlls_by_patterns(exe_dir, GPU_REDUNDANT_DLL_PATTERNS)
+
+
+def _cleanup_cpu_redundant_dlls(exe_dir: Path) -> int:
+    """CPU 模式专用：递归删除所有 CUDA 相关 DLL。
+
+    CPU 推理仅使用 onnxruntime.dll 内置的 CPUExecutionProvider，
+    打包目录中的全部 CUDA DLL（cudart/cublas/cufft/cudnn/nvrtc 等）均无用。
+    PyInstaller 会因构建机的 onnxruntime-gpu 依赖链或 PATH 中的 CUDA Toolkit
+    将这些 DLL 收集到 exe 根目录（实测混入约 1 GB），必须整体清理。
+
+    Args:
+        exe_dir: 打包输出目录路径（dist_{mode}/VAI_E_SmartAnnotator）。
+
+    Returns:
+        已删除文件的总字节数。
+    """
+    return _remove_dlls_by_patterns(exe_dir, CPU_REDUNDANT_DLL_PATTERNS)
+
+
+def _remove_dlls_by_patterns(root_dir: Path, patterns: list) -> int:
+    """按文件名前缀模式递归删除目录中的 DLL 文件。
+
+    Args:
+        root_dir: 递归遍历的根目录路径。
+        patterns: DLL 文件名（不含扩展名）前缀模式列表。
+
+    Returns:
+        已删除文件的总字节数。
+    """
+    if not root_dir.exists():
         return 0
 
     removed_size = 0
-    for dll in exe_dir.rglob("*.dll"):
+    for dll in root_dir.rglob("*.dll"):
         dll_name = dll.stem  # 不含扩展名
-        for pattern in GPU_REDUNDANT_DLL_PATTERNS:
+        for pattern in patterns:
             if dll_name.startswith(pattern):
                 removed_size += dll.stat().st_size
                 dll.unlink()
@@ -846,6 +892,10 @@ def _build_package(
         packages_dir = exe_dir / PACKAGES_DIR_NAME
         removed_gpu = _cleanup_gpu_dlls(packages_dir)
         print(f"  已清理 GPU 推理 DLL，释放 {removed_gpu / 1024 / 1024:.1f} MB")
+        # 清理 exe 根目录混入的 CUDA DLL（构建机 onnxruntime-gpu 依赖链引入，约 1 GB）
+        print(f"\n  [CPU] 清理 exe 根目录混入的 CUDA 冗余 DLL（cublas/cufft/cudart 等）...")
+        removed_cuda = _cleanup_cpu_redundant_dlls(exe_dir)
+        print(f"  已清理 CUDA 冗余 DLL，释放 {removed_cuda / 1024 / 1024:.1f} MB")
 
     # ===== GPU 模式修复 PyInstaller 收集不完整问题 + 清理冗余 CUDA DLL =====
     if mode == "gpu":

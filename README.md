@@ -184,8 +184,9 @@ pages/（界面层）→ workers/（线程层）→ core/（算法层）
 ### 7.4 类别选择链路
 
 ```
-模型路径选择 → getModelClasses()（onnx 轻量解析 metadata["names"]，
-              engine 自动回退同名 .onnx）→ ClassSelectorWidget（复选列表）
+模型路径选择 → getModelClasses()（onnx 解析 metadata["names"]；
+              engine 直接解析内嵌 metadata（转换时写入），旧版无 metadata 时回退同名 .onnx）
+→ ClassSelectorWidget（复选列表）
 → AnnotateConfig.selected_classes → Annotator._filter_by_classes()
 → 推理结果按类别过滤（bboxs/scores/labels/keypoints/boundary_points 同步）
 ```
