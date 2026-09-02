@@ -17,6 +17,9 @@ from .cards import Card
 from .fields import PathField, LabeledSpin, CustomItemWidget, apply_click_to_focus
 from .dialogs import chooseDir, chooseFile, showMessageBox
 from .preview import FilePreviewWidget
+from .canvas import Canvas
+from .left_toolbar import LeftToolbar
+from .right_panel import RightPanel
 
 __all__ = [
     "PrimaryButton",
@@ -30,4 +33,7 @@ __all__ = [
     "chooseDir",
     "chooseFile",
     "showMessageBox",
+    "Canvas",
+    "LeftToolbar",
+    "RightPanel",
 ]

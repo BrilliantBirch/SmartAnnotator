@@ -200,6 +200,68 @@ class Annotator:
 
         return success
 
+    def annotate_image(self, image_path) -> List[Dict[str, Any]]:
+        """对单张图片推理并返回 labelme 形状字典列表（不写文件）。
+
+        复用与批量标注完全相同的预测器/格式化器/类别过滤链路，
+        仅将结果以 labelme 形状字典形式返回，供标注编辑器直接显示。
+
+        Args:
+            image_path: 图片文件路径（字符串或 Path）。
+
+        Returns:
+            labelme 形状字典列表；无检测结果或失败时返回空列表。
+        """
+        path = Path(image_path)
+        img = _load_image(path)
+        if img is None:
+            return []
+        img_h, img_w = img.shape[:2]
+
+        predictions = self.model.predict([img])
+        if not predictions:
+            return []
+
+        pred = predictions[0]
+        if pred.get("bboxs") is None:
+            return []
+
+        # 与批量标注保持一致：按用户选择的类别过滤
+        if self._selected_classes is not None:
+            pred = self._filter_by_classes(pred, self._selected_classes)
+
+        kpt_shape = self.model.kpt_shape[0] if self.mode == MODE.POSE else None
+        lines = self.formatter.format(
+            pred,
+            kpt_conf=self.config.kpt_conf,
+            class_mapping=self.model.class_mapping,
+            kpt_shape=kpt_shape,
+        )
+        annotations = yolo_to_labelme(
+            lines,
+            img_w,
+            img_h,
+            self.model.class_mapping,
+            self.mode.value,
+            kpt_shape,
+        )
+
+        # 转换为 labelme 标准形状字典（与 labelme_io.new_shape 结构一致）
+        shapes: List[Dict[str, Any]] = []
+        for a in annotations:
+            shapes.append(
+                {
+                    "label": a["class"],
+                    "points": a["points"],
+                    "group_id": a.get("group_id"),
+                    "description": a.get("description", ""),
+                    "shape_type": a["shape_type"],
+                    "flags": {},
+                    "mask": None,
+                }
+            )
+        return shapes
+
     def _label(self, image_pathList: List[Path]) -> None:
         """对图像列表进行批处理标注。
 
