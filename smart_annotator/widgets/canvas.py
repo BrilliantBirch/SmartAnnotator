@@ -5,17 +5,21 @@
 图像显示 + 标注对象的绘制、编辑与预览：
     - 背景图像：QPixmap 1:1 绘制在场景原点，场景坐标即图像像素坐标
     - 标注工具：矩形（rectangle）、点（point）、多边形（polygon）
-    - 编辑能力：选中、拖拽移动、删除（Delete 键）、Esc 取消当前绘制
-    - 滚轮缩放 + 双击适配窗口（fit）
+    - 绘制辅助：十字虚线引导线（延伸至图像四边界）+ 已放置顶点显示
+    - 编辑模式（工具为"编辑"）：多选（Shift+点击 / Ctrl+框选）、
+      批量拖拽移动、端点拖动缩放、hover 半透明掩码、可编辑端点显示
+    - 滚轮缩放 + Esc 取消当前绘制
 
 形状以 labelme 标准字典为唯一数据源（见 core/labelme_io.py），
-绘制结果对外发射 shapes_changed / shape_selected 信号供右侧栏联动。
+绘制结果对外发射 shapes_changed / selection_changed 信号供右侧栏联动。
 
 作者: BaiBinnan
 创建日期: 2026-09-02
+更新: 2026-09-03 多选/框选、编辑模式（掩码+端点缩放）、右键上下文菜单、绘制引导线
 """
 
-from typing import Dict, List, Optional
+import copy
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
 from PySide6.QtGui import (
@@ -34,6 +38,8 @@ from PySide6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsEllipseItem,
     QGraphicsPolygonItem,
+    QGraphicsTextItem,
+    QGraphicsLineItem,
     QGraphicsItem,
 )
 
@@ -41,14 +47,50 @@ from ..core import labelme_io
 
 # 顶点（点/多边形顶点）绘制半径（像素）
 _VERTEX_RADIUS = 4.0
+# 编辑模式下可拖动端点的显示半径（像素）
+_EDIT_VERTEX_RADIUS = 5.0
 # 绘制中多边形预览线样式
 _DRAFT_PEN = QPen(QColor("#18181b"), 2, Qt.PenStyle.DashLine)
+# 绘制模式十字引导线样式（虚线）
+_GUIDE_PEN = QPen(QColor("#52525b"), 1, Qt.PenStyle.DashLine)
+# Ctrl 框选矩形样式（虚线）
+_RUBBER_PEN = QPen(QColor("#2563eb"), 1, Qt.PenStyle.DashLine)
+# 编辑模式 hover 掩码透明度
+_MASK_ALPHA = 90
 
-# 每个标签的固定调色板（循环使用）
+# 每个标签的固定调色板（循环使用，10 色高区分度）
 _PALETTE = [
     "#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6",
     "#ec4899", "#14b8a6", "#f97316", "#64748b", "#84cc16",
 ]
+
+# 标签 -> 颜色 的确定性全局缓存：同一标签在整个标注过程中保持唯一且一致的颜色
+_LABEL_COLOR_CACHE: Dict[str, QColor] = {}
+# 下一个待分配颜色的下标（跨 Canvas 实例共享计数，避免重建画布时颜色错位）
+_COLOR_SEQ = [0]
+# 撤销/重做栈的最大深度
+_MAX_UNDO = 50
+# OCR 文本在图像上的显示截断长度（超过则用 .. 截断）
+_OCR_TRUNCATE = 32
+
+
+def color_for_label(label: str) -> QColor:
+    """按标签名稳定分配唯一颜色（进程内首次出现的标签固定同色）。
+
+    以模块级全局缓存保证同一标签在整个标注过程中颜色唯一一致，
+    并供右侧信息栏（标签/对象列表颜色圆点）复用，确保两侧颜色严格对齐。
+
+    Args:
+        label: 标签名。
+
+    Returns:
+        对应颜色。
+    """
+    if label not in _LABEL_COLOR_CACHE:
+        idx = _COLOR_SEQ[0] % len(_PALETTE)
+        _COLOR_SEQ[0] += 1
+        _LABEL_COLOR_CACHE[label] = QColor(_PALETTE[idx])
+    return _LABEL_COLOR_CACHE[label]
 
 
 class Canvas(QGraphicsView):
@@ -56,11 +98,17 @@ class Canvas(QGraphicsView):
 
     Signals:
         shapes_changed: 形状列表发生增删改时发射（供保存状态联动）。
-        shape_selected: 选中形状变化时发射（参数为形状字典或 None）。
+        selection_changed(list): 选中形状集合变化时发射（参数为形状字典列表，可为空）。
+        shape_created(object): 单个对象绘制完成时发射（参数为新建形状字典）。
+        context_menu_requested: 选择/编辑模式下右键（空白或对象）请求上下文菜单。
     """
 
     shapes_changed = Signal()
-    shape_selected = Signal(object)
+    selection_changed = Signal(list)
+    # 单个对象绘制完成时发射（参数为新建形状字典，供主窗口弹出属性编辑）
+    shape_created = Signal(object)
+    # 非绘制模式下右键：请求主窗口弹出上下文菜单（进入编辑模式）
+    context_menu_requested = Signal()
 
     def __init__(self, parent=None):
         """初始化画布：建立场景、图像项与交互状态。"""
@@ -73,7 +121,8 @@ class Canvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setMouseTracking(True)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
-        self.setBackgroundBrush(QColor("#18181b"))
+        # 背景色：浅灰（与左右两栏 #fafafa 相近但有区分度，未加载图像时非纯黑）
+        self.setBackgroundBrush(QColor("#eef0f2"))
 
         # 图像
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
@@ -87,8 +136,10 @@ class Canvas(QGraphicsView):
         self._shape_items: Dict[int, QGraphicsItem] = {}
         # 反向索引：QGraphicsItem id -> 形状 id
         self._item_shape: Dict[int, int] = {}
+        # OCR 文本显示项（label 为 text 且 description 非空的形状叠加显示描述）
+        self._text_items: List[QGraphicsTextItem] = []
 
-        # 当前标注工具：None/'rectangle'/'point'/'polygon'
+        # 当前标注工具：None/'rectangle'/'point'/'polygon'（None 即编辑模式）
         self._tool: Optional[str] = None
         self._current_label: str = ""
 
@@ -97,11 +148,41 @@ class Canvas(QGraphicsView):
         self._draft_points: List[QPointF] = []
         self._press_scene: Optional[QPointF] = None
 
-        # 选中形状
-        self._selected_id: Optional[int] = None
-        # 拖拽移动
-        self._dragging = False
+        # 选中形状 id 集合（支持多选：Shift+点击 / Ctrl+框选）
+        self._selected_ids: List[int] = []
+        # 拖拽移动（编辑模式）
+        self._dragging: bool = False
         self._drag_last: Optional[QPointF] = None
+
+        # Ctrl+拖拽框选状态
+        self._rubber_item: Optional[QGraphicsRectItem] = None
+        self._rubber_start: Optional[QPointF] = None
+
+        # 编辑模式 hover 半透明掩码
+        self._hover_id: Optional[int] = None
+        self._hover_item: Optional[QGraphicsItem] = None
+
+        # 编辑模式可拖动端点项：形状 id -> [端点 item]
+        self._vertex_items: Dict[int, List[QGraphicsItem]] = {}
+        # 端点 item id -> (形状 id, 点下标)
+        self._vertex_map: Dict[int, Tuple[int, int]] = {}
+        # 端点拖动（缩放形状）状态：(形状 id, 点下标)
+        self._vertex_drag: Optional[Tuple[int, int]] = None
+        # 拖拽移动/端点拖动是否已发生实际位移（懒记录快照，避免误标脏状态）
+        self._drag_moved: bool = False
+        self._vertex_moved: bool = False
+
+        # 绘制模式十字引导线（虚线延伸至图像四边界）
+        self._guide_items: List[QGraphicsLineItem] = []
+        # 绘制过程中已放置的顶点显示项
+        self._draft_vertex_items: List[QGraphicsItem] = []
+
+        # 撤销/重做栈（存放形状列表的深拷贝快照）
+        self._undo_stack: List[List[Dict]] = []
+        self._redo_stack: List[List[Dict]] = []
+
+        # 预览模式（只读，禁止编辑）
+        self._preview_mode = False
 
     # -------------------------- 几何换算助手 --------------------------
     def _set_qhints(self) -> None:
@@ -145,11 +226,21 @@ class Canvas(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
         self._scene.setSceneRect(QRectF(0, 0, self._image_width, self._image_height))
 
-        # 重置标注与选中状态
+        # 重置标注与选中状态（scene.clear 已移除全部 item，引用置空防悬空）
         self._shapes = []
         self._shape_items = {}
         self._item_shape = {}
-        self._selected_id = None
+        self._text_items = []
+        self._selected_ids = []
+        self._hover_id = None
+        self._hover_item = None
+        self._vertex_items = {}
+        self._vertex_map = {}
+        self._vertex_drag = None
+        self._rubber_item = None
+        self._rubber_start = None
+        self._guide_items = []
+        self._draft_vertex_items = []
         self._clear_draft()
 
         self._fit_to_window()
@@ -193,14 +284,23 @@ class Canvas(QGraphicsView):
             shapes: 新的形状字典列表。
         """
         self._shapes = [dict(s) for s in shapes]
-        self._selected_id = None
+        self._selected_ids = []
         self._clear_draft()
+        # 外部整体替换（加载/自动标注）视为新起点，清空历史
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self._render()
         self.shapes_changed.emit()
+        self.selection_changed.emit([])
 
     def clear_shapes(self) -> None:
         """清空当前图像的所有形状。"""
         self.set_shapes([])
+
+    def refresh(self) -> None:
+        """重新渲染当前形状（供外部修改形状属性后刷新显示，不清空历史）。"""
+        self._render()
+        self.shapes_changed.emit()
 
     def set_current_label(self, label: str) -> None:
         """设置绘制新形状时使用的默认标签。
@@ -212,17 +312,42 @@ class Canvas(QGraphicsView):
 
     # -------------------------- 工具切换 --------------------------
     def set_tool(self, tool: Optional[str]) -> None:
-        """切换标注工具。
+        """切换标注工具（tool 为 None 即进入编辑模式）。
 
         Args:
-            tool: 'rectangle' / 'point' / 'polygon' / None（选择模式）。
+            tool: 'rectangle' / 'point' / 'polygon' / None（编辑模式）。
         """
+        # 预览模式下强制只读，不启用任何绘制工具
+        if self._preview_mode:
+            tool = None
         self._tool = tool
         self._clear_draft()
+        self._clear_guides()
+        self._clear_rubber()
         if tool is not None:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.unsetCursor()
+        # 重渲染以更新编辑端点的显示/隐藏（仅编辑模式显示端点）
+        self._render()
+
+    def set_preview_mode(self, enabled: bool) -> None:
+        """切换预览（只读）模式：禁用绘制/编辑，仅保留查看与缩放。
+
+        Args:
+            enabled: 是否进入预览模式。
+        """
+        self._preview_mode = enabled
+        if enabled:
+            self.set_tool(None)
+            self.select_shape(None)
+        self._clear_draft()
+        self._clear_guides()
+        self._clear_rubber()
+
+    def preview_mode(self) -> bool:
+        """返回当前是否处于预览模式。"""
+        return self._preview_mode
 
     def tool(self) -> Optional[str]:
         """返回当前标注工具名。"""
@@ -234,32 +359,85 @@ class Canvas(QGraphicsView):
 
     # -------------------------- 编辑操作 --------------------------
     def delete_selected(self) -> None:
-        """删除当前选中的形状。"""
-        if self._selected_id is None:
+        """删除当前全部选中的形状（支持多选批量删除）。"""
+        if not self._selected_ids or self._preview_mode:
             return
-        self._shapes = [s for s in self._shapes if id(s) != self._selected_id]
-        self._selected_id = None
+        self._push_undo()
+        selected = set(self._selected_ids)
+        self._shapes = [s for s in self._shapes if id(s) not in selected]
+        self._selected_ids = []
         self._render()
         self.shapes_changed.emit()
-        self.shape_selected.emit(None)
+        self.selection_changed.emit([])
+
+    def delete_shapes_at(self, indices: List[int]) -> None:
+        """按下标批量删除形状（供右侧对象列表右键删除）。
+
+        Args:
+            indices: 形状在列表中的下标集合（越界项自动忽略）。
+        """
+        idx_set = {i for i in indices if 0 <= i < len(self._shapes)}
+        if not idx_set or self._preview_mode:
+            return
+        self._push_undo()
+        self._shapes = [s for i, s in enumerate(self._shapes) if i not in idx_set]
+        self._selected_ids = []
+        self._render()
+        self.shapes_changed.emit()
+        self.selection_changed.emit([])
+
+    # -------------------------- 撤销 / 重做 --------------------------
+    def _snapshot(self) -> List[Dict]:
+        """返回当前形状列表的深拷贝快照。"""
+        return copy.deepcopy(self._shapes)
+
+    def _push_undo(self) -> None:
+        """在形状变更前记录一次撤销快照，并清空重做栈。"""
+        self._undo_stack.append(self._snapshot())
+        if len(self._undo_stack) > _MAX_UNDO:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def undo(self) -> None:
+        """撤销上一步形状变更。"""
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        self._shapes = self._undo_stack.pop()
+        self._selected_ids = []
+        self._render()
+        self.shapes_changed.emit()
+        self.selection_changed.emit([])
+
+    def redo(self) -> None:
+        """重做上一步被撤销的变更。"""
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        self._shapes = self._redo_stack.pop()
+        self._selected_ids = []
+        self._render()
+        self.shapes_changed.emit()
+        self.selection_changed.emit([])
 
     def select_shape(self, shape: Optional[Dict]) -> None:
-        """按形状字典选中（None 取消选中）。
+        """按形状字典选中（None 取消全部选中）。
 
         Args:
             shape: 形状字典或 None。
         """
-        self._selected_id = id(shape) if shape is not None else None
-        self._highlight_selection()
-        self.shape_selected.emit(shape)
+        self._selected_ids = [id(shape)] if shape is not None else []
+        self._render()
+        self.selection_changed.emit([shape] if shape is not None else [])
 
-    def selected_shape(self) -> Optional[Dict]:
-        """返回当前选中的形状字典（无选中返回 None）。
+    def selected_shapes(self) -> List[Dict]:
+        """返回当前全部选中的形状字典列表。
 
         Returns:
-            形状字典或 None。
+            选中形状字典列表（按形状列表顺序）。
         """
-        return self._find_shape_by_id(self._selected_id) if self._selected_id is not None else None
+        selected = set(self._selected_ids)
+        return [s for s in self._shapes if id(s) in selected]
 
     def select_shape_by_index(self, index: int) -> None:
         """按下标选中形状（供右侧对象列表联动）。
@@ -272,6 +450,18 @@ class Canvas(QGraphicsView):
         else:
             self.select_shape(None)
 
+    def select_shapes_by_indices(self, indices: List[int]) -> None:
+        """按下标集合多选形状（供右侧对象列表多选联动）。
+
+        Args:
+            indices: 形状下标列表（越界项自动忽略）。
+        """
+        self._selected_ids = [
+            id(self._shapes[i]) for i in indices if 0 <= i < len(self._shapes)
+        ]
+        self._render()
+        self.selection_changed.emit(self.selected_shapes())
+
     # -------------------------- 缩放 --------------------------
     def zoom_in(self) -> None:
         """放大。"""
@@ -282,18 +472,6 @@ class Canvas(QGraphicsView):
         self.scale(1 / 1.2, 1 / 1.2)
 
     # -------------------------- 渲染逻辑 --------------------------
-    def _color_for_label(self, label: str) -> QColor:
-        """按标签名稳定分配颜色。
-
-        Args:
-            label: 标签名。
-
-        Returns:
-            对应颜色。
-        """
-        base = _PALETTE[hash(label) % len(_PALETTE)]
-        return QColor(base)
-
     def _make_item(self, shape: Dict) -> Optional[QGraphicsItem]:
         """根据形状字典创建对应的 QGraphicsItem。
 
@@ -303,7 +481,7 @@ class Canvas(QGraphicsView):
         Returns:
             图形项；不支持的形状类型返回 None。
         """
-        color = self._color_for_label(shape.get("label", ""))
+        color = color_for_label(shape.get("label", ""))
         pen = QPen(color, 2)
         pen.setCosmetic(True)
         shape_type = shape.get("shape_type", "")
@@ -336,11 +514,16 @@ class Canvas(QGraphicsView):
 
     def _render(self) -> None:
         """根据当前形状列表重建所有图形项。"""
-        # 清除旧图形项（保留背景图片项）
+        # 清除旧图形项（保留背景图片项）与 OCR 文本项
         for item in list(self._shape_items.values()):
             self._scene.removeItem(item)
         self._shape_items = {}
         self._item_shape = {}
+        for item in self._text_items:
+            self._scene.removeItem(item)
+        self._text_items = []
+        # 清除 hover 掩码（形状可能已被删除/修改）
+        self._remove_hover_mask()
 
         for shape in self._shapes:
             item = self._make_item(shape)
@@ -350,20 +533,50 @@ class Canvas(QGraphicsView):
             self._scene.addItem(item)
             self._shape_items[id(shape)] = item
             self._item_shape[id(item)] = id(shape)
+            # OCR：label 为 text 且 description 非空时在图像上显示描述
+            self._maybe_add_ocr_text(shape)
 
+        # 编辑模式（工具为 None 且非预览）：渲染可拖动编辑端点
+        self._render_vertices()
         self._highlight_selection()
 
+    def _maybe_add_ocr_text(self, shape: Dict) -> None:
+        """OCR 任务：label 为 text 且 description 非空时，在图像上叠加显示描述。
+
+        文本超过 _OCR_TRUNCATE 个字符时用 ".." 截断，颜色与标签类别一致。
+
+        Args:
+            shape: 形状字典。
+        """
+        if str(shape.get("label", "")) != "text":
+            return
+        desc = str(shape.get("description", "") or "")
+        if not desc:
+            return
+        if len(desc) > _OCR_TRUNCATE:
+            desc = desc[:_OCR_TRUNCATE] + ".."
+        points = shape.get("points") or []
+        if not points:
+            return
+        text_item = QGraphicsTextItem(desc)
+        text_item.setDefaultTextColor(color_for_label("text"))
+        text_item.setPos(float(points[0][0]), float(points[0][1]) - 18)
+        text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self._scene.addItem(text_item)
+        self._text_items.append(text_item)
+
     def _highlight_selection(self) -> None:
-        """高亮当前选中的形状（描边加粗），其余恢复默认。"""
+        """高亮当前选中的全部形状（描边加粗），其余恢复默认。"""
+        selected = set(self._selected_ids)
         for shape_id, item in self._shape_items.items():
             color = None
             for s in self._shapes:
                 if id(s) == shape_id:
-                    color = self._color_for_label(s.get("label", ""))
+                    color = color_for_label(s.get("label", ""))
                     break
             if color is None:
                 continue
-            if shape_id == self._selected_id:
+            if shape_id in selected:
                 pen = QPen(color, 4)
             else:
                 pen = QPen(color, 2)
@@ -376,36 +589,286 @@ class Canvas(QGraphicsView):
                     for s in self._shapes
                 )
                 if is_point:
-                    pen = QPen(QColor("#ffffff"), 3 if shape_id == self._selected_id else 1)
+                    pen = QPen(QColor("#ffffff"), 3 if shape_id in selected else 1)
                 item.setPen(pen)
+
+    def _render_vertices(self) -> None:
+        """编辑模式下渲染全部形状的可拖动编辑端点。
+
+        矩形显示左上/右下两个端点；多边形显示全部顶点；点形状即顶点本身
+        不额外渲染。非编辑模式（绘制工具激活或预览）不显示端点。
+        """
+        # 清理旧端点项
+        for items in self._vertex_items.values():
+            for it in items:
+                if it.scene() is self._scene:
+                    self._scene.removeItem(it)
+        self._vertex_items = {}
+        self._vertex_map = {}
+
+        # 仅编辑模式（工具为 None）且非预览模式时显示
+        if self._tool is not None or self._preview_mode:
+            return
+
+        for shape in self._shapes:
+            shape_type = shape.get("shape_type", "")
+            points = shape.get("points", [])
+            if shape_type == labelme_io.SHAPE_RECTANGLE:
+                point_indices = [0, 1]
+            elif shape_type == labelme_io.SHAPE_POLYGON:
+                point_indices = list(range(len(points)))
+            else:
+                # 点形状本身即顶点，无需额外端点
+                continue
+            color = color_for_label(shape.get("label", ""))
+            for pi in point_indices:
+                if pi >= len(points):
+                    continue
+                x, y = points[pi]
+                r = _EDIT_VERTEX_RADIUS
+                item = QGraphicsEllipseItem(x - r, y - r, r * 2, r * 2)
+                item.setPen(QPen(QColor("#ffffff"), 2))
+                item.setBrush(QBrush(color))
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                item.setZValue(10)
+                self._scene.addItem(item)
+                self._vertex_items.setdefault(id(shape), []).append(item)
+                self._vertex_map[id(item)] = (id(shape), pi)
+
+    def _remove_hover_mask(self) -> None:
+        """移除当前 hover 半透明掩码（若有）。"""
+        if self._hover_item is not None:
+            if self._hover_item.scene() is self._scene:
+                self._scene.removeItem(self._hover_item)
+            self._hover_item = None
+        self._hover_id = None
+
+    def _update_hover_mask(self, scene: QPointF) -> None:
+        """编辑模式下鼠标进入形状范围时显示半透明掩码。
+
+        Args:
+            scene: 当前鼠标场景坐标。
+        """
+        if self._preview_mode or self._tool is not None:
+            return
+        hit_id = self._hit_shape_id(scene)
+        if hit_id == self._hover_id:
+            return
+        # 命中变化：移除旧掩码，按新命中的形状重建
+        self._remove_hover_mask()
+        if hit_id is None:
+            return
+        shape = self._find_shape_by_id(hit_id)
+        if shape is None:
+            return
+        color = color_for_label(shape.get("label", ""))
+        mask_color = QColor(color)
+        mask_color.setAlpha(_MASK_ALPHA)
+        shape_type = shape.get("shape_type", "")
+        points = shape.get("points", [])
+        mask: Optional[QGraphicsItem] = None
+        if shape_type == labelme_io.SHAPE_RECTANGLE and len(points) >= 2:
+            rect = QRectF(
+                QPointF(points[0][0], points[0][1]),
+                QPointF(points[1][0], points[1][1]),
+            ).normalized()
+            mask = QGraphicsRectItem(rect)
+            mask.setPen(QPen(Qt.PenStyle.NoPen))
+            mask.setBrush(QBrush(mask_color))
+        elif shape_type == labelme_io.SHAPE_POLYGON and len(points) >= 3:
+            poly = QPolygonF([QPointF(p[0], p[1]) for p in points])
+            mask = QGraphicsPolygonItem(poly)
+            mask.setPen(QPen(Qt.PenStyle.NoPen))
+            mask.setBrush(QBrush(mask_color))
+        elif shape_type == labelme_io.SHAPE_POINT and len(points) >= 1:
+            r = _EDIT_VERTEX_RADIUS * 3
+            x, y = points[0][0], points[0][1]
+            mask = QGraphicsEllipseItem(x - r, y - r, r * 2, r * 2)
+            mask.setPen(QPen(QColor("#ffffff"), 1))
+            mask.setBrush(QBrush(mask_color))
+        if mask is not None:
+            mask.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            mask.setZValue(5)
+            self._scene.addItem(mask)
+            self._hover_item = mask
+            self._hover_id = hit_id
+
+    def _update_guides(self, scene: QPointF) -> None:
+        """绘制模式下更新十字虚线引导线与已放置顶点。
+
+        引导线从光标位置延伸至图像四个边界；矩形绘制中显示起点顶点，
+        多边形绘制中显示全部已放置顶点。
+
+        Args:
+            scene: 当前鼠标场景坐标。
+        """
+        self._clear_guides()
+        if self._image_width <= 0 or self._image_height <= 0:
+            return
+        # 垂直/水平引导线（贯穿图像全幅）
+        for line in (
+            QGraphicsLineItem(scene.x(), 0, scene.x(), self._image_height),
+            QGraphicsLineItem(0, scene.y(), self._image_width, scene.y()),
+        ):
+            line.setPen(_GUIDE_PEN)
+            line.setZValue(8)
+            line.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self._scene.addItem(line)
+            self._guide_items.append(line)
+
+        # 已放置顶点显示（矩形：起点；多边形：全部顶点）
+        anchor_points: List[QPointF] = []
+        if self._tool == labelme_io.SHAPE_RECTANGLE and self._press_scene is not None:
+            anchor_points = [self._press_scene]
+        elif self._tool == labelme_io.SHAPE_POLYGON and self._draft_points:
+            anchor_points = list(self._draft_points)
+        for pt in anchor_points:
+            r = _EDIT_VERTEX_RADIUS
+            item = QGraphicsEllipseItem(pt.x() - r, pt.y() - r, r * 2, r * 2)
+            item.setPen(QPen(QColor("#ffffff"), 2))
+            item.setBrush(QBrush(QColor("#18181b")))
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setZValue(9)
+            self._scene.addItem(item)
+            self._draft_vertex_items.append(item)
+
+    def _clear_guides(self) -> None:
+        """清理绘制模式的引导线与顶点显示项。"""
+        for item in self._guide_items + self._draft_vertex_items:
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._guide_items = []
+        self._draft_vertex_items = []
+
+    def _clear_rubber(self) -> None:
+        """清理 Ctrl 框选矩形（若有）。"""
+        if self._rubber_item is not None:
+            if self._rubber_item.scene() is self._scene:
+                self._scene.removeItem(self._rubber_item)
+            self._rubber_item = None
+        self._rubber_start = None
+
+    def _hit_shape_id(self, scene: QPointF) -> Optional[int]:
+        """返回命中测试所得形状 id（跳过背景/端点/掩码等辅助项）。
+
+        Args:
+            scene: 场景坐标点。
+
+        Returns:
+            命中的形状 id；未命中返回 None。
+        """
+        for item in self._scene.items(scene):
+            shape_id = self._item_shape.get(id(item))
+            if shape_id is not None:
+                return shape_id
+        return None
+
+    def _hit_vertex(self, scene: QPointF) -> Optional[Tuple[int, int]]:
+        """返回命中测试所得可拖动端点 (形状 id, 点下标)。
+
+        Args:
+            scene: 场景坐标点。
+
+        Returns:
+            (形状 id, 点下标) 元组；未命中返回 None。
+        """
+        for item in self._scene.items(scene):
+            vertex = self._vertex_map.get(id(item))
+            if vertex is not None:
+                return vertex
+        return None
+
+    def _toggle_selected(self, shape: Dict) -> None:
+        """Shift+点击：切换某形状的选中态（多选增量）。
+
+        Args:
+            shape: 被点击的形状字典。
+        """
+        sid = id(shape)
+        if sid in self._selected_ids:
+            self._selected_ids = [x for x in self._selected_ids if x != sid]
+        else:
+            self._selected_ids.append(sid)
+        self._render()
+        self.selection_changed.emit(self.selected_shapes())
+
+    def _finish_rubber_select(self, rect: QRectF) -> None:
+        """结束 Ctrl 框选：选中与矩形包围盒相交的全部形状（保留已有选中）。
+
+        Args:
+            rect: 框选矩形（场景坐标）。
+        """
+        self._clear_rubber()
+        if self._preview_mode:
+            return
+        for shape in self._shapes:
+            item = self._shape_items.get(id(shape))
+            if item is None:
+                continue
+            # 形状包围盒与框选矩形相交即选中（保留已有选中集合）
+            bbox = item.boundingRect().translated(item.pos())
+            if rect.intersects(bbox) and id(shape) not in self._selected_ids:
+                self._selected_ids.append(id(shape))
+        self._render()
+        self.selection_changed.emit(self.selected_shapes())
+
+    def _move_vertex(self, scene: QPointF) -> None:
+        """端点拖动中：更新对应形状顶点坐标（缩放形状）。
+
+        Args:
+            scene: 当前鼠标场景坐标。
+        """
+        if self._vertex_drag is None:
+            return
+        shape_id, point_idx = self._vertex_drag
+        shape = self._find_shape_by_id(shape_id)
+        if shape is None or point_idx >= len(shape.get("points", [])):
+            return
+        # 首次实际移动前记录撤销快照
+        if not self._vertex_moved:
+            self._push_undo()
+            self._vertex_moved = True
+        shape["points"][point_idx] = [scene.x(), scene.y()]
+        self._render()
 
     # -------------------------- 绘制状态清理 --------------------------
     def _clear_draft(self) -> None:
         """清理绘制中的临时图形与顶点缓存。"""
         if self._draft_item is not None:
-            self._scene.removeItem(self._draft_item)
+            if self._draft_item.scene() is self._scene:
+                self._scene.removeItem(self._draft_item)
             self._draft_item = None
         self._draft_points = []
         self._press_scene = None
+        self._clear_guides()
 
     # -------------------------- 鼠标交互 --------------------------
     def mousePressEvent(self, event) -> None:
-        """鼠标按下：按当前工具分发到绘制或选中/移动逻辑。"""
+        """鼠标按下：按当前工具与修饰键分发到绘制/框选/多选/拖拽逻辑。"""
         pos = event.position().toPoint()
         scene = self._scene_pos(pos)
 
-        # 右键在 polygon 绘制中闭合多边形
+        # 预览（只读）模式下不响应任何绘制/选中/拖拽
+        if self._preview_mode:
+            return
+
+        # 右键：绘制草稿进行中取消/闭合；空闲时（含编辑模式）请求上下文菜单
         if event.button() == Qt.MouseButton.RightButton:
-            if self._tool == labelme_io.SHAPE_POLYGON and len(self._draft_points) >= 3:
-                self._finalize_polygon()
-            else:
+            if self._tool == labelme_io.SHAPE_POLYGON and self._draft_points:
+                # 多边形绘制中：>=3 顶点右键闭合，否则取消
+                if len(self._draft_points) >= 3:
+                    self._finalize_polygon()
+                else:
+                    self._clear_draft()
+            elif self._draft_item is not None or self._press_scene is not None:
+                # 矩形拖拽中：取消当前绘制
                 self._clear_draft()
+            else:
+                # 空白或对象上右键（绘制工具空闲或编辑模式）：请求上下文菜单
+                self.context_menu_requested.emit()
             return
 
-        if self._tool is None:
-            self._on_press_select(scene)
-            return
-
+        # ===== 绘制工具激活 =====
         if self._tool == labelme_io.SHAPE_POINT:
             self._add_point_shape(scene)
             return
@@ -420,43 +883,142 @@ class Canvas(QGraphicsView):
             self._update_polygon_draft(close_on_first=False)
             return
 
+        # ===== 编辑模式（工具为 None）=====
+        # 先检测端点命中：进入端点拖动（缩放形状，快照懒记录见 _move_vertex）
+        vertex = self._hit_vertex(scene)
+        if vertex is not None:
+            self._vertex_drag = vertex
+            self._vertex_moved = False
+            return
+
+        # Ctrl+按下：开始框选（批量多选）
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._rubber_start = scene
+            self._rubber_item = QGraphicsRectItem(QRectF(scene, scene))
+            self._rubber_item.setPen(_RUBBER_PEN)
+            self._rubber_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._rubber_item.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False
+            )
+            self._rubber_item.setZValue(7)
+            self._scene.addItem(self._rubber_item)
+            return
+
+        # 普通按下：命中形状则选中/多选切换，并进入拖拽（编辑模式允许移动）
+        shape = self._find_shape_by_id(self._hit_shape_id(scene))
+        if shape is not None:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+点击：切换该形状选中态（增量多选，不进入拖拽）
+                self._toggle_selected(shape)
+                return
+            # 普通点击：命中已选中项则保留多选集合（便于批量拖动），否则单选
+            if id(shape) not in self._selected_ids:
+                self.select_shape(shape)
+            # 进入拖拽（撤销快照在实际移动时才记录，见 _move_selected）
+            self._dragging = True
+            self._drag_moved = False
+            self._drag_last = scene
+        else:
+            # 未命中任何形状：清空选中
+            if self._selected_ids:
+                self.select_shape(None)
+            self._dragging = False
+
     def mouseMoveEvent(self, event) -> None:
-        """鼠标移动：更新矩形拉伸、多边形预览或拖拽移动选中形状。"""
+        """鼠标移动：更新引导线/绘制/框选/端点拖动/批量移动/hover 掩码。"""
         scene = self._scene_pos(event.position().toPoint())
 
+        # 绘制模式：更新十字引导线与已放置顶点
+        if self._tool is not None:
+            self._update_guides(scene)
+
+        # 矩形绘制拉伸
         if self._tool == labelme_io.SHAPE_RECTANGLE and self._press_scene is not None:
             self._update_rect_draft(scene)
             return
 
+        # 多边形预览线
         if self._tool == labelme_io.SHAPE_POLYGON and self._draft_points:
             self._update_polygon_draft(close_on_first=False, cursor=scene)
             return
 
-        if self._dragging and self._selected_id is not None:
+        # Ctrl 框选矩形更新
+        if self._rubber_item is not None and self._rubber_start is not None:
+            self._rubber_item.setRect(QRectF(self._rubber_start, scene).normalized())
+            return
+
+        # 端点拖动（缩放形状）
+        if self._vertex_drag is not None:
+            self._move_vertex(scene)
+            return
+
+        # 批量拖拽移动选中集合（编辑模式）
+        if self._dragging and self._selected_ids:
             self._move_selected(scene)
+            return
+
+        # 编辑模式空闲移动：更新 hover 半透明掩码
+        if self._tool is None:
+            self._update_hover_mask(scene)
 
     def mouseReleaseEvent(self, event) -> None:
-        """鼠标释放：结束矩形绘制或拖拽移动。"""
+        """鼠标释放：结束矩形绘制/框选/端点拖动/拖拽移动。"""
+        # 矩形绘制结束
         if self._tool == labelme_io.SHAPE_RECTANGLE and self._press_scene is not None:
             scene = self._scene_pos(event.position().toPoint())
             self._update_rect_draft(scene)
             self._finalize_rect()
             return
+
+        # Ctrl 框选结束：批量选中相交形状
+        if self._rubber_item is not None:
+            self._finish_rubber_select(self._rubber_item.rect())
+            return
+
+        # 端点拖动结束（缩放完成，仅实际移动时通知变更）
+        if self._vertex_drag is not None:
+            moved = self._vertex_moved
+            self._vertex_drag = None
+            self._vertex_moved = False
+            if moved:
+                self.shapes_changed.emit()
+            return
+
+        # 拖拽移动结束（仅实际移动时通知变更）
         if self._dragging:
+            moved = self._drag_moved
             self._dragging = False
             self._drag_last = None
-            self.shapes_changed.emit()
+            self._drag_moved = False
+            if moved:
+                self.shapes_changed.emit()
             return
 
     def keyPressEvent(self, event) -> None:
-        """快捷键：Delete 删除选中，Esc 取消绘制。"""
-        if event.key() == Qt.Key.Key_Delete:
-            self.delete_selected()
-            return
+        """快捷键：Esc 取消当前绘制/框选/端点拖动。
+
+        Delete / Shift+Delete 由主窗口统一处理（删除标注文件/图片文件），
+        画布不再拦截 Delete，避免与文件删除快捷键冲突。
+        """
         if event.key() == Qt.Key.Key_Escape:
+            if self._vertex_drag is not None:
+                # 取消端点拖动：有实际移动则撤销到拖动前快照
+                moved = self._vertex_moved
+                self._vertex_drag = None
+                self._vertex_moved = False
+                if moved:
+                    self.undo()
+                return
             self._clear_draft()
+            self._clear_rubber()
             return
         super().keyPressEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """鼠标离开画布：清理引导线与 hover 掩码。"""
+        self._clear_guides()
+        self._remove_hover_mask()
+        super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:
         """滚轮缩放。"""
@@ -466,21 +1028,6 @@ class Canvas(QGraphicsView):
             self.zoom_out()
 
     # -------------------------- 选中与移动 --------------------------
-    def _on_press_select(self, scene: QPointF) -> None:
-        """选择模式下按下：命中形状则选中并进入拖拽，否则取消选中。"""
-        # 自顶向下命中检测：跳过背景图片项，只匹配形状图形项
-        for item in self._scene.items(scene):
-            shape_id = self._item_shape.get(id(item))
-            if shape_id is not None:
-                shape = self._find_shape_by_id(shape_id)
-                self.select_shape(shape)
-                self._dragging = True
-                self._drag_last = scene
-                return
-        # 未命中任何形状：取消选中
-        self.select_shape(None)
-        self._dragging = False
-
     def _find_shape_by_id(self, shape_id: int) -> Optional[Dict]:
         """按 id 查找形状字典。
 
@@ -496,7 +1043,7 @@ class Canvas(QGraphicsView):
         return None
 
     def _move_selected(self, scene: QPointF) -> None:
-        """拖拽移动选中形状的所有顶点。
+        """拖拽移动全部选中形状的顶点（批量移动）。
 
         Args:
             scene: 当前场景坐标点。
@@ -507,18 +1054,29 @@ class Canvas(QGraphicsView):
         dx = scene.x() - self._drag_last.x()
         dy = scene.y() - self._drag_last.y()
         self._drag_last = scene
-        shape = self._find_shape_by_id(self._selected_id)
-        if shape is None:
+        if dx == 0 and dy == 0:
             return
-        for p in shape["points"]:
-            p[0] += dx
-            p[1] += dy
-        # 重建渲染
-        self._render()
+        # 首次实际移动前记录撤销快照
+        if not self._drag_moved:
+            self._push_undo()
+            self._drag_moved = True
+        selected = set(self._selected_ids)
+        moved = False
+        for shape in self._shapes:
+            if id(shape) not in selected:
+                continue
+            for p in shape["points"]:
+                p[0] += dx
+                p[1] += dy
+            moved = True
+        if moved:
+            # 重建渲染
+            self._render()
 
     # -------------------------- 具体绘制实现 --------------------------
     def _add_point_shape(self, scene: QPointF) -> None:
         """按当前标签在点击位置新增一个点形状。"""
+        self._push_undo()
         shape = labelme_io.new_shape(
             self._current_label,
             [[scene.x(), scene.y()]],
@@ -527,6 +1085,7 @@ class Canvas(QGraphicsView):
         self._shapes.append(shape)
         self._render()
         self.shapes_changed.emit()
+        self.shape_created.emit(shape)
 
     def _start_rect_draft(self, scene: QPointF) -> None:
         """开始矩形绘制：记录起点并创建临时图形。"""
@@ -560,6 +1119,7 @@ class Canvas(QGraphicsView):
         if abs(tl.x() - br.x()) < 1 and abs(tl.y() - br.y()) < 1:
             return
         # 统一取矩形两对角顶点（保存为 [左上/右下] 语义，与 labelme 一致）
+        self._push_undo()
         shape = labelme_io.new_shape(
             self._current_label,
             [[tl.x(), tl.y()], [br.x(), br.y()]],
@@ -568,6 +1128,7 @@ class Canvas(QGraphicsView):
         self._shapes.append(shape)
         self._render()
         self.shapes_changed.emit()
+        self.shape_created.emit(shape)
 
     def _update_polygon_draft(self, close_on_first: bool, cursor: Optional[QPointF] = None) -> None:
         """更新多边形临时预览线。
@@ -597,6 +1158,7 @@ class Canvas(QGraphicsView):
         self._clear_draft()
         if len(pts) < 3:
             return
+        self._push_undo()
         shape = labelme_io.new_shape(
             self._current_label,
             [[p.x(), p.y()] for p in pts],
@@ -605,3 +1167,4 @@ class Canvas(QGraphicsView):
         self._shapes.append(shape)
         self._render()
         self.shapes_changed.emit()
+        self.shape_created.emit(shape)

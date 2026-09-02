@@ -2,38 +2,48 @@
 """
 主窗口 - MainWindow（三栏式标注编辑器）
 
-按需求对前端生态全面重构，采用经典三栏布局（参考 labelme / X-Anylabel）：
-    - 左侧：快捷操作栏（LeftToolbar）—— 文件操作 + 自动标注 + 标注工具
+三栏布局（参考 labelme / X-Anylabel）：
+    - 左侧：快捷操作栏（LeftToolbar）—— 文件/自动标注/标注工具
     - 中间：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑/预览
     - 右侧：信息栏（RightPanel）—— 标签/对象/文件/关键点列表
 
-同时提供标准菜单栏（文件/编辑/工具/帮助），菜单动作与左侧工具栏共享同一套
-处理函数。自动标注（单张/批量）与格式转换通过对话框复用原有 AnnotatePage /
-ConvertPage 页面逻辑，标注数据完全复用 labelme JSON 格式（core/labelme_io.py）。
+标准菜单栏（文件/编辑/工具/帮助）+ 快捷键体系：
+    - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
+      另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
+    - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、删除选中标注、
+      清空标注、删除标注文件 Delete、删除图片及标注 Shift+Delete
+    - 工具：加载模型、自动标注单张/全部、格式转换、预览模式 F9
+    - 标注工具：编辑 V、矩形 R、点 P、多边形 G
+    - 图片浏览：A 上一张、D 下一张
+
+标注数据完全复用 labelme JSON（core/labelme_io.py）。目录校验、后台标签
+扫描（修复打开目录卡死）、绘制完成属性弹窗、类别颜色一致性均在此实现。
 
 作者: BaiBinnan
 创建日期: 2026-08-10
-更新: 2026-09-02 全面重构为三栏式标注编辑器，删除欢迎页与侧边栏/底部标签栏
+更新: 2026-09-03 A/D 图片浏览、自动保存、编辑模式 Ctrl+E、对象列表右键编辑/删除与多选联动
 """
 
 from pathlib import Path
 
-from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QIcon, QShortcut, QCursor
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
-    QVBoxLayout,
     QHBoxLayout,
+    QVBoxLayout,
     QLabel,
     QDialog,
+    QFileDialog,
     QDialogButtonBox,
     QMessageBox,
     QInputDialog,
+    QMenu,
 )
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
-from .config import SysConfig, MODE
+from .config import SysConfig
 from .core import labelme_io
 from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir
 from .widgets.dialogs import chooseDir, showMessageBox
@@ -46,40 +56,39 @@ from .widgets.left_toolbar import (
 )
 from .widgets.right_panel import RightPanel
 from .widgets.canvas import Canvas
+from .widgets.shape_dialog import ShapeDialog
 from .pages.annotate_page import AnnotatePage
 from .pages.convert_page import ConvertPage
 from .workers.annotate_worker import AnnotationWorker
 from .workers.convert_worker import ConvertWorker
 from .workers.single_annotate_worker import SingleAnnotateWorker
+from .workers.label_scan_worker import LabelScanWorker
 
-# 工具名 -> 菜单动作/工具栏之间共用的显示文案
+# 工具名 -> 显示文案
 _TOOL_LABELS = {
-    TOOL_SELECT: "选择",
+    TOOL_SELECT: "编辑",
     TOOL_RECTANGLE: "矩形",
     TOOL_POINT: "点",
     TOOL_POLYGON: "多边形",
 }
 
+# 工具名 -> 快捷键
+_TOOL_SHORTCUTS = {
+    TOOL_SELECT: "V",
+    TOOL_RECTANGLE: "R",
+    TOOL_POINT: "P",
+    TOOL_POLYGON: "G",
+}
+
 
 class MainWindow(QMainWindow):
-    """应用主窗口 - 三栏标注编辑器 + 标准菜单栏。
-
-    Attributes:
-        left_toolbar: 左侧快捷操作栏。
-        canvas: 中间标注画布。
-        right_panel: 右侧信息栏。
-        annotate_worker: 批量自动标注后台线程（复用页面逻辑）。
-        convert_worker: 格式转换后台线程（复用页面逻辑）。
-        annotate_config: 当前已加载的自动标注配置（None 表示未加载模型）。
-    """
+    """应用主窗口 - 三栏标注编辑器 + 标准菜单栏。"""
 
     def __init__(self):
         """初始化主窗口，构建菜单栏、三栏布局并连接信号。"""
         super().__init__()
         self.setWindowTitle(__appname__)
         self.setMinimumSize(960, 640)
-
-        # 启动尺寸：屏幕可用区 80%
         screen = self.screen().availableGeometry()
         self.resize(int(screen.width() * 0.8), int(screen.height() * 0.8))
 
@@ -88,28 +97,39 @@ class MainWindow(QMainWindow):
         self._image_files: list = []
         self._current_index: int = -1
         self._dirty: bool = False
+        # 自动保存（文件菜单勾选项）：切换图片时自动保存当前标注
+        self._auto_save: bool = False
 
         # 自动标注配置（加载模型后可用）
         self.annotate_config: "SysConfig | None" = None
 
-        # 后台线程（批量标注 / 格式转换，生命周期与窗口一致）
+        # 预览（只读）模式
+        self._preview_mode: bool = False
+        # 后台扫描汇总的标签与关键点（关键点列表显示由扫描结果自动识别）
+        self._all_labels: list = []
+        self._label_keypoints: list = []
+
+        # 后台线程
         self.annotate_worker = AnnotationWorker()
         self.convert_worker = ConvertWorker()
+        self.label_scan_worker = LabelScanWorker()
 
         # 构建界面
         self._build_menubar()
         self._build_ui()
         self._connect_signals()
 
-        # 应用全局样式
+        # 图片浏览快捷键：A 上一张 / D 下一张
+        QShortcut(QKeySequence("A"), self, self._prev_image)
+        QShortcut(QKeySequence("D"), self, self._next_image)
+
         self.setStyleSheet(GLOBAL_QSS)
 
-        # 状态栏
         self._status_label = QLabel("未打开文件夹")
         self.statusBar().addWidget(self._status_label)
 
-        self._refresh_labels()
-        self._refresh_keypoints()
+        # 初始目录校验：未打开目录时禁用编辑功能
+        self._update_edit_state()
 
     # -------------------------- 菜单栏 --------------------------
     def _build_menubar(self) -> None:
@@ -123,6 +143,12 @@ class MainWindow(QMainWindow):
         self.act_open.triggered.connect(self._on_open_folder)
         menu_file.addAction(self.act_open)
 
+        self.act_open_file = QAction("打开文件", self)
+        self.act_open_file.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.act_open_file.triggered.connect(self._on_open_file)
+        menu_file.addAction(self.act_open_file)
+
+        menu_file.addSeparator()
         self.act_save = QAction("保存", self)
         self.act_save.setShortcut(QKeySequence("Ctrl+S"))
         self.act_save.triggered.connect(self._on_save)
@@ -133,6 +159,12 @@ class MainWindow(QMainWindow):
         self.act_save_as.triggered.connect(self._on_save_as)
         menu_file.addAction(self.act_save_as)
 
+        # 自动保存：勾选后每次切换图片自动保存当前标注
+        self.act_autosave = QAction("自动保存", self)
+        self.act_autosave.setCheckable(True)
+        self.act_autosave.toggled.connect(self._on_autosave_toggled)
+        menu_file.addAction(self.act_autosave)
+
         menu_file.addSeparator()
         self.act_exit = QAction("退出", self)
         self.act_exit.triggered.connect(self.close)
@@ -140,8 +172,25 @@ class MainWindow(QMainWindow):
 
         # ===== 编辑 =====
         menu_edit = menu_bar.addMenu("编辑(&E)")
-        self.act_delete = QAction("删除选中", self)
-        self.act_delete.setShortcut(QKeySequence("Delete"))
+        # 编辑模式（快捷键 Ctrl+E）：仅编辑模式允许拖拽/端点缩放/属性修改
+        self.act_edit_mode = QAction("编辑模式", self)
+        self.act_edit_mode.setShortcut(QKeySequence("Ctrl+E"))
+        self.act_edit_mode.triggered.connect(self._enter_edit_mode)
+        menu_edit.addAction(self.act_edit_mode)
+
+        menu_edit.addSeparator()
+        self.act_undo = QAction("撤销", self)
+        self.act_undo.setShortcut(QKeySequence("Ctrl+Z"))
+        self.act_undo.triggered.connect(self._on_undo)
+        menu_edit.addAction(self.act_undo)
+
+        self.act_redo = QAction("重做", self)
+        self.act_redo.setShortcut(QKeySequence("Ctrl+Shift+Z"))
+        self.act_redo.triggered.connect(self._on_redo)
+        menu_edit.addAction(self.act_redo)
+
+        menu_edit.addSeparator()
+        self.act_delete = QAction("删除选中标注", self)
         self.act_delete.triggered.connect(self._on_delete)
         menu_edit.addAction(self.act_delete)
 
@@ -149,16 +198,28 @@ class MainWindow(QMainWindow):
         self.act_clear.triggered.connect(self._on_clear)
         menu_edit.addAction(self.act_clear)
 
+        menu_edit.addSeparator()
+        self.act_delete_file = QAction("删除标注文件", self)
+        self.act_delete_file.setShortcut(QKeySequence("Delete"))
+        self.act_delete_file.triggered.connect(self._on_delete_annotation_file)
+        menu_edit.addAction(self.act_delete_file)
+
+        self.act_delete_image = QAction("删除图片及标注", self)
+        self.act_delete_image.setShortcut(QKeySequence("Shift+Delete"))
+        self.act_delete_image.triggered.connect(self._on_delete_image_and_annotation)
+        menu_edit.addAction(self.act_delete_image)
+
         # ===== 工具 =====
         menu_tool = menu_bar.addMenu("工具(&T)")
 
-        # 标注工具（互斥）
+        # 标注工具（互斥 + 单字母快捷键）
         self._tool_action_group = QActionGroup(self)
         self._tool_action_group.setExclusive(True)
         self._tool_actions: dict = {}
         for tool in (TOOL_SELECT, TOOL_RECTANGLE, TOOL_POINT, TOOL_POLYGON):
             act = QAction(_TOOL_LABELS[tool], self)
             act.setCheckable(True)
+            act.setShortcut(QKeySequence(_TOOL_SHORTCUTS[tool]))
             act.triggered.connect(lambda checked=False, t=tool: self._on_tool_selected(t))
             self._tool_action_group.addAction(act)
             menu_tool.addAction(act)
@@ -178,10 +239,17 @@ class MainWindow(QMainWindow):
         self.act_annotate_all.triggered.connect(self._open_annotate_dialog)
         menu_tool.addAction(self.act_annotate_all)
 
-        menu_tool.addSeparator()
         self.act_convert = QAction("格式转换", self)
         self.act_convert.triggered.connect(self._open_convert_dialog)
         menu_tool.addAction(self.act_convert)
+
+        menu_tool.addSeparator()
+
+        # 预览模式切换
+        self.act_preview = QAction("预览模式", self)
+        self.act_preview.setShortcut(QKeySequence("F9"))
+        self.act_preview.triggered.connect(self._toggle_preview)
+        menu_tool.addAction(self.act_preview)
 
         # ===== 帮助 =====
         menu_help = menu_bar.addMenu("帮助(&H)")
@@ -191,7 +259,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 三栏布局 --------------------------
     def _build_ui(self) -> None:
-        """构建三栏式主体布局：左侧工具栏 + 中间画布 + 右侧信息栏。"""
+        """构建三栏式主体布局。"""
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
@@ -211,24 +279,38 @@ class MainWindow(QMainWindow):
         """连接左右栏、画布与菜单动作之间的信号。"""
         # 左侧工具栏
         self.left_toolbar.open_requested.connect(self._on_open_folder)
+        self.left_toolbar.open_file_requested.connect(self._on_open_file)
         self.left_toolbar.save_requested.connect(self._on_save)
         self.left_toolbar.save_as_requested.connect(self._on_save_as)
         self.left_toolbar.delete_requested.connect(self._on_delete)
+        self.left_toolbar.delete_file_requested.connect(self._on_delete_annotation_file)
+        self.left_toolbar.delete_image_requested.connect(self._on_delete_image_and_annotation)
         self.left_toolbar.load_model_requested.connect(self._open_annotate_dialog)
         self.left_toolbar.annotate_single_requested.connect(self._on_annotate_single)
         self.left_toolbar.annotate_all_requested.connect(self._open_annotate_dialog)
         self.left_toolbar.tool_selected.connect(self._on_tool_selected)
+        self.left_toolbar.preview_toggled.connect(self._on_preview_toggled)
 
         # 画布
         self.canvas.shapes_changed.connect(self._on_shapes_changed)
-        self.canvas.shape_selected.connect(self._on_canvas_shape_selected)
+        self.canvas.selection_changed.connect(self._on_canvas_selection_changed)
+        self.canvas.shape_created.connect(self._on_shape_created)
+        # 编辑模式右键（空白/对象）：弹出上下文菜单进入编辑模式
+        self.canvas.context_menu_requested.connect(self._on_canvas_context_menu)
 
         # 右侧信息栏
         self.right_panel.label_selected.connect(self._on_label_selected)
-        self.right_panel.object_selected.connect(self._on_object_selected)
+        self.right_panel.objects_selected.connect(self._on_objects_selected)
         self.right_panel.file_selected.connect(self._on_file_selected)
         self.right_panel.keypoint_selected.connect(self._on_label_selected)
         self.right_panel.add_label_requested.connect(self._on_add_label)
+        # 对象列表（a）右键菜单：编辑属性 / 删除 / 进入编辑模式
+        self.right_panel.edit_object_requested.connect(self._on_edit_object)
+        self.right_panel.delete_objects_requested.connect(self._on_delete_objects)
+        self.right_panel.enter_edit_mode_requested.connect(self._enter_edit_mode)
+
+        # 后台标签扫描
+        self.label_scan_worker.labels_ready.connect(self._on_labels_scanned)
 
     # -------------------------- 文件操作 --------------------------
     def _on_open_folder(self) -> None:
@@ -239,14 +321,127 @@ class MainWindow(QMainWindow):
         images = sorted(getImageFilesInDir(directory))
         if not images:
             showMessageBox(QMessageBox.Icon.Warning, "该目录未扫描到图片（jpg/jpeg/png/bmp）")
+            self._update_edit_state()
             return
         self._work_dir = directory
         self._image_files = images
         self._current_index = -1
         self.right_panel.set_files(images)
         self._load_image_by_index(0)
-        self._refresh_labels()
+        # 后台扫描目录下全部标注，汇总标签/关键点（不阻塞 UI）
+        self._start_label_scan()
         LOGGER.info(f"已打开文件夹: {directory}，共 {len(images)} 张图片")
+
+    def _on_open_file(self) -> None:
+        """打开单个文件（图片或标注 JSON）并自动关联。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "打开文件",
+            self._work_dir or "",
+            "图片或标注文件 (*.json *.jpg *.jpeg *.png *.bmp);;LabelMe JSON (*.json);;图片 (*.jpg *.jpeg *.png *.bmp)",
+        )
+        if not path:
+            return
+        if path.lower().endswith(".json"):
+            self._open_annotation_file(path)
+        else:
+            self._open_image_file(path)
+
+    def _open_image_file(self, image_path: str) -> None:
+        """打开单个图片文件，并尝试加载同名标注。
+
+        Args:
+            image_path: 图片文件路径。
+        """
+        if not self.canvas.load_image(image_path):
+            showMessageBox(QMessageBox.Icon.Warning, f"无法加载图片: {image_path}")
+            return
+        self._work_dir = str(Path(image_path).parent)
+        self._image_files = [image_path]
+        self._current_index = 0
+        self._dirty = False
+        json_path = Path(image_path).with_suffix(".json")
+        if json_path.exists():
+            try:
+                doc = labelme_io.load_document(json_path)
+                self.canvas.set_shapes(labelme_io.document_shapes(doc))
+            except Exception:
+                self.canvas.clear_shapes()
+        else:
+            self.canvas.clear_shapes()
+        self.right_panel.set_files([image_path])
+        self.right_panel.select_file(0)
+        self._refresh_objects()
+        self._update_edit_state()
+        self._start_label_scan()
+        self._update_status()
+        LOGGER.info(f"已打开图片: {image_path}")
+
+    def _open_annotation_file(self, json_path: str) -> None:
+        """解析单个标注文件并加载其关联图像。
+
+        Args:
+            json_path: labelme JSON 标注文件路径。
+        """
+        try:
+            doc = labelme_io.load_document(json_path)
+        except Exception as e:
+            showMessageBox(QMessageBox.Icon.Critical, f"无法解析标注文件: {e}")
+            return
+
+        image_path = self._resolve_linked_image(json_path, doc)
+        if not image_path:
+            showMessageBox(
+                QMessageBox.Icon.Critical,
+                "未找到标注文件对应的图片：\n"
+                f"imagePath 字段为 \"{doc.get('imagePath', '')}\"，"
+                "根据该路径未找到图片，且同目录下也无同名图片。",
+            )
+            return
+        if not self.canvas.load_image(image_path):
+            showMessageBox(QMessageBox.Icon.Warning, f"无法加载图像: {image_path}")
+            return
+
+        self.canvas.set_shapes(labelme_io.document_shapes(doc))
+        json_dir = str(Path(json_path).parent)
+        self._work_dir = json_dir
+        self._image_files = [image_path]
+        self._current_index = 0
+        self._dirty = False
+        self.right_panel.set_files([image_path])
+        self.right_panel.select_file(0)
+        self._refresh_objects()
+        self._update_edit_state()
+        self._start_label_scan()
+        self._update_status()
+        LOGGER.info(f"已打开标注文件: {json_path}")
+
+    @staticmethod
+    def _resolve_linked_image(json_path: str, doc) -> str:
+        """根据标注文件解析关联图像路径（imagePath 相对标注意义或同名图片）。
+
+        Args:
+            json_path: 标注 JSON 文件路径。
+            doc: 已解析的 labelme 文档字典。
+
+        Returns:
+            图像绝对路径；未找到返回空字符串。
+        """
+        json_dir = Path(json_path).parent
+        image_name = doc.get("imagePath", "")
+        if image_name:
+            candidate = Path(image_name)
+            if not candidate.is_absolute():
+                candidate = json_dir / image_name
+            if candidate.is_file():
+                return str(candidate)
+        # 回退：与标注同名的图片文件
+        base = Path(json_path).with_suffix("")
+        for ext in (".jpg", ".jpeg", ".png", ".bmp"):
+            candidate = Path(str(base) + ext)
+            if candidate.is_file():
+                return str(candidate)
+        return ""
 
     def _current_image_path(self) -> str:
         """返回当前图片路径（未加载返回空字符串）。"""
@@ -264,11 +459,16 @@ class MainWindow(QMainWindow):
     def _load_image_by_index(self, index: int) -> None:
         """加载指定下标的图片及其同名标注。
 
+        自动保存开启时，加载新图前先保存当前图片的全部标注。
+
         Args:
             index: 图片在文件列表中的下标。
         """
         if not (0 <= index < len(self._image_files)):
             return
+        # 自动保存：切换图片前保存当前图片的标注（含标签/形状/属性）
+        if index != self._current_index:
+            self._auto_save_current()
         path = self._image_files[index]
         if not self.canvas.load_image(path):
             showMessageBox(QMessageBox.Icon.Warning, f"无法加载图片: {path}")
@@ -276,7 +476,6 @@ class MainWindow(QMainWindow):
         self._current_index = index
         self._dirty = False
 
-        # 读取同名 labelme JSON 标注（存在则回填到画布）
         json_path = Path(path).with_suffix(".json")
         if json_path.exists():
             try:
@@ -291,22 +490,20 @@ class MainWindow(QMainWindow):
         self.right_panel.select_file(index)
         self._refresh_objects()
         self._refresh_keypoints()
+        self._update_edit_state()
         self._update_status()
-        self._set_dirty_check_stale()
 
     def _on_file_selected(self, index: int) -> None:
-        """右侧文件列表选中切换当前图片（仅在确实变化时加载）。"""
+        """右侧文件列表选中切换当前图片。"""
         if index != self._current_index:
             self._load_image_by_index(index)
 
     def _on_save(self) -> None:
         """保存当前标注到同名 labelme JSON。"""
-        img = self._current_image_path()
-        if not img:
+        if not self._current_image_path():
             showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
             return
-        json_path = self._current_json_path()
-        self._write_annotation(json_path)
+        self._write_annotation(self._current_json_path())
         self._refresh_labels()
 
     def _on_save_as(self) -> None:
@@ -315,10 +512,8 @@ class MainWindow(QMainWindow):
         if not img:
             showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
             return
-        from PySide6.QtWidgets import QFileDialog
-
         path, _ = QFileDialog.getSaveFileName(
-            self, "另存为标注", Path(img).with_suffix(".json").name, "LabelMe JSON (*.json)"
+            self, "另存为标注", str(Path(img).with_suffix(".json")), "LabelMe JSON (*.json)"
         )
         if not path:
             return
@@ -343,6 +538,14 @@ class MainWindow(QMainWindow):
         LOGGER.info(f"标注已保存: {json_path}")
 
     # -------------------------- 编辑操作 --------------------------
+    def _on_undo(self) -> None:
+        """撤销上一步。"""
+        self.canvas.undo()
+
+    def _on_redo(self) -> None:
+        """重做上一步。"""
+        self.canvas.redo()
+
     def _on_delete(self) -> None:
         """删除当前选中的标注。"""
         self.canvas.delete_selected()
@@ -351,28 +554,95 @@ class MainWindow(QMainWindow):
         """清空当前图片全部标注。"""
         self.canvas.clear_shapes()
 
-    # -------------------------- 工具切换 --------------------------
-    def _on_tool_selected(self, tool: str) -> None:
-        """切换标注工具并同步画布、工具栏与菜单选中态。
+    # -------------------------- 文件删除 --------------------------
+    def _on_delete_annotation_file(self) -> None:
+        """删除当前图片对应的标注 JSON 文件（Delete 键）。
 
-        Args:
-            tool: 工具名（select/rectangle/point/polygon）。
+        删除后清空画布形状并刷新对象列表，保持界面状态一致。
         """
-        # 工具栏按钮与菜单动作互相同步
+        json_path = self._current_json_path()
+        if not json_path:
+            showMessageBox(QMessageBox.Icon.Warning, "当前无标注文件可删除")
+            return
+        if not Path(json_path).exists():
+            showMessageBox(QMessageBox.Icon.Warning, f"标注文件不存在: {json_path}")
+            return
+        if QMessageBox.question(
+            self, "确认删除", f"确定要删除标注文件:\n{json_path}?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        # 删除标注文件并清空当前画布标注
+        Path(json_path).unlink()
+        self.canvas.clear_shapes()
+        self._dirty = False
+        self._refresh_objects()
+        self._update_status()
+        LOGGER.info(f"已删除标注文件: {json_path}")
+
+    def _on_delete_image_and_annotation(self) -> None:
+        """删除当前图片及其同名标注文件（Shift+Delete 键）。
+
+        删除后同步更新文件列表并加载下一张（或清空画布），
+        防止下标越界与 NoneType 错误。
+        """
+        img_path = self._current_image_path()
+        if not img_path:
+            showMessageBox(QMessageBox.Icon.Warning, "当前无图片可删除")
+            return
+        json_path = self._current_json_path()
+        files_to_delete = [img_path]
+        if json_path and Path(json_path).exists():
+            files_to_delete.append(json_path)
+        msg = "确定要删除以下文件?\n" + "\n".join(files_to_delete)
+        if QMessageBox.question(
+            self, "确认删除", msg
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        # 执行文件删除（缺失文件静默跳过）
+        for f in files_to_delete:
+            Path(f).unlink(missing_ok=True)
+
+        # 从文件列表移除当前项，避免下标越界
+        if 0 <= self._current_index < len(self._image_files):
+            self._image_files.pop(self._current_index)
+        self.right_panel.set_files(self._image_files)
+
+        if not self._image_files:
+            # 无剩余图片：清空工作区状态
+            self._current_index = -1
+            self.canvas.clear_shapes()
+        else:
+            # 加载列表中下标一致（或最后一张）的图片，保持连续性
+            new_idx = min(self._current_index, len(self._image_files) - 1)
+            self._load_image_by_index(new_idx)
+        self._update_edit_state()
+        self._update_status()
+        LOGGER.info(f"已删除文件: {files_to_delete}")
+
+    # -------------------------- 工具切换 / 预览 --------------------------
+    def _on_tool_selected(self, tool: str) -> None:
+        """切换标注工具并同步画布、工具栏与菜单选中态。"""
         self.left_toolbar.set_tool(tool)
         act = self._tool_actions.get(tool)
         if act is not None:
             act.setChecked(True)
-        # select 对应画布的选择模式（None），其余为绘制工具
         self.canvas.set_tool(None if tool == TOOL_SELECT else tool)
+
+    def _toggle_preview(self) -> None:
+        """切换预览模式（以工具栏按钮为唯一状态源）。"""
+        btn = self.left_toolbar.btn_preview
+        btn.setChecked(not btn.isChecked())
+
+    def _on_preview_toggled(self, enabled: bool) -> None:
+        """预览模式切换：画布只读 + 更新编辑可用性。"""
+        self._preview_mode = enabled
+        self.canvas.set_preview_mode(enabled)
+        self._update_edit_state()
+        self._update_status()
 
     # -------------------------- 自动标注 --------------------------
     def _open_annotate_dialog(self) -> None:
-        """打开自动标注设置对话框（复用 AnnotatePage + 批量 worker）。
-
-        用户可在对话框内配置模型/任务类型/类别/参数并执行批量标注；
-        点击"保存设置"后收集配置，供"自动标注单张"使用。
-        """
+        """打开自动标注设置对话框（复用 AnnotatePage + 批量 worker）。"""
         dialog = QDialog(self)
         dialog.setWindowTitle("自动标注 / 模型加载")
         dialog.resize(980, 720)
@@ -392,12 +662,10 @@ class MainWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        # 预填上次配置
         if self.annotate_config is not None:
             page.apply_config(self.annotate_config)
 
-        result = dialog.exec()
-        if result == QDialog.DialogCode.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             cfg = SysConfig()
             try:
                 page.collect_config(cfg)
@@ -406,8 +674,6 @@ class MainWindow(QMainWindow):
                 return
             self.annotate_config = cfg
             self.left_toolbar.set_annotate_enabled(bool(cfg.annotate_config.model_path))
-            self._refresh_labels()
-            self._refresh_keypoints()
             LOGGER.info("已保存自动标注配置")
 
     def _on_annotate_single(self) -> None:
@@ -423,19 +689,13 @@ class MainWindow(QMainWindow):
         worker = SingleAnnotateWorker()
         worker.set_task(self.annotate_config, img)
         worker.shapes_ready.connect(self._on_single_shapes_ready)
-        worker.error_occurred.connect(
-            lambda msg: showMessageBox(QMessageBox.Icon.Critical, msg)
-        )
+        worker.error_occurred.connect(lambda msg: showMessageBox(QMessageBox.Icon.Critical, msg))
         worker.task_finished.connect(worker.deleteLater)
         self.left_toolbar.set_annotate_enabled(False)
         worker.start()
 
     def _on_single_shapes_ready(self, shapes: list) -> None:
-        """单张标注完成：结果回填画布并刷新右侧列表。
-
-        Args:
-            shapes: labelme 形状字典列表。
-        """
+        """单张标注完成：结果回填画布并刷新右侧列表。"""
         self.canvas.set_shapes(shapes)
         self._dirty = True
         self._refresh_objects()
@@ -463,42 +723,160 @@ class MainWindow(QMainWindow):
 
         dialog.exec()
 
+    # -------------------------- 绘制完成属性弹窗 --------------------------
+    def _on_shape_created(self, shape) -> None:
+        """单个对象绘制完成：弹出属性编辑窗（标签搜索/描述/分组序号）。
+
+        Args:
+            shape: 新建的形状字典。
+        """
+        labels = self._all_labels[:] if self._all_labels else [self.canvas.current_label()]
+        result = ShapeDialog.get_shape_props(labels, shape, self)
+        if result is None:
+            return
+        label, description, group_id = result
+        shape["label"] = label
+        shape["description"] = description
+        shape["group_id"] = group_id
+        self.canvas.refresh()
+        self._dirty = True
+        self._refresh_objects()
+        self._refresh_labels()
+
+    # -------------------------- 图片浏览快捷键 --------------------------
+    def _prev_image(self) -> None:
+        """A 键：切换至上一张图片。"""
+        if 0 < self._current_index < len(self._image_files):
+            self._load_image_by_index(self._current_index - 1)
+
+    def _next_image(self) -> None:
+        """D 键：切换至下一张图片。"""
+        if 0 <= self._current_index < len(self._image_files) - 1:
+            self._load_image_by_index(self._current_index + 1)
+
+    # -------------------------- 自动保存 --------------------------
+    def _on_autosave_toggled(self, checked: bool) -> None:
+        """自动保存选项切换。
+
+        Args:
+            checked: 是否勾选自动保存。
+        """
+        self._auto_save = checked
+        state = "开启" if checked else "关闭"
+        LOGGER.info(f"自动保存已{state}")
+        self.statusBar().showMessage(f"自动保存已{state}", 2000)
+
+    def _auto_save_current(self) -> None:
+        """切换图片前自动保存当前图片的全部标注（标签/形状/属性）。
+
+        仅在自动保存开启且有当前图片时执行；无修改且磁盘无标注文件时
+        跳过，避免生成空标注文件。结果通过状态栏临时消息反馈。
+        """
+        if not self._auto_save:
+            return
+        img = self._current_image_path()
+        if not img:
+            return
+        json_path = self._current_json_path()
+        if not self._dirty and not Path(json_path).exists():
+            return
+        try:
+            self._write_annotation(json_path)
+            self.statusBar().showMessage(f"自动保存成功: {json_path}", 3000)
+        except Exception as e:
+            LOGGER.warning(f"自动保存失败 {json_path}: {e}")
+            self.statusBar().showMessage(f"自动保存失败: {e}", 3000)
+
+    # -------------------------- 编辑模式 --------------------------
+    def _enter_edit_mode(self) -> None:
+        """进入编辑模式（工具切换为"编辑"，允许拖拽/端点缩放/属性修改）。"""
+        self._on_tool_selected(TOOL_SELECT)
+
+    def _on_canvas_context_menu(self) -> None:
+        """画布右键（空白或对象，无绘制草稿）：弹出上下文菜单进入编辑模式。
+
+        已处于编辑模式或预览模式时无需处理。
+        """
+        if self.canvas.tool() is None or self._preview_mode:
+            return
+        menu = QMenu(self)
+        act = menu.addAction("进入编辑模式")
+        chosen = menu.exec(QCursor.pos())
+        if chosen is act:
+            self._enter_edit_mode()
+
+    # -------------------------- 对象列表（a）编辑与删除 --------------------------
+    def _on_edit_object(self, index: int) -> None:
+        """编辑对象列表中指定对象的属性（复用属性弹窗）。
+
+        属性修改仅编辑模式允许：先进入编辑模式再弹窗。
+
+        Args:
+            index: 对象在形状列表中的下标。
+        """
+        shapes = self.canvas.shapes()
+        if not (0 <= index < len(shapes)):
+            return
+        if self._preview_mode:
+            showMessageBox(QMessageBox.Icon.Warning, "预览（只读）模式下无法编辑对象")
+            return
+        shape = shapes[index]
+        # 需求：属性修改仅编辑模式允许 → 先切换到编辑模式
+        self._enter_edit_mode()
+        labels = self._all_labels[:] if self._all_labels else [self.canvas.current_label()]
+        result = ShapeDialog.get_shape_props(labels, shape, self)
+        if result is None:
+            return
+        label, description, group_id = result
+        shape["label"] = label
+        shape["description"] = description
+        shape["group_id"] = group_id
+        self.canvas.refresh()
+        self._dirty = True
+        self._refresh_objects()
+        self._refresh_labels()
+        self._update_status()
+
+    def _on_delete_objects(self, indices: list) -> None:
+        """删除对象列表中选中的全部对象（支持多选批量删除）。
+
+        Args:
+            indices: 对象下标列表。
+        """
+        if not indices:
+            return
+        self.canvas.delete_shapes_at(indices)
+
     # -------------------------- 右侧栏联动 --------------------------
     def _on_shapes_changed(self) -> None:
-        """画布形状变化：标记未保存、刷新对象与标签列表。"""
+        """画布形状变化：标记未保存、刷新对象列表。"""
         self._dirty = True
         self._refresh_objects()
         self._update_status()
 
-    def _on_canvas_shape_selected(self, shape) -> None:
-        """画布选中形状变化时联动对象列表选中态。
+    def _on_canvas_selection_changed(self, shapes: list) -> None:
+        """画布选中集合变化（含多选）时联动对象列表选中态。
 
         Args:
-            shape: 选中的形状字典或 None。
+            shapes: 选中形状字典列表（可为空）。
         """
-        if shape is None:
+        if not shapes:
             self.right_panel.clear_object_selection()
             return
-        shapes = self.canvas.shapes()
-        for i, s in enumerate(shapes):
-            if s is shape:
-                self.right_panel.select_object(i)
-                return
+        ids = {id(s) for s in shapes}
+        indices = [i for i, s in enumerate(self.canvas.shapes()) if id(s) in ids]
+        self.right_panel.select_objects(indices)
 
-    def _on_object_selected(self, index: int) -> None:
-        """右侧对象列表选中时联动画布选中。
+    def _on_objects_selected(self, indices: list) -> None:
+        """对象列表选中集合（含多选）变化时联动画布多选。
 
         Args:
-            index: 对象下标。
+            indices: 对象下标列表。
         """
-        self.canvas.select_shape_by_index(index)
+        self.canvas.select_shapes_by_indices(indices)
 
     def _on_label_selected(self, label: str) -> None:
-        """选中/双击标签：设为当前绘制标签。
-
-        Args:
-            label: 标签名。
-        """
+        """选中/双击标签：设为当前绘制标签。"""
         self.canvas.set_current_label(label)
         self._status_label.setText(f"当前标签: {label}")
 
@@ -509,54 +887,99 @@ class MainWindow(QMainWindow):
             return
         label = text.strip()
         self.canvas.set_current_label(label)
+        self._all_labels.append(label)
         self._refresh_labels()
         self._status_label.setText(f"当前标签: {label}")
 
     # -------------------------- 列表刷新 --------------------------
+    def _start_label_scan(self) -> None:
+        """启动后台标签扫描（汇总工作目录下全部标注的类别/关键点）。
+
+        扫描前先清空并隐藏关键点列表，避免切换文件夹后残留旧文件夹的关键点，
+        仅当新文件夹扫描结果包含 point 类型 shape 时才重新显示（自动识别 pose）。
+        """
+        if not self._work_dir:
+            return
+        self._all_labels = []
+        self._label_keypoints = []
+        self._refresh_keypoints()
+        paths = getJsonFilesInDir(self._work_dir)
+        if self.label_scan_worker.isRunning():
+            self.label_scan_worker.stop()
+            self.label_scan_worker.wait(1500)
+        self.label_scan_worker.set_task(paths)
+        self.label_scan_worker.start()
+
+    def _on_labels_scanned(self, labels: list, keypoints: list) -> None:
+        """后台扫描完成：更新标签与关键点缓存并刷新界面。
+
+        Args:
+            labels: 标签名列表。
+            keypoints: 关键点标签名列表。
+        """
+        self._all_labels = list(labels)
+        self._label_keypoints = list(keypoints)
+        self._refresh_labels()
+        self._refresh_keypoints()
+
     def _refresh_labels(self) -> None:
-        """汇总工作目录下全部标注中的标签，填充右侧标签列表。"""
-        labels: set = set()
-        if self._work_dir:
-            for json_file in getJsonFilesInDir(self._work_dir):
-                try:
-                    doc = labelme_io.load_document(json_file)
-                    labels.update(labelme_io.document_labels(doc))
-                except Exception as e:
-                    LOGGER.warning(f"读取标签失败 {json_file}: {e}")
+        """即时刷新标签列表（合并后台扫描结果与当前画布标签）。"""
+        labels = set(self._all_labels)
+        for shape in self.canvas.shapes():
+            label = shape.get("label", "")
+            if label:
+                labels.add(label)
         self.right_panel.set_labels(sorted(labels))
 
     def _refresh_objects(self) -> None:
-        """刷新当前图片对象列表（描述形如 'person (rectangle)'）。"""
-        descriptions = []
-        for shape in self.canvas.shapes():
-            label = shape.get("label", "")
-            shape_type = shape.get("shape_type", "")
-            descriptions.append(f"{label} ({shape_type})")
-        self.right_panel.set_objects(descriptions)
+        """刷新当前图片对象列表（含类别颜色圆点）。"""
+        entries = [
+            (
+                f"{shape.get('label', '')} ({shape.get('shape_type', '')})",
+                shape.get("label", ""),
+            )
+            for shape in self.canvas.shapes()
+        ]
+        self.right_panel.set_objects(entries)
 
     def _refresh_keypoints(self) -> None:
-        """刷新关键点列表的可见性与内容（仅 POSE 任务显示）。
+        """按后台扫描结果自动刷新关键点列表的可见性与内容。
 
-        关键点名称从当前工作目录标注中的 point 类型标签去重提取。
+        仅当扫描结果中包含 point 类型 shape（自动识别为 pose 任务）时显示
+        关键点列表；否则隐藏。切换文件夹后默认隐藏，待重新扫描到 point 再显示。
         """
-        is_pose = self.annotate_config is not None and self.annotate_config.task_type == MODE.POSE
-        self.right_panel.set_kpt_visible(is_pose)
-        if not is_pose:
-            return
-        keypoints: set = set()
-        for shape in self.canvas.shapes():
-            if shape.get("shape_type") == labelme_io.SHAPE_POINT:
-                keypoints.add(shape.get("label", ""))
-        if self._work_dir:
-            for json_file in getJsonFilesInDir(self._work_dir):
-                try:
-                    doc = labelme_io.load_document(json_file)
-                    for shape in labelme_io.document_shapes(doc):
-                        if shape.get("shape_type") == labelme_io.SHAPE_POINT:
-                            keypoints.add(shape.get("label", ""))
-                except Exception:
-                    continue
-        self.right_panel.set_keypoints(sorted(keypoints))
+        has_points = bool(self._label_keypoints)
+        self.right_panel.set_kpt_visible(has_points)
+        if has_points:
+            self.right_panel.set_keypoints(sorted(self._label_keypoints))
+
+    # -------------------------- 目录状态控制 --------------------------
+    def _has_workspace(self) -> bool:
+        """返回是否已有可编辑的图像工作区。"""
+        return self._current_index >= 0 and bool(self.canvas.image_path())
+
+    def _update_edit_state(self) -> None:
+        """统一更新编辑相关控件的可用性（目录校验 + 预览模式）。"""
+        has_image = self._has_workspace()
+        editable = has_image and not self._preview_mode
+
+        # 工具栏
+        self.left_toolbar.set_edit_enabled(editable)
+        self.left_toolbar.set_preview_enabled(has_image)
+        # 文件删除不依赖预览模式，有图片即可用
+        self.left_toolbar.set_file_ops_enabled(has_image)
+
+        # 菜单动作
+        self.act_save.setEnabled(has_image)
+        self.act_save_as.setEnabled(has_image)
+        self.act_delete.setEnabled(editable)
+        self.act_clear.setEnabled(editable)
+        self.act_undo.setEnabled(has_image)
+        self.act_redo.setEnabled(has_image)
+        self.act_delete_file.setEnabled(has_image)
+        self.act_delete_image.setEnabled(has_image)
+        for act in self._tool_actions.values():
+            act.setEnabled(editable)
 
     def _update_status(self) -> None:
         """更新状态栏：当前图片序号与未保存标记。"""
@@ -565,12 +988,9 @@ class MainWindow(QMainWindow):
             return
         total = len(self._image_files)
         dirty = "（未保存）" if self._dirty else ""
+        preview = "（预览）" if self._preview_mode else ""
         name = Path(self._current_image_path()).name
-        self._status_label.setText(f"{self._current_index + 1}/{total}  {name}{dirty}")
-
-    def _set_dirty_check_stale(self) -> None:
-        """加载图片后刷新未保存标记（占位，实际由 _update_status 处理）。"""
-        self._update_status()
+        self._status_label.setText(f"{self._current_index + 1}/{total}  {name}{dirty}{preview}")
 
     # -------------------------- 帮助 --------------------------
     def _on_about(self) -> None:
@@ -579,28 +999,25 @@ class MainWindow(QMainWindow):
             QMessageBox.Icon.Information,
             f"{__appname__} v{__version__}\n\n"
             "智能数据标注工具：自动标注 + 标注预览 + 格式转换\n"
-            "标注格式完全复用 labelme JSON。",
+            "标注格式完全复用 labelme JSON。\n\n"
+            "快捷键：V 编辑 / R 矩形 / P 点 / G 多边形 / F9 预览\n"
+            "Ctrl+E 进入编辑模式 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做\n"
+            "A 上一张 / D 下一张\n"
+            "Delete 删除标注文件 / Shift+Delete 删除图片及标注",
         )
 
     # -------------------------- 关闭处理 --------------------------
     def closeEvent(self, event) -> None:
-        """关闭窗口时停止运行中的 worker 并等待退出。
-
-        Args:
-            event: 关闭事件。
-        """
-        for worker in (self.annotate_worker, self.convert_worker):
+        """关闭窗口时停止运行中的 worker 并等待退出。"""
+        for worker in (self.annotate_worker, self.convert_worker, self.label_scan_worker):
             if worker.isRunning():
                 worker.stop()
         self.annotate_worker.wait(3000)
         self.convert_worker.wait(3000)
+        self.label_scan_worker.wait(1500)
         event.accept()
 
     # -------------------------- 图标 --------------------------
     def set_window_icon(self, icon: QIcon) -> None:
-        """设置窗口图标（由 main.py 调用，兼容打包路径）。
-
-        Args:
-            icon: 已构造的 QIcon。
-        """
+        """设置窗口图标（由 main.py 调用，兼容打包路径）。"""
         self.setWindowIcon(icon)

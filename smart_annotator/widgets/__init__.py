@@ -20,6 +20,7 @@ from .preview import FilePreviewWidget
 from .canvas import Canvas
 from .left_toolbar import LeftToolbar
 from .right_panel import RightPanel
+from .shape_dialog import ShapeDialog
 
 __all__ = [
     "PrimaryButton",
@@ -36,4 +37,5 @@ __all__ = [
     "Canvas",
     "LeftToolbar",
     "RightPanel",
+    "ShapeDialog",
 ]

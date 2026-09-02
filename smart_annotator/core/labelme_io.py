@@ -28,6 +28,7 @@ LabelMe JSON 格式读写模块
 
 作者: BaiBinnan
 创建日期: 2026-09-02
+更新: 2026-09-02 新增 collect_labels_from_files 后台批量汇总标签/关键点
 """
 
 import json
@@ -161,3 +162,32 @@ def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> No
         shapes: 新的形状字典列表。
     """
     doc["shapes"] = shapes
+
+
+def collect_labels_from_files(json_paths) -> Dict[str, List[str]]:
+    """从多个 labelme JSON 文件汇总标签与关键点名称。
+
+    供后台扫描线程调用（不阻塞 UI）：逐个解析 JSON，提取全部类别，
+    并将 point 类型形状的标签归为关键点。无法解析的文件静默跳过。
+
+    Args:
+        json_paths: JSON 文件路径列表（可迭代）。
+
+    Returns:
+        {"labels": [标签...], "keypoints": [关键点标签...]}，均按字典序排序。
+    """
+    labels: set = set()
+    keypoints: set = set()
+    for path in json_paths:
+        try:
+            doc = load_document(path)
+        except Exception:
+            continue
+        for shape in document_shapes(doc):
+            label = shape.get("label", "")
+            if not label:
+                continue
+            labels.add(label)
+            if shape.get("shape_type") == SHAPE_POINT:
+                keypoints.add(label)
+    return {"labels": sorted(labels), "keypoints": sorted(keypoints)}
