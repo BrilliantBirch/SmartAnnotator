@@ -252,6 +252,7 @@ class CustomItemWidget(QWidget):
         placeholder: str = "大小",
         checked: bool = False,
         bbox_size: int = 10,
+        show_index: bool = False,
     ):
         """初始化可编辑列表项。
 
@@ -265,11 +266,20 @@ class CustomItemWidget(QWidget):
             placeholder: 大小输入框占位文本。
             checked: 复选框初始状态。
             bbox_size: 大小输入框初始值。
+            show_index: 是否显示行首索引标签（拖拽排序列表用，
+                行号即转换后的类别索引，由 DragDropListWidget 刷新）。
         """
         super().__init__(parent)
         self.list_widget = list_widget  # 保存列表引用
 
-        # 控件：可编辑文本框 + 删除按钮
+        # 控件：可选索引标签 + 可编辑文本框 + 删除按钮
+        self.index_label = None
+        if show_index:
+            self.index_label = QLabel("0")
+            self.index_label.setStyleSheet(
+                "color: #71717a; font-weight: 600; min-width: 20px;"
+            )
+            self.index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.edit = QLineEdit(text)
         self.edit.setStyleSheet("border: none;")
         self.check = None
@@ -297,6 +307,8 @@ class CustomItemWidget(QWidget):
 
         # 布局设置
         layout = QHBoxLayout()
+        if self.index_label is not None:
+            layout.addWidget(self.index_label)
         layout.addWidget(self.edit)
         if check:
             layout.addSpacing(10)
@@ -324,6 +336,15 @@ class CustomItemWidget(QWidget):
     def get_text(self) -> str:
         """返回文本框内容。"""
         return self.edit.text()
+
+    def set_index(self, index: int) -> None:
+        """更新行首索引标签（拖拽排序后由 DragDropListWidget 调用）。
+
+        Args:
+            index: 行号（即转换后的类别索引）。
+        """
+        if self.index_label is not None:
+            self.index_label.setText(str(index))
 
     def get_check_status(self) -> bool:
         """返回复选框状态。"""

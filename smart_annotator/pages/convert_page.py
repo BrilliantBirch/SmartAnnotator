@@ -2,11 +2,17 @@
 """
 格式转换页 - ConvertPage
 
-按 UI 文档 §5.2 与计划 §2.6：基础卡 + 高级卡。
-源/目标格式交叉锁定（LABELME↔YOLO），目标为 YOLO 时启用高级卡。
+按 UI 文档 §5.2 与计划 §2.6：基础卡 + 数据集分析卡 + 高级卡 + 预览卡 + 进度卡。
+源/目标格式交叉锁定（LABELME↔YOLO）。
+
+数据集分析（2026-09-02 新增）：
+    - 一键分析输入目录：提取 LabelMe 标签、推断任务类型（shape 特征）、
+      自动识别转换方向（json→txt / txt→json）
+    - 类别列表支持拖拽排序，行首数字即转换后的类别索引
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-02 新增"一键分析数据集"功能模块；类别列表升级为拖拽排序
 """
 
 import json
@@ -32,9 +38,12 @@ from PySide6.QtCore import Signal, Qt
 from .base_page import BasePage
 from ..widgets.buttons import PrimaryButton, SecondaryButton
 from ..widgets.cards import Card
+from ..widgets.drag_list import DragDropListWidget
 from ..widgets.fields import PathField, LabeledSpin, CustomItemWidget, apply_click_to_focus
 from ..widgets.preview import FilePreviewWidget
 from ..widgets.dialogs import chooseDir, showMessageBox
+from ..workers.analyze_worker import AnalyzeWorker
+from ..core.convert.dataset_analyzer import DatasetAnalysis
 from ..config import SysConfig, ConvertConfig, MODE, Format, RANDOM_SEED
 from ..utils import LOGGER, getJsonFilesInDir, getTxtFilesInDir, getImageFilesInDir
 from ..utils.qt_logger import add_qt_handler
@@ -55,10 +64,12 @@ class ConvertPage(BasePage):
         """初始化格式转换页。"""
         super().__init__(parent)
         self._worker = None
+        self._analyze_worker = None  # 数据集分析线程（一次性，用后销毁）
         self._class_items = []  # 类别 CustomItemWidget 引用
         self._kpt_items = []  # 关键点 CustomItemWidget 引用
 
         self._build_basic_card()
+        self._build_analysis_card()
         self._build_advanced_card()
         self._build_preview_card()
         self._build_progress_card()
@@ -127,11 +138,172 @@ class ConvertPage(BasePage):
 
         self.add_widget(self.basic_card)
 
+    def _build_analysis_card(self) -> None:
+        """构建数据集分析卡：一键分析按钮 + 进度条 + 结果摘要。
+
+        分析自动完成：转换方向识别、任务类型推断、标签提取（填入类别列表）。
+        """
+        self.analysis_card = Card("数据集分析")
+
+        # 操作行：分析按钮 + 进度条
+        action_row = QHBoxLayout()
+        self.btn_analyze = PrimaryButton("一键分析数据集")
+        self.btn_analyze.clicked.connect(self._on_analyze)
+        action_row.addWidget(self.btn_analyze)
+        self.analysis_progress = QProgressBar()
+        self.analysis_progress.setRange(0, 100)
+        self.analysis_progress.setValue(0)
+        self.analysis_progress.setMaximumWidth(240)
+        action_row.addWidget(self.analysis_progress)
+        action_row.addStretch()
+        self.analysis_card.addLayout(action_row)
+
+        # 结果摘要（多行富文本）
+        self.analysis_summary = QLabel(
+            "点击按钮分析输入目录：自动识别转换方向、推断任务类型、提取标签列表。"
+        )
+        self.analysis_summary.setWordWrap(True)
+        self.analysis_summary.setStyleSheet("color: #3f3f46;")
+        self.analysis_card.addWidget(self.analysis_summary)
+
+        # 拖拽排序提示
+        hint = QLabel(
+            "提示：分析后类别列表自动填充至下方高级设置，支持拖拽调整顺序，"
+            "行首数字即转换后的类别索引。"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #71717a;")
+        self.analysis_card.addWidget(hint)
+
+        self.add_widget(self.analysis_card)
+
+    # -------------------------- 数据集分析 --------------------------
+    def _on_analyze(self) -> None:
+        """启动数据集分析线程（后台执行，避免阻塞界面）。"""
+        path = self.input_field.path()
+        if not path or not Path(path).exists():
+            showMessageBox(QMessageBox.Icon.Warning, "请先选择有效的输入目录")
+            return
+        # 防重复启动
+        if self._analyze_worker is not None and self._analyze_worker.isRunning():
+            return
+        self.btn_analyze.setEnabled(False)
+        self.analysis_progress.setValue(0)
+        self.append_log(f"[分析] 开始分析数据集: {path}")
+        self._analyze_worker = AnalyzeWorker(path)
+        self._analyze_worker.progress_updated.connect(
+            lambda p: self.analysis_progress.setValue(int(p * 100))
+        )
+        self._analyze_worker.progress_desc.connect(self.append_log)
+        self._analyze_worker.analysis_finished.connect(self._on_analysis_finished)
+        self._analyze_worker.error_occurred.connect(self._on_analysis_error)
+        self._analyze_worker.task_finished.connect(self._on_analyze_done)
+        self._analyze_worker.start()
+
+    def _on_analyze_done(self) -> None:
+        """分析线程结束（含异常终止）：恢复分析按钮。"""
+        self.btn_analyze.setEnabled(True)
+
+    def _on_analysis_error(self, message: str) -> None:
+        """分析线程异常回调。"""
+        self.append_log(f"[错误] {message}")
+        showMessageBox(QMessageBox.Icon.Critical, f"数据集分析失败:\n{message}")
+
+    def _on_analysis_finished(self, result: DatasetAnalysis) -> None:
+        """分析完成回调：应用转换方向、任务类型并填充类别列表。
+
+        自动推测结果均为界面默认值，用户可手动覆盖（下拉框保持可编辑）。
+
+        Args:
+            result: 数据集分析结果对象。
+        """
+        # 无标注文件：仅提示，不改动任何设置
+        if result.json_count == 0 and result.txt_count == 0:
+            self.analysis_summary.setText(
+                f"未检测到标注文件（JSON/TXT 均为 0），请检查输入目录。"
+                f"当前目录仅含图片 {result.image_count} 张。"
+            )
+            self.append_log("[分析] 未检测到任何标注文件")
+            return
+
+        # ===== 1. 转换方向自动识别（json→txt 或 txt→json）=====
+        if result.source_format == Format.LABELME:
+            direction_text = "LabelMe (JSON) → YOLO (TXT)"
+            combo_idx = self.source_combo.findData(Format.LABELME)
+        else:
+            direction_text = "YOLO (TXT) → LabelMe (JSON)"
+            combo_idx = self.source_combo.findData(Format.YOLO)
+        if combo_idx >= 0:
+            self.source_combo.setCurrentIndex(combo_idx)  # 触发 _on_source_changed
+
+        # ===== 2. 任务类型推断 =====
+        task_idx = self.task_combo.findData(result.task_type)
+        if task_idx >= 0:
+            self.task_combo.setCurrentIndex(task_idx)  # 触发 _on_task_changed
+        task_names = {
+            MODE.DETECT: "目标检测 (DETECT)",
+            MODE.POSE: "姿态估计 (POSE)",
+            MODE.SEGMENT: "实例分割 (SEGMENT)",
+        }
+        shape_text = "、".join(
+            f"{k} {v} 个" for k, v in result.shape_counts.items()
+        )
+
+        # ===== 3. 标签提取：填充类别列表（仅 LabelMe 方向有标签名）=====
+        if result.labels:
+            self._fill_class_list(result.labels)
+            labels_text = f"提取标签 {len(result.labels)} 个: " + ", ".join(result.labels)
+        elif result.source_format == Format.YOLO:
+            labels_text = (
+                f"TXT 标注不含标签名，请在高级设置中手动维护类别列表"
+                f"（顺序须与训练时一致，共需至少 {result.max_class_id + 1} 个类别）"
+            )
+        else:
+            labels_text = "未从标注中提取到标签"
+
+        # ===== 4. 汇总展示 =====
+        lines = [
+            f"检测到 JSON 标注 {result.json_count} 个、TXT 标注 {result.txt_count} 个、"
+            f"图片 {result.image_count} 张",
+            f"转换方向（自动识别）: {direction_text}，可手动修改",
+            f"任务类型（自动推断）: {task_names.get(result.task_type, '未知')}"
+            + (f"（标注形状: {shape_text}）" if shape_text else ""),
+            labels_text,
+        ]
+        if result.error_files:
+            lines.append(
+                f"警告: {len(result.error_files)} 个标注文件解析失败（已跳过），详见日志"
+            )
+            for err_file in result.error_files[:5]:
+                self.append_log(f"[分析] 解析失败: {err_file}")
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                f"{len(result.error_files)} 个标注文件格式异常已跳过：\n"
+                + "\n".join(Path(f).name for f in result.error_files[:5])
+                + ("..." if len(result.error_files) > 5 else ""),
+            )
+        self.analysis_summary.setText("\n".join(lines))
+        self.append_log(f"[分析] 完成: 方向={direction_text}, "
+                        f"任务={result.task_type.name}, 标签数={len(result.labels)}")
+
+    def _fill_class_list(self, labels: list) -> None:
+        """用分析出的标签列表重填类别编辑器（带行首索引）。
+
+        Args:
+            labels: 标签名列表（列表顺序即类别索引顺序）。
+        """
+        self.class_list.clear()
+        self._class_items.clear()
+        for name in labels:
+            self._on_add_class()
+            self._class_items[-1].edit.setText(name)
+        self.class_list.refresh_indices()
+
     def _build_advanced_card(self) -> None:
         """构建高级卡：类别/关键点编辑器、分割比例、可视化/导出、配置导入导出。"""
-        self.advanced_card = Card("高级设置（目标为 YOLO 时生效）")
+        self.advanced_card = Card("高级设置（分割比例与导出选项仅目标为 YOLO 时生效）")
 
-        # 类别编辑器
+        # 类别编辑器（支持拖拽排序：行首数字即转换后的类别索引）
         class_row = QHBoxLayout()
         class_row.addWidget(QLabel("类别列表"))
         class_row.addStretch()
@@ -140,7 +312,7 @@ class ConvertPage(BasePage):
         class_row.addWidget(self.btn_add_class)
         self.advanced_card.addLayout(class_row)
 
-        self.class_list = QListWidget()
+        self.class_list = DragDropListWidget()
         # 最小高度 200px，确保类别项清晰展示（约 6 项），避免内容被压缩
         self.class_list.setMinimumHeight(200)
         self.advanced_card.addWidget(self.class_list)
@@ -244,9 +416,9 @@ class ConvertPage(BasePage):
         self.target_combo.addItem(
             "YOLO (TXT)" if target == Format.YOLO else "LabelMe (JSON)", target
         )
-        # 高级卡仅目标为 YOLO 时启用
-        enabled = target == Format.YOLO
-        self.advanced_card.setEnabled(enabled)
+        # 类别/关键点列表双向转换均需要（txt→json 的 class_mapping 同样来自类别列表），
+        # 高级卡保持可用；分割比例与导出选项仅目标为 YOLO 时参与转换
+        self.advanced_card.setEnabled(True)
         self.advanced_card.setVisible(True)
 
     def _on_task_changed(self) -> None:
@@ -282,9 +454,9 @@ class ConvertPage(BasePage):
 
     # -------------------------- 类别/关键点编辑器 --------------------------
     def _on_add_class(self) -> None:
-        """添加一个类别编辑项。"""
+        """添加一个类别编辑项（带行首索引标签，支持拖拽排序）。"""
         item = QListWidgetItem()
-        widget = CustomItemWidget("", self.class_list, check=False)
+        widget = CustomItemWidget("", self.class_list, check=False, show_index=True)
         item.setSizeHint(widget.sizeHint())
         self.class_list.addItem(item)
         self.class_list.setItemWidget(item, widget)
@@ -502,8 +674,9 @@ class ConvertPage(BasePage):
         if not cc.output_dir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择输出目录")
             return
-        if cc.target_format == Format.YOLO and not cc.classes:
-            showMessageBox(QMessageBox.Icon.Warning, "目标为 YOLO 时至少添加一个类别")
+        # 双向转换均需要类别列表（json→txt 生成 class 映射，txt→json 反查类别名）
+        if not cc.classes:
+            showMessageBox(QMessageBox.Icon.Warning, "请至少添加一个类别（可使用一键分析自动填充）")
             return
         self._worker.setConfig(sys_config)
         self.progress_bar.setValue(0)

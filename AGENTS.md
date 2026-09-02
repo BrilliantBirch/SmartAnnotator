@@ -103,11 +103,13 @@ smart_annotator/
 │   └── annotate_page.py         # 自动标注页（6 卡片布局）
 ├── widgets/                     # 公共控件
 │   ├── class_selector.py        # ClassSelectorWidget：类别复选列表 + 全选/取消全选
+│   ├── drag_list.py             # DragDropListWidget：拖拽排序列表（保留 itemWidget）
 │   ├── fields.py / buttons.py / cards.py / dialogs.py / preview.py
 ├── workers/                     # QThread 工作线程（任务运行期禁用导航）
 │   ├── base_worker.py           # 工作线程基类（进度/日志/错误信号）
 │   ├── annotate_worker.py       # AnnotationWorker → Annotator
-│   └── convert_worker.py        # ConvertWorker → Converter
+│   ├── convert_worker.py        # ConvertWorker → Converter
+│   └── analyze_worker.py        # AnalyzeWorker → analyze_dataset（数据集一键分析）
 ├── core/                        # 业务逻辑（无 Qt 依赖）
 │   ├── annotate/
 │   │   ├── annotator.py         # Annotator：批量推理 + 类别过滤 + 输出
@@ -119,7 +121,8 @@ smart_annotator/
 │   │   ├── formatters/          # 策略模式：base/detect/pose/segment/factory
 │   │   └── video_processor.py   # 视频抽帧（cv2.VideoCapture，依赖 ffmpeg DLL）
 │   └── convert/
-│       ├── converter.py         # Converter：格式转换编排
+│       ├── converter.py         # Converter：格式转换编排（策略模式工厂）
+│       ├── dataset_analyzer.py  # analyze_dataset：数据集一键分析（标签/任务/方向）
 │       ├── json_converter.py    # LabelMe JSON → YOLO TXT
 │       └── txt_converter.py     # YOLO TXT → LabelMe JSON
 └── utils/                       # 工具（logger/files/paths/colors/tool/qt_logger）
@@ -313,6 +316,8 @@ python -m py_compile <修改的文件>
 
 ## 8. 修订历史
 
-| 日期       | 内容                        |
-| ---------- | --------------------------- |
-| 2026-08-26 | 初版创建（作者: BaiBinnan） |
+| 日期       | 内容                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------- |
+| 2026-08-26 | 初版创建（作者: BaiBinnan）                                                           |
+| 2026-09-01 | 2.1 节改为通用虚拟环境说明（不限定环境名与路径，按 Python/TensorRT 版本要求约束）     |
+| 2026-09-02 | 新增数据集一键分析模块（convert 页）；记录 QListWidget 拖拽排序的 itemWidget 销毁陷阱 |
