@@ -6,6 +6,11 @@ txt 文件转到 labelme json 格式的标签
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-02 图片与标注按文件名主干匹配（兼容 label/image/dataset 目录层级）；
+      类别未配置时回退使用类别索引作为标签名；修复 generate_labelme_file
+      宽高传参顺序颠倒问题
+更新: 2026-09-02 修复 YoloSeg2JsonConverter 行校验条件（合法行为奇数字段数
+      且 >= 7，原条件误拒 7 字段合法行、误放行偶数字段数行）
 """
 
 from smart_annotator.config import LABELME_VERSION, ConvertConfig, MODE
@@ -57,6 +62,10 @@ class JsonBaseConverter:
     def run(self, callback):
         """执行转换任务。
 
+        图片与标注按文件名主干（不含扩展名）匹配，兼容任意目录结构
+        （label/image 兄弟目录、dataset 子目录、平铺等，目录层级由
+        页面扫描阶段经 scan_dataset_files 解析后写入配置）。
+
         Args:
             callback: 进度回调函数，签名 callback(desc, progress) -> bool。
 
@@ -67,20 +76,15 @@ class JsonBaseConverter:
             self.output.mkdir(parents=True, exist_ok=True)
             total = len(self.annotationFiles)
             empty_files = []
-            # 获取图片路径及其后缀字典
-            imageFiles_dir = {
-                str(Path(imageFile).stem): Path(imageFile).suffix
-                for imageFile in self.imageFiles
-            }
-            # 遍历图片转换标签
+            # 图片按主干名建索引（兼容不同扩展名与目录层级）
+            image_map = {img.stem: img for img in self.imageFiles}
+            # 遍历标注文件转换
             for idx, file in enumerate(self.annotationFiles):
                 if not callback(f"标签转换中", (idx + 1) / total):
                     return False
-                imagePath = file.parent.parent / "images" / file.name
-                imagePath = imagePath.with_suffix(
-                    imageFiles_dir.get(imagePath.stem, "")
-                )
-                if imagePath in self.imageFiles:
+                imagePath = image_map.get(file.stem)
+                if imagePath is not None:
+                    del image_map[file.stem]
                     self.imageFiles.remove(imagePath)
                     annotations, image_height, image_width = self.process(
                         file, imagePath
@@ -94,8 +98,8 @@ class JsonBaseConverter:
                         annotations,
                         LABELME_VERSION,
                         imagePath.name,
-                        image_height,
                         image_width,
+                        image_height,
                         self.output / (file.stem + ".json"),
                     )
                     shutil.copy(imagePath, self.output / imagePath.name)
@@ -164,7 +168,8 @@ class Yolo2JsonConverter(JsonBaseConverter):
 
                 annotations.append(
                     {
-                        "class": self.class_mapping[class_id],
+                        # 类别未配置时回退使用类别索引作为标签名
+                        "class": self.class_mapping.get(class_id, str(class_id)),
                         "points": points,
                         "shape_type": "rectangle",
                         "description": "",
@@ -194,9 +199,10 @@ class YoloSeg2JsonConverter(JsonBaseConverter):
             for line in l:
                 lineNo += 1
                 parts = line.strip().split()
-                if len(parts) <= 7 and len(parts) % 2 != 0:
+                # 分割标准格式: classid + N 对坐标（N>=3），字段数须为奇数且 >= 7
+                if len(parts) < 7 or len(parts) % 2 == 0:
                     LOGGER.warning(
-                        f"{path}标注文本格式第{lineNo}行有误，{line},分割模型至少有三个关键点"
+                        f"{path}标注文本格式第{lineNo}行有误，{line},分割标注至少需三个坐标点"
                     )
                     continue
                 class_id = int(parts[0])
@@ -212,7 +218,8 @@ class YoloSeg2JsonConverter(JsonBaseConverter):
 
                 annotations.append(
                     {
-                        "class": self.class_mapping[class_id],
+                        # 类别未配置时回退使用类别索引作为标签名
+                        "class": self.class_mapping.get(class_id, str(class_id)),
                         "points": points,
                         "shape_type": "polygon",
                         "description": "",
@@ -267,7 +274,8 @@ class YoloPose2JsonConverter(JsonBaseConverter):
                 ]
                 annotations.append(
                     {
-                        "class": self.class_mapping[class_id].lower(),
+                        # 类别未配置时回退使用类别索引作为标签名
+                        "class": self.class_mapping.get(class_id, str(class_id)).lower(),
                         "points": points,
                         "shape_type": "rectangle",
                         "description": "",

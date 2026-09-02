@@ -10,6 +10,8 @@ labelme 文件转到 txt 格式的标签
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-02 run() 图片匹配改为按文件名主干索引（兼容 label/image/
+      dataset 目录层级，原实现要求 JSON 与图片同目录同名）
 """
 
 from smart_annotator.config import RANDOM_SEED, ConvertConfig, MODE
@@ -88,26 +90,23 @@ class TxtConverter:
             if self.visualized:
                 visualizeFolder = self.output / "visualized"
                 visualizeFolder.mkdir(parents=True, exist_ok=True)
-            # 获取图片路径及其后缀字典
-            imageFiles_dir = {
-                str(Path(imageFile)).split(".")[0]: Path(imageFile).suffix
-                for imageFile in self.imageFiles
-            }
             empty_files = []
             failed_files = []
+            # 图片按文件名主干建索引（兼容不同扩展名与目录层级：
+            # labels/images 兄弟目录、dataset 子目录、平铺等）
+            image_map = {Path(img).stem: img for img in self.imageFiles}
             # 开始转换
             total = len(self.annotationFiles)
             for id, json_path in enumerate(self.annotationFiles):
                 if not progress_callback("标签转换中", (id + 1) / total):
                     return False
                 json_path = Path(json_path)
-                # 根据标签获取图片路径
-                img_path = json_path.with_suffix(
-                    imageFiles_dir.get(str(json_path).split(".")[0], "")
-                )
-                if img_path in self.imageFiles:
+                # 根据标签文件名主干获取图片路径
+                img_path = image_map.get(json_path.stem)
+                if img_path is not None:
                     # 标记为已处理
                     self.imageFiles.remove(img_path)
+                    del image_map[json_path.stem]
                     # 转换标注
                     yolo_lines, failed, failInfos = self.process(json_path)
                     # 转换失败

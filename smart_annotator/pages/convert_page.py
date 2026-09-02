@@ -13,6 +13,14 @@
 作者: BaiBinnan
 创建日期: 2026-08-10
 更新: 2026-09-02 新增"一键分析数据集"功能模块；类别列表升级为拖拽排序
+更新: 2026-09-02 目录层级识别（label/image/dataset 层级自动解析标注与图片目录）；
+      TXT→JSON 方向未配置类别时自动以类别索引作为标签名
+更新: 2026-09-02 一键分析 POSE 推断结果自动填充关键点列表（按标注格式
+      反推关键点数，默认名 kpt{i}_point{i}）
+更新: 2026-09-02 类别/关键点列表高度自适应（按条目数与实际行高调整，
+      最多显示 5/4 行后滚动），替代固定 200/140px 最小高度
+更新: 2026-09-02 一键分析 LabelMe 方向 POSE 数据集时，point 类型标签
+      归入关键点类别集合并自动填充关键点列表（不再混入普通类别列表）
 """
 
 import json
@@ -45,7 +53,7 @@ from ..widgets.dialogs import chooseDir, showMessageBox
 from ..workers.analyze_worker import AnalyzeWorker
 from ..core.convert.dataset_analyzer import DatasetAnalysis
 from ..config import SysConfig, ConvertConfig, MODE, Format, RANDOM_SEED
-from ..utils import LOGGER, getJsonFilesInDir, getTxtFilesInDir, getImageFilesInDir
+from ..utils import LOGGER, scan_dataset_files
 from ..utils.qt_logger import add_qt_handler
 
 
@@ -249,20 +257,67 @@ class ConvertPage(BasePage):
             f"{k} {v} 个" for k, v in result.shape_counts.items()
         )
 
-        # ===== 3. 标签提取：填充类别列表（仅 LabelMe 方向有标签名）=====
-        if result.labels:
-            self._fill_class_list(result.labels)
-            labels_text = f"提取标签 {len(result.labels)} 个: " + ", ".join(result.labels)
+        # ===== 3. 标签提取：填充类别列表与关键点类别集合 =====
+        if result.labels or result.kpt_labels:
+            # LabelMe 方向：直接使用标注中的标签名。
+            # POSE 数据集：point 类型标签属于关键点类别集合，单独填充
+            # 关键点列表，不混入普通类别列表（否则转换时关键点全部丢失）
+            if result.kpt_labels:
+                kpt_lower = {k.lower() for k in result.kpt_labels}
+                box_labels = [
+                    l for l in result.labels if l.lower() not in kpt_lower
+                ]
+                self._fill_class_list(box_labels)
+                self._fill_kpt_list(result.kpt_labels)
+                labels_text = (
+                    f"提取类别 {len(box_labels)} 个、关键点 {len(result.kpt_labels)} 个，"
+                    f"已分别填充至类别列表与关键点列表（可修改）"
+                )
+            elif result.labels:
+                self._fill_class_list(result.labels)
+                labels_text = (
+                    f"提取标签 {len(result.labels)} 个: " + ", ".join(result.labels)
+                )
+            else:
+                labels_text = "仅提取到关键点标签，未检测到普通类别（矩形框）"
         elif result.source_format == Format.YOLO:
-            labels_text = (
-                f"TXT 标注不含标签名，请在高级设置中手动维护类别列表"
-                f"（顺序须与训练时一致，共需至少 {result.max_class_id + 1} 个类别）"
-            )
+            # TXT 方向：标注不含标签名，类别列表为空时按类别索引自动填充
+            # （默认使用索引作为标签名，用户可在下方列表中修改）
+            if self._collect_classes():
+                labels_text = "已保留当前类别列表（可在高级设置中修改名称与顺序）"
+            else:
+                index_names = [str(i) for i in range(result.max_class_id + 1)]
+                if index_names:
+                    self._fill_class_list(index_names)
+                    labels_text = (
+                        f"TXT 标注不含标签名，已按类别索引自动填充 {len(index_names)} 个类别，"
+                        f"请在转换前按实际需求修改名称"
+                    )
+                else:
+                    labels_text = "TXT 标注为空，未填充类别"
         else:
             labels_text = "未从标注中提取到标签"
 
+        # ===== 3.5 POSE 任务：按推断关键点数自动填充关键点列表 =====
+        kpt_text = ""
+        if (
+            result.source_format == Format.YOLO
+            and result.task_type == MODE.POSE
+            and result.kpt_count > 0
+            and not self._collect_kpt()
+        ):
+            # 关键点名称须以 _point{序号} 结尾（默认 kpt{i}_point{i}，可修改）
+            self._fill_kpt_list(
+                [f"kpt{i}_point{i}" for i in range(result.kpt_count)]
+            )
+            kpt_text = (
+                f"已按标注格式推断关键点 {result.kpt_count} 个并自动填充，"
+                f"请按实际含义修改名称（须以 _point{{序号}} 结尾）"
+            )
+
         # ===== 4. 汇总展示 =====
         lines = [
+            f"目录层级: {result.structure_desc}",
             f"检测到 JSON 标注 {result.json_count} 个、TXT 标注 {result.txt_count} 个、"
             f"图片 {result.image_count} 张",
             f"转换方向（自动识别）: {direction_text}，可手动修改",
@@ -270,6 +325,13 @@ class ConvertPage(BasePage):
             + (f"（标注形状: {shape_text}）" if shape_text else ""),
             labels_text,
         ]
+        if kpt_text:
+            lines.append(kpt_text)
+        if result.orphan_annotations:
+            lines.append(
+                f"警告: 检测到 {len(result.orphan_annotations)} 个孤立标注文件"
+                f"（缺失对应图片，无法转换），详细信息已输出至日志"
+            )
         if result.error_files:
             lines.append(
                 f"警告: {len(result.error_files)} 个标注文件解析失败（已跳过），详见日志"
@@ -299,6 +361,18 @@ class ConvertPage(BasePage):
             self._class_items[-1].edit.setText(name)
         self.class_list.refresh_indices()
 
+    def _fill_kpt_list(self, names: list) -> None:
+        """用关键点名称列表重填关键点编辑器。
+
+        Args:
+            names: 关键点名称列表（顺序即关键点索引顺序）。
+        """
+        self.kpt_list.clear()
+        self._kpt_items.clear()
+        for name in names:
+            self._on_add_kpt()
+            self._kpt_items[-1].edit.setText(name)
+
     def _build_advanced_card(self) -> None:
         """构建高级卡：类别/关键点编辑器、分割比例、可视化/导出、配置导入导出。"""
         self.advanced_card = Card("高级设置（分割比例与导出选项仅目标为 YOLO 时生效）")
@@ -313,8 +387,7 @@ class ConvertPage(BasePage):
         self.advanced_card.addLayout(class_row)
 
         self.class_list = DragDropListWidget()
-        # 最小高度 200px，确保类别项清晰展示（约 6 项），避免内容被压缩
-        self.class_list.setMinimumHeight(200)
+        # 高度自适应：随条目数调整（见 _adjust_list_height），最多显示 5 行
         self.advanced_card.addWidget(self.class_list)
 
         # 关键点编辑器（仅 POSE 显示，整体包装为容器便于显隐）
@@ -333,9 +406,17 @@ class ConvertPage(BasePage):
         kpt_row.addWidget(self.btn_add_kpt)
         kpt_layout.addLayout(kpt_row)
         self.kpt_list = QListWidget()
-        self.kpt_list.setMinimumHeight(140)
+        # 高度自适应：随条目数调整（见 _adjust_list_height），最多显示 4 行
         kpt_layout.addWidget(self.kpt_list)
         self.advanced_card.addWidget(self.kpt_container)
+
+        # 列表行结构变化（增删/拖拽排序/重填）时同步调整高度
+        self.class_list.model().rowsInserted.connect(self._adjust_list_height)
+        self.class_list.model().rowsRemoved.connect(self._adjust_list_height)
+        self.kpt_list.model().rowsInserted.connect(self._adjust_list_height)
+        self.kpt_list.model().rowsRemoved.connect(self._adjust_list_height)
+        # 初始高度（空列表最小高度）
+        self._adjust_list_height()
 
         # 分割比例
         ratio_row = QHBoxLayout()
@@ -432,27 +513,60 @@ class ConvertPage(BasePage):
         self.kpt_container.setVisible(is_pose)
 
     def _on_input_changed(self, path: str) -> None:
-        """输入目录变化时统计文件数量并填充预览列表。"""
+        """输入目录变化时统计文件数量并填充预览列表。
+
+        按 YOLO 数据集目录层级自动识别（label/image/dataset 层级或平铺），
+        标注与图片分别从解析出的对应目录扫描。
+        """
         if not path or not Path(path).exists():
             self.count_label.setText("未选择目录")
             self.preview_widget.clear()
             return
+        # 目录层级识别 + 分目录扫描（label 层级自动找兄弟 images 目录等）
+        scan = scan_dataset_files(path)
         source = self.source_combo.currentData()
         if source == Format.LABELME:
-            anno_files = getJsonFilesInDir(path)
-            label = "JSON 标注"
+            anno_files, label = scan["json_files"], "JSON 标注"
         else:
-            anno_files = getTxtFilesInDir(path)
-            label = "TXT 标注"
-        image_files = getImageFilesInDir(path)
+            anno_files, label = scan["txt_files"], "TXT 标注"
+        image_files = scan["image_files"]
         self.count_label.setText(
-            f"已扫描到 {len(anno_files)} 个 {label} 文件，{len(image_files)} 张图片"
+            f"[{scan['structure']}] 已扫描到 {len(anno_files)} 个 {label}，"
+            f"{len(image_files)} 张图片"
         )
         # 合并标注与图片文件（去重后按名称排序），填充预览列表
         all_files = sorted(set(anno_files + image_files))
         self.preview_widget.set_files(all_files)
 
     # -------------------------- 类别/关键点编辑器 --------------------------
+    def _adjust_list_height(self, *args) -> None:
+        """按条目数自适应调整类别/关键点列表高度。
+
+        高度 = min(条目数, 最大可见行数) × 实际行高 + 内边距，
+        超出部分由列表内部滚动；行高取自实际渲染度量，随分辨率/DPI
+        缩放自然适配。超过最大可见行数时列表可滚动。
+
+        Args:
+            *args: 兼容 Qt 行结构信号的位置参数（忽略）。
+        """
+        # (列表, 最大可见行数, 空列表时的最小高度)
+        configs = [
+            (self.class_list, 5, 44),
+            (self.kpt_list, 4, 44),
+        ]
+        for lst, max_visible, min_h in configs:
+            count = lst.count()
+            if count == 0:
+                lst.setFixedHeight(min_h)
+                continue
+            # 取首/末行的实际渲染行高（随字体与 DPI 缩放）
+            row_h = max(lst.sizeHintForRow(0), lst.sizeHintForRow(count - 1))
+            if row_h <= 0:
+                row_h = lst.itemWidget(lst.item(0)).sizeHint().height()
+            visible = min(count, max_visible)
+            # +12px：列表上下内边距与边框
+            lst.setFixedHeight(max(min_h, visible * row_h + 12))
+
     def _on_add_class(self) -> None:
         """添加一个类别编辑项（带行首索引标签，支持拖拽排序）。"""
         item = QListWidgetItem()
@@ -522,6 +636,9 @@ class ConvertPage(BasePage):
     def _scan_input_files(self, cc: ConvertConfig) -> None:
         """扫描输入目录的标注与图片文件，填入运行期字段。
 
+        按目录层级识别结果分目录扫描（label 层级自动取兄弟 images 目录
+        的图片、image 层级自动取兄弟 labels 目录的标注等）。
+
         Args:
             cc: 转换配置对象。
         """
@@ -529,11 +646,12 @@ class ConvertPage(BasePage):
         cc.image_files = []
         if not cc.input_dir or not Path(cc.input_dir).exists():
             return
+        scan = scan_dataset_files(cc.input_dir)
         if cc.source_format == Format.LABELME:
-            cc.annotation_files = getJsonFilesInDir(cc.input_dir)
+            cc.annotation_files = scan["json_files"]
         else:
-            cc.annotation_files = getTxtFilesInDir(cc.input_dir)
-        cc.image_files = getImageFilesInDir(cc.input_dir)
+            cc.annotation_files = scan["txt_files"]
+        cc.image_files = scan["image_files"]
 
     def apply_config(self, sys_config: SysConfig) -> None:
         """从 sys_config 回填界面控件。
@@ -674,8 +792,9 @@ class ConvertPage(BasePage):
         if not cc.output_dir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择输出目录")
             return
-        # 双向转换均需要类别列表（json→txt 生成 class 映射，txt→json 反查类别名）
-        if not cc.classes:
+        # json→txt 方向必须提供类别列表（生成类别索引映射）；
+        # txt→json 方向允许为空：转换器自动以类别索引作为标签名（可在转换前于界面修改）
+        if not cc.classes and cc.source_format == Format.LABELME:
             showMessageBox(QMessageBox.Icon.Warning, "请至少添加一个类别（可使用一键分析自动填充）")
             return
         self._worker.setConfig(sys_config)

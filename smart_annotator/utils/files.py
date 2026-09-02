@@ -50,6 +50,114 @@ def getVideoFilesInDir(dirPath) -> list:
     return files
 
 
+# ===== YOLO 数据集目录命名兼容（复数/单数均支持）=====
+IMAGE_DIR_NAMES = ("images", "image")
+LABEL_DIR_NAMES = ("labels", "label")
+
+
+def _first_existing_sibling(base: Path, names: tuple):
+    """在 base 的兄弟目录中查找第一个存在的目录名。
+
+    Args:
+        base: 参照目录（其父目录下查找）。
+        names: 候选目录名列表。
+
+    Returns:
+        找到的目录 Path；均不存在返回 None。
+    """
+    for name in names:
+        candidate = base.parent / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _first_existing_subdir(base: Path, names: tuple):
+    """在 base 的子目录中查找第一个存在的目录名。
+
+    Args:
+        base: 父目录。
+        names: 候选子目录名列表。
+
+    Returns:
+        找到的目录 Path；均不存在返回 None。
+    """
+    for name in names:
+        candidate = base / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def resolve_dataset_dirs(input_dir) -> tuple:
+    """识别 YOLO 数据集目录层级，解析标注目录与图片目录。
+
+    支持三种输入层级（目录名大小写不敏感，复数/单数均兼容）：
+        1. label 层级: 输入目录名为 labels/label，标注在本目录，
+           图片在兄弟 images/image 目录中查找
+        2. image 层级: 输入目录名为 images/image，图片在本目录，
+           标注在兄弟 labels/label 目录中查找
+        3. dataset 层级: 输入目录含 images/image 与 labels/label 子目录，
+           分别作为图片与标注目录
+    以上均不匹配时视为平铺结构（LabelMe 惯例），标注与图片均在输入目录本身。
+
+    Args:
+        input_dir: 用户输入目录路径。
+
+    Returns:
+        (标注目录或 None, 图片目录或 None, 结构描述文本) 三元组。
+    """
+    path = Path(input_dir)
+    if not path.is_dir():
+        return None, None, "目录不存在"
+
+    name = path.name.lower()
+    if name in LABEL_DIR_NAMES:
+        image_dir = _first_existing_sibling(path, IMAGE_DIR_NAMES)
+        struct = f"label 层级（图片目录: {image_dir.name if image_dir else '未找到'}）"
+        return path, image_dir, struct
+    if name in IMAGE_DIR_NAMES:
+        anno_dir = _first_existing_sibling(path, LABEL_DIR_NAMES)
+        struct = f"image 层级（标注目录: {anno_dir.name if anno_dir else '未找到'}）"
+        return anno_dir, path, struct
+
+    # dataset 层级：查找子目录
+    image_dir = _first_existing_subdir(path, IMAGE_DIR_NAMES)
+    anno_dir = _first_existing_subdir(path, LABEL_DIR_NAMES)
+    if image_dir is not None or anno_dir is not None:
+        return anno_dir, image_dir, "dataset 层级（images/labels 子目录）"
+
+    # 平铺结构：标注与图片均在输入目录
+    return path, path, "平铺结构"
+
+
+def scan_dataset_files(input_dir) -> dict:
+    """按目录层级识别结果扫描标注与图片文件。
+
+    扫描规则：
+        - JSON 标注: 始终扫描输入目录本身（LabelMe 平铺惯例）
+        - TXT 标注: 扫描解析出的标注目录（label 层级/dataset 层级时为
+          labels 子目录，平铺时为输入目录）
+        - 图片: 扫描解析出的图片目录（image 层级/dataset 层级时为
+          images 目录，平铺时为输入目录）
+
+    Args:
+        input_dir: 用户输入目录路径。
+
+    Returns:
+        字典 {anno_dir, image_dir, structure, json_files, txt_files, image_files}。
+    """
+    anno_dir, image_dir, structure = resolve_dataset_dirs(input_dir)
+    return {
+        "anno_dir": anno_dir,
+        "image_dir": image_dir,
+        "structure": structure,
+        "json_files": getJsonFilesInDir(str(input_dir)),
+        "txt_files": getTxtFilesInDir(str(anno_dir)) if anno_dir else [],
+        "image_files": getImageFilesInDir(str(image_dir)) if image_dir else [],
+    }
+
+
 def checkAnnotationFiles(dirPath: str, type) -> tuple:
     """检查目录下图片与标注文件是否一一对应，找出缺少图片的标注文件。
 

@@ -8,6 +8,8 @@ CustomItemWidget: 可编辑列表项（类别/关键点编辑器），移植自 
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-02 CustomItemWidget 行内编辑框覆盖全局 QSS 的 min-height/padding，
+      固定紧凑行高并消除文字垂直裁剪；统一控件间距
 """
 
 from PySide6.QtWidgets import (
@@ -280,8 +282,13 @@ class CustomItemWidget(QWidget):
                 "color: #71717a; font-weight: 600; min-width: 20px;"
             )
             self.index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 行内编辑框：覆盖全局 QSS 的 min-height/padding（避免行高膨胀且
+        # 文字垂直被裁剪），固定紧凑高度并垂直居中
         self.edit = QLineEdit(text)
-        self.edit.setStyleSheet("border: none;")
+        self.edit.setStyleSheet(
+            "QLineEdit { border: none; padding: 2px 6px; min-height: 0; background: transparent; }"
+        )
+        self.edit.setFixedHeight(28)
         self.check = None
         self.checkEdit = None
         if check:
@@ -293,8 +300,10 @@ class CustomItemWidget(QWidget):
                 self.checkEdit = QLineEdit(str(bbox_size))
                 self.checkEdit.setPlaceholderText(placeholder)
                 self.checkEdit.setStyleSheet(
-                    "border: 1px solid #e4e4e7; border-radius: 6px; padding: 2px 6px;"
+                    "QLineEdit { border: 1px solid #e4e4e7; border-radius: 6px;"
+                    " padding: 2px 6px; min-height: 0; background: #ffffff; }"
                 )
+                self.checkEdit.setFixedHeight(28)
                 self.checkEdit.setMinimumWidth(120)
         self.del_btn = QPushButton("×")
         self.del_btn.setStyleSheet(
@@ -305,8 +314,9 @@ class CustomItemWidget(QWidget):
         )
         self.del_btn.setFixedSize(24, 24)
 
-        # 布局设置
+        # 布局设置（紧凑行：紧凑边距 + 控件间距，行高随 DPI 缩放自适应）
         layout = QHBoxLayout()
+        layout.setSpacing(8)
         if self.index_label is not None:
             layout.addWidget(self.index_label)
         layout.addWidget(self.edit)
@@ -319,7 +329,7 @@ class CustomItemWidget(QWidget):
             QSpacerItem(20, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         )
         layout.addWidget(self.del_btn)
-        layout.setContentsMargins(2, 5, 2, 5)
+        layout.setContentsMargins(2, 4, 2, 4)
         self.setLayout(layout)
 
         # 连接信号

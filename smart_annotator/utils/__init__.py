@@ -27,6 +27,8 @@ from .files import (
     checkAnnotationFiles,
     move_files,
     getModelClasses,
+    resolve_dataset_dirs,
+    scan_dataset_files,
 )
 from .tool import (
     is_point_in_box,
@@ -58,6 +60,8 @@ __all__ = [
     "checkAnnotationFiles",
     "move_files",
     "getModelClasses",
+    "resolve_dataset_dirs",
+    "scan_dataset_files",
     "is_point_in_box",
     "is_rect_inside",
     "detect_anomalies",

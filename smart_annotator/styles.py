@@ -90,6 +90,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 }
 
 /* ===== 进度条（药丸形）===== */
+/* 读条用中灰色：黑色文字在轨道（#f4f4f5）与读条上均保持可读 */
 QProgressBar {
     border: 0;
     border-radius: 999px;
@@ -101,7 +102,7 @@ QProgressBar {
 }
 QProgressBar::chunk {
     border-radius: 999px;
-    background-color: #18181b;
+    background-color: #a1a1aa;
 }
 
 /* ===== 日志面板（等宽字体）===== */
