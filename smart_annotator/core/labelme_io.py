@@ -30,6 +30,9 @@ LabelMe JSON 格式读写模块
 创建日期: 2026-09-02
 更新: 2026-09-02 新增 collect_labels_from_files 后台批量汇总标签/关键点
 更新: 2026-09-03 set_document_shapes 写入前剥离 "_" 前缀运行时字段（如 _visible），保证 JSON 与 labelme 标准格式一致
+更新: 2026-09-03 collect_labels_from_files 支持逐文件中断检查与进度回调，标签强制
+      转字符串（兼容数字标签，修复大目录冷缓存扫描不可中断/无进度反馈问题）
+更新: 2026-09-03 collect_labels_from_files 新增实例计数 counts（不区分大小写合并，拼写取首次出现），labels/keypoints 与 counts 拼写一致
 """
 
 import json
@@ -172,30 +175,71 @@ def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> No
     ]
 
 
-def collect_labels_from_files(json_paths) -> Dict[str, List[str]]:
-    """从多个 labelme JSON 文件汇总标签与关键点名称。
+def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) -> Dict[str, Any]:
+    """从多个 labelme JSON 文件汇总标签、关键点名称与实例计数。
 
     供后台扫描线程调用（不阻塞 UI）：逐个解析 JSON，提取全部类别，
     并将 point 类型形状的标签归为关键点。无法解析的文件静默跳过。
 
+    实例计数不区分大小写合并：以 label.lower() 为合并键累加个数，
+    输出键取该组首次出现的原拼写（如 "person"/"PERSON" 计入同一项，
+    显示 "person"——首次出现的拼写）。labels/keypoints 输出合并后的
+    拼写，与 counts 键一致。
+
+    大目录冷缓存时逐文件读取可能耗时数十秒，故支持：
+        - should_stop: 每个文件前检查的中断回调（返回 True 时提前结束），
+          供切换文件夹重启扫描时及时终止旧任务；
+        - on_progress: 进度回调 (已完成数, 总数)，供 UI 进度条驱动。
+    标签统一强制转为字符串（兼容数字标签的 JSON，避免混合类型排序崩溃）。
+
     Args:
         json_paths: JSON 文件路径列表（可迭代）。
+        should_stop: 中断检查回调（可选）。
+        on_progress: 进度回调（可选，每 500 个文件触发一次）。
 
     Returns:
-        {"labels": [标签...], "keypoints": [关键点标签...]}，均按字典序排序。
+        {"labels": [标签...], "keypoints": [关键点...],
+         "counts": {标签: 实例个数}}，labels/keypoints 按字典序排序，
+        counts 键为合并大小写后的标签拼写。
     """
-    labels: set = set()
-    keypoints: set = set()
-    for path in json_paths:
+    # 合并键（小写）-> 首次出现的原拼写
+    first_spelling: Dict[str, str] = {}
+    # 合并键（小写）-> 实例个数
+    counts: Dict[str, int] = {}
+    # 合并键（小写）-> 是否为关键点（point 形状）
+    is_keypoint: Dict[str, bool] = {}
+    # 物化为列表以获取总数（json_paths 可能是生成器）
+    paths = list(json_paths)
+    total = len(paths)
+    done = 0
+    for path in paths:
+        # 中断检查：外部请求停止（如扫描任务被重启）时提前结束
+        if should_stop is not None and should_stop():
+            break
         try:
             doc = load_document(path)
         except Exception:
-            continue
-        for shape in document_shapes(doc):
-            label = shape.get("label", "")
-            if not label:
-                continue
-            labels.add(label)
-            if shape.get("shape_type") == SHAPE_POINT:
-                keypoints.add(label)
-    return {"labels": sorted(labels), "keypoints": sorted(keypoints)}
+            doc = None
+        if doc is not None:
+            for shape in document_shapes(doc):
+                # 标签强制转字符串：兼容第三方工具写出的数字标签，
+                # 避免与字符串混合排序时抛 TypeError
+                label = str(shape.get("label", "") or "")
+                if not label:
+                    continue
+                # 不区分大小写合并：以小写为键计数，拼写取首次出现
+                key = label.lower()
+                counts[key] = counts.get(key, 0) + 1
+                if key not in first_spelling:
+                    first_spelling[key] = label
+                if shape.get("shape_type") == SHAPE_POINT:
+                    is_keypoint[key] = True
+        done += 1
+        # 进度上报（每 500 个文件一次，避免高频回调开销）
+        if on_progress is not None and done % 500 == 0:
+            on_progress(done, total)
+    # 以首次出现的拼写作为输出键（labels/keypoints/counts 三者一致）
+    labels = sorted(first_spelling.values())
+    keypoints = sorted(first_spelling[k] for k in is_keypoint)
+    merged_counts = {first_spelling[k]: n for k, n in counts.items()}
+    return {"labels": labels, "keypoints": keypoints, "counts": merged_counts}

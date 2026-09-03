@@ -6,8 +6,16 @@
 关键点名称，避免在 UI 线程同步遍历大量标注文件导致界面卡死（打开包含
 标注文件的文件夹时尤为明显）。
 
+大目录（数千标注）冷缓存时逐文件读取可能耗时数十秒，扫描支持逐文件
+中断检查（切换文件夹重启扫描时及时终止旧任务）与进度上报（状态栏提示
+"正在扫描标注 n/total"）；被停止的扫描不再发射过期结果。
+
 作者: BaiBinnan
 创建日期: 2026-09-02
+更新: 2026-09-03 接入逐文件中断检查与进度上报；扫描被停止后不再发射
+      过期结果（修复扫描不可中断导致任务重启失效与退出崩溃问题）
+更新: 2026-09-03 labels_ready 扩展三参数（新增实例计数二元组列表，按个数降序）；
+      进度同时上报 progress_updated（0-1 浮点）驱动进度条
 """
 
 from PySide6.QtCore import Signal, QMutexLocker
@@ -21,10 +29,10 @@ class LabelScanWorker(BaseWorker):
     """后台标签扫描线程。
 
     Signals:
-        labels_ready(list, list): 扫描完成，参数为 (标签列表, 关键点列表)。
+        labels_ready(list, list, list): 扫描完成，参数为 (标签列表, 关键点列表, [标签, 实例个数] 二元组列表)。
     """
 
-    labels_ready = Signal(list, list)
+    labels_ready = Signal(list, list, list)
 
     def __init__(self):
         """初始化标签扫描线程。"""
@@ -40,15 +48,42 @@ class LabelScanWorker(BaseWorker):
         self.json_paths = list(json_paths)
 
     def run(self) -> None:
-        """线程主逻辑：批量解析 JSON 并汇总标签/关键点。"""
+        """线程主逻辑：批量解析 JSON 并汇总标签/关键点/实例计数（可中断、带进度）。
+
+        扫描完成后经 labels_ready 发射 (标签列表, 关键点列表, [标签, 实例个数]
+        二元组列表)；进度同时上报 progress_updated（0-1 浮点，驱动进度条）与
+        progress_desc（状态栏文字）。
+        """
         try:
             with QMutexLocker(self.mutex):
                 if self.stopped:
                     return
                 paths = list(self.json_paths)
 
-            result = collect_labels_from_files(paths)
-            self.labels_ready.emit(result["labels"], result["keypoints"])
+            # 逐文件中断检查：Python bool 读取为原子操作，无需加锁（高频调用避免锁竞争）
+            # 进度上报：同时驱动进度条（0-1 浮点）与状态栏文字（total 为 0 时记 0，避免除零）
+            result = collect_labels_from_files(
+                paths,
+                should_stop=lambda: self.stopped,
+                on_progress=lambda done, total: (
+                    self.progress_updated.emit(done / total if total else 0.0),
+                    self.progress_desc.emit(f"正在扫描标注 {done}/{total}"),
+                ),
+            )
+
+            # 扫描被停止：结果已过期（新任务即将重启），不再发射
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    return
+
+            # counts 转为 [标签, 个数] 二元组列表（按个数降序、同数按标签字典序）
+            counts_items = sorted(
+                result.get("counts", {}).items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
+            self.labels_ready.emit(
+                result["labels"], result["keypoints"], [list(kv) for kv in counts_items]
+            )
 
         except Exception as e:
             LOGGER.error(f"标签扫描异常: {str(e)}")

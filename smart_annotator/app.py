@@ -8,7 +8,7 @@
     - 右侧：信息栏（RightPanel）—— 标签/对象/文件/关键点列表
       （画布与右栏宽度、右栏各列表高度均可拖拽调节并持久化）
 
-标准菜单栏（文件/编辑/视图/工具/帮助）+ 快捷键体系：
+标准菜单栏（文件/编辑/视图/工具/统计/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
       另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
     - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、删除选中标注、
@@ -29,7 +29,13 @@
 更新: 2026-09-03 新增视图菜单（渲染开关与线宽/不透明度/字号档位，配置持久化 %APPDATA%/BrilliantAnnotator）、对象列表显示组号
 更新: 2026-09-03 画布与右栏之间加水平分栏（宽度可拖拽）、右栏列表垂直分栏
       （高度可拖拽），布局尺寸持久化到 render_config.json（防抖落盘）
+更新: 2026-09-03 修复初次打开大目录标签列表长时间为空：_start_label_scan
+      清空后立即按当前画布重建标签列表；扫描支持逐文件中断与进度提示
+      （状态栏），停止后不再发射过期结果；标签强制转字符串防混合类型崩溃
 更新: 2026-09-03 列表复选框接线（对象/关键点列表可见性控制、point 形状分流关键点列表、文件列表只读已标注复选框、Delete 路由关键点分支）
+更新: 2026-09-03 扫描手动化：新增统计菜单（扫描并统计/自动扫描开关持久化），
+      扫描弹出进度对话框（可中止），完成后弹统计表格；默认打开文件夹
+      不自动扫描（标签按已读图片累加、不合并大小写，仅扫描结果合并）
 """
 
 from pathlib import Path
@@ -71,6 +77,7 @@ from .widgets.left_toolbar import (
 from .widgets.right_panel import RightPanel
 from .widgets.canvas import Canvas
 from .widgets.shape_dialog import ShapeDialog
+from .widgets.scan_stats_dialog import ScanProgressDialog, ScanStatsDialog
 from .pages.annotate_page import AnnotatePage
 from .pages.convert_page import ConvertPage
 from .workers.annotate_worker import AnnotationWorker
@@ -126,6 +133,8 @@ class MainWindow(QMainWindow):
         self._render_save_timer.setSingleShot(True)
         self._render_save_timer.setInterval(500)
         self._render_save_timer.timeout.connect(self._save_render_config_now)
+        # 标签扫描进度对话框（扫描期间存在，非模态；中止/完成后关闭并置空）
+        self._scan_progress_dlg: "ScanProgressDialog | None" = None
 
         # 后台线程
         self.annotate_worker = AnnotationWorker()
@@ -159,7 +168,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 菜单栏 --------------------------
     def _build_menubar(self) -> None:
-        """构建菜单栏：文件 / 编辑 / 工具 / 帮助。"""
+        """构建菜单栏：文件 / 编辑 / 视图 / 工具 / 统计 / 帮助。"""
         menu_bar = self.menuBar()
 
         # ===== 文件 =====
@@ -310,6 +319,21 @@ class MainWindow(QMainWindow):
         self.act_convert.triggered.connect(self._open_convert_dialog)
         menu_tool.addAction(self.act_convert)
 
+        # ===== 统计 =====
+        menu_stats = menu_bar.addMenu("统计(&S)")
+
+        # 扫描并统计：对当前工作目录启动后台扫描（显式入口）
+        self.act_scan_stats = QAction("扫描并统计", self)
+        self.act_scan_stats.triggered.connect(self._start_label_scan)
+        menu_stats.addAction(self.act_scan_stats)
+
+        # 自动扫描开关：开启后打开文件夹即自动扫描（偏好持久化）
+        self.act_auto_scan = QAction("自动扫描", self)
+        self.act_auto_scan.setCheckable(True)
+        self.act_auto_scan.setChecked(self._render_config.auto_scan_labels)
+        self.act_auto_scan.toggled.connect(self._on_auto_scan_toggled)
+        menu_stats.addAction(self.act_auto_scan)
+
         # ===== 帮助 =====
         menu_help = menu_bar.addMenu("帮助(&H)")
         self.act_about = QAction("关于", self)
@@ -353,6 +377,17 @@ class MainWindow(QMainWindow):
         self.canvas.set_render_config(self._render_config)
         self._save_render_config_now()
         self.statusBar().showMessage(f"渲染设置已更新: {attr} = {value}", 1500)
+
+    def _on_auto_scan_toggled(self, checked: bool) -> None:
+        """自动扫描开关切换：更新偏好配置并防抖持久化。
+
+        Args:
+            checked: 是否开启（打开文件夹后自动扫描统计）。
+        """
+        self._render_config.auto_scan_labels = checked
+        self._schedule_render_save()
+        state = "开启" if checked else "关闭"
+        self.statusBar().showMessage(f"自动扫描已{state}：打开文件夹时将{'自动' if checked else '不'}启动标签扫描", 2500)
 
     # -------------------------- 三栏布局 --------------------------
     def _build_ui(self) -> None:
@@ -476,6 +511,11 @@ class MainWindow(QMainWindow):
 
         # 后台标签扫描
         self.label_scan_worker.labels_ready.connect(self._on_labels_scanned)
+        # 扫描进度：驱动进度对话框（进度条 + 文字）；状态栏同步提示
+        self.label_scan_worker.progress_updated.connect(self._on_scan_progress)
+        self.label_scan_worker.progress_desc.connect(
+            lambda msg: self.statusBar().showMessage(msg, 3000)
+        )
 
     # -------------------------- 文件操作 --------------------------
     def _on_open_folder(self) -> None:
@@ -493,8 +533,9 @@ class MainWindow(QMainWindow):
         self._current_index = -1
         self.right_panel.set_files(images, self._file_annotated_flags())
         self._load_image_by_index(0)
-        # 后台扫描目录下全部标注，汇总标签/关键点（不阻塞 UI）
-        self._start_label_scan()
+        # 自动扫描开启时立即扫描统计；默认不自动扫描（标签按已读图片累加）
+        if self._render_config.auto_scan_labels:
+            self._start_label_scan()
         LOGGER.info(f"已打开文件夹: {directory}，共 {len(images)} 张图片")
 
     def _on_open_file(self) -> None:
@@ -537,8 +578,12 @@ class MainWindow(QMainWindow):
         self.right_panel.set_files([image_path], self._file_annotated_flags())
         self.right_panel.select_file(0)
         self._refresh_objects()
+        # 标签按已读图片累加：并入当前画布标签（默认不自动扫描）
+        self._refresh_labels()
         self._update_edit_state()
-        self._start_label_scan()
+        # 自动扫描开启时立即扫描统计；默认不自动扫描（标签按已读图片累加）
+        if self._render_config.auto_scan_labels:
+            self._start_label_scan()
         self._update_status()
         LOGGER.info(f"已打开图片: {image_path}")
 
@@ -576,8 +621,12 @@ class MainWindow(QMainWindow):
         self.right_panel.set_files([image_path], self._file_annotated_flags())
         self.right_panel.select_file(0)
         self._refresh_objects()
+        # 标签按已读图片累加：并入当前画布标签（默认不自动扫描）
+        self._refresh_labels()
         self._update_edit_state()
-        self._start_label_scan()
+        # 自动扫描开启时立即扫描统计；默认不自动扫描（标签按已读图片累加）
+        if self._render_config.auto_scan_labels:
+            self._start_label_scan()
         self._update_status()
         LOGGER.info(f"已打开标注文件: {json_path}")
 
@@ -666,6 +715,8 @@ class MainWindow(QMainWindow):
         self.right_panel.select_file(index)
         self._refresh_objects()
         self._refresh_keypoints()
+        # 标签按已读图片累加：浏览/打开图片时并入当前画布标签
+        self._refresh_labels()
         self._update_edit_state()
         self._update_status()
 
@@ -1173,43 +1224,91 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 列表刷新 --------------------------
     def _start_label_scan(self) -> None:
-        """启动后台标签扫描（汇总工作目录下全部标注的类别/关键点）。
+        """显式启动后台标签扫描统计（统计菜单/自动扫描入口）。
 
-        扫描前先清空并隐藏关键点列表，避免切换文件夹后残留旧文件夹的关键点，
-        仅当新文件夹扫描结果包含 point 类型 shape 时才重新显示（自动识别 pose）。
+        弹出非模态进度对话框（进度条 + 随时中止）；扫描正常完成后标签
+        列表同步扫描结果（合并大小写同名标签）并弹出统计结果窗口。
+        重复触发时先中止旧任务，再按当前目录新建进度对话框；中止丢弃
+        部分结果（不更新标签列表）。
         """
         if not self._work_dir:
             return
-        self._all_labels = []
-        self._label_keypoints = []
-        self._refresh_keypoints()
-        paths = getJsonFilesInDir(self._work_dir)
+        # 停止旧扫描（collect 逐文件检查停止标志，可及时中断）后重启
         if self.label_scan_worker.isRunning():
             self.label_scan_worker.stop()
             self.label_scan_worker.wait(1500)
-        self.label_scan_worker.set_task(paths)
+            if self.label_scan_worker.isRunning():
+                LOGGER.warning("标签扫描线程未能在超时内停止，本次扫描任务可能被跳过")
+                return
+        # 关闭旧进度对话框（先断开 canceled 避免误触发中止逻辑；此时旧
+        # worker 已停止），随后按当前目录新建（重置目录与进度显示）
+        if self._scan_progress_dlg is not None:
+            self._scan_progress_dlg.canceled.disconnect(self._on_scan_canceled)
+            self._scan_progress_dlg.close()
+        self._scan_progress_dlg = ScanProgressDialog(self._work_dir, self)
+        self._scan_progress_dlg.canceled.connect(self._on_scan_canceled)
+        self._scan_progress_dlg.show()
+        # 启动扫描任务（进度信号驱动对话框进度条）
+        self.label_scan_worker.set_task(getJsonFilesInDir(self._work_dir))
         self.label_scan_worker.start()
 
-    def _on_labels_scanned(self, labels: list, keypoints: list) -> None:
-        """后台扫描完成：更新标签与关键点缓存并刷新界面。
+    def _on_scan_canceled(self) -> None:
+        """用户中止扫描：停止 worker 并丢弃部分结果（不更新标签列表）。"""
+        if self.label_scan_worker.isRunning():
+            self.label_scan_worker.stop()
+        self._scan_progress_dlg = None
+        self.statusBar().showMessage("扫描已中止", 2500)
+
+    def _on_labels_scanned(self, labels: list, keypoints: list, counts: list) -> None:
+        """后台扫描完成：同步标签/关键点缓存并弹出统计结果窗口。
+
+        扫描结果已合并大小写同名标签（拼写取首次出现）；中止路径不进入
+        本回调。当前画布标签与扫描结果取并集后刷新列表。
 
         Args:
-            labels: 标签名列表。
+            labels: 标签名列表（合并大小写后）。
             keypoints: 关键点标签名列表。
+            counts: [标签, 实例个数] 二元组列表（按个数降序）。
         """
         self._all_labels = list(labels)
         self._label_keypoints = list(keypoints)
         self._refresh_labels()
         self._refresh_keypoints()
+        # 关闭进度对话框（先断开 canceled，避免正常完成被误判为中止）
+        if self._scan_progress_dlg is not None:
+            self._scan_progress_dlg.canceled.disconnect(self._on_scan_canceled)
+            self._scan_progress_dlg.close()
+            self._scan_progress_dlg = None
+        # 弹出统计结果窗口（非模态，不阻塞继续标注）
+        dlg = ScanStatsDialog(self._work_dir, self)
+        dlg.set_counts(counts, file_total=len(self.label_scan_worker.json_paths))
+        dlg.show()
+
+    def _on_scan_progress(self, ratio: float) -> None:
+        """扫描进度更新：按比例换算文件数并刷新进度对话框。
+
+        Args:
+            ratio: 进度比例（0-1，由 worker 按 done/total 发射）。
+        """
+        if self._scan_progress_dlg is None:
+            return
+        # 反算文件数以复用 update_progress 的 n/total 文本格式
+        total = len(self.label_scan_worker.json_paths)
+        done = int(round(ratio * total)) if total else 0
+        self._scan_progress_dlg.update_progress(done, total)
 
     def _refresh_labels(self) -> None:
         """刷新标签列表并回写 _all_labels（扫描结果 ∪ 画布标签，标签唯一数据源）。
 
         属性弹窗与右侧标签列表共用 _all_labels，保证两处列表完全同步。
+        画布标签强制转字符串（兼容数字标签的标注数据，避免混合类型排序崩溃）。
+        注意：累加路径不合并大小写不同的同名标签（"Person" 与 "person"
+        并存，按用户要求保持原拼写）；仅显式扫描的结果由扫描链路预合并
+        大小写（collect_labels_from_files 的合并口径），二者取并集。
         """
         labels = set(self._all_labels)
         for shape in self.canvas.shapes():
-            label = shape.get("label", "")
+            label = str(shape.get("label", "") or "")
             if label:
                 labels.add(label)
         self._all_labels = sorted(labels)
@@ -1283,6 +1382,8 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(has_image)
         self.act_redo.setEnabled(has_image)
         self.act_delete_image.setEnabled(has_image)
+        # 扫描并统计：有工作区（已打开目录/图片）才可扫描
+        self.act_scan_stats.setEnabled(has_image)
         for act in self._tool_actions.values():
             act.setEnabled(has_image)
 
@@ -1317,6 +1418,10 @@ class MainWindow(QMainWindow):
         if self._render_save_timer.isActive():
             self._render_save_timer.stop()
             self._save_render_config_now()
+        # 关闭扫描进度对话框（若存在）：canceled 联动停止扫描 worker
+        if self._scan_progress_dlg is not None:
+            self._scan_progress_dlg.close()
+            self._scan_progress_dlg = None
         for worker in (self.annotate_worker, self.convert_worker, self.label_scan_worker):
             if worker.isRunning():
                 worker.stop()

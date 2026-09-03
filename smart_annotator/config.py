@@ -9,6 +9,7 @@
 创建日期: 2026-08-10
 更新: 2026-09-03 新增 RenderConfig 画布渲染配置 dataclass（显示开关/线宽/不透明度/
       字号，及右栏宽度与四组列表高度的界面布局字段）
+更新: 2026-09-03 RenderConfig 新增 auto_scan_labels（打开文件夹自动扫描偏好，默认关闭）
 """
 
 from dataclasses import dataclass, field
@@ -240,6 +241,7 @@ class RenderConfig:
         object_list_height: 对象列表高度（像素）。
         file_list_height: 文件列表高度（像素）。
         kpt_list_height: 关键点列表高度（像素）。
+        auto_scan_labels: 是否打开文件夹后自动启动标签扫描统计。
     """
 
     show_label: bool = True
@@ -254,6 +256,8 @@ class RenderConfig:
     object_list_height: int = 180
     file_list_height: int = 280
     kpt_list_height: int = 140
+    # ===== 行为偏好（统计菜单"自动扫描"开关，打开文件夹即自动扫描）=====
+    auto_scan_labels: bool = False
 
     def to_dict(self) -> dict:
         """序列化为字典（JSON 持久化用）。
@@ -273,6 +277,7 @@ class RenderConfig:
             "object_list_height": self.object_list_height,
             "file_list_height": self.file_list_height,
             "kpt_list_height": self.kpt_list_height,
+            "auto_scan_labels": self.auto_scan_labels,
         }
 
     @staticmethod
@@ -321,6 +326,8 @@ class RenderConfig:
             cfg.show_group = data["show_group"]
         if isinstance(data.get("show_description"), bool):
             cfg.show_description = data["show_description"]
+        if isinstance(data.get("auto_scan_labels"), bool):
+            cfg.auto_scan_labels = data["auto_scan_labels"]
 
         # ===== 浮点字段校验（接受 int，排除 bool；越界钳制） =====
         pen_width = data.get("pen_width")
