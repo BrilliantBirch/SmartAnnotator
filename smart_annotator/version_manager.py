@@ -14,8 +14,6 @@
 
 计数持久化: build/version_counter.txt 文件记录上次构建日期与计数。
 
-移植自 VAI_MemGenerator/version_manager.py，调整为 SmartAnnotator 的公司与产品信息。
-
 作者: BaiBinnan
 创建日期: 2026-08-10
 """
@@ -36,14 +34,14 @@ class VersionManager:
     """
 
     # 公司与产品信息（用于 PyInstaller 版本资源）
-    COMPANY_NAME = "武汉川丰软件"
-    PRODUCT_NAME = "VAI_E"
-    PROGRAM_NAME = "VAI_E_SmartAnnotator"
-    FILE_DESCRIPTION = "VAI_E Smart Annotator"
+    COMPANY_NAME = "BrilliantBirch"
+    PRODUCT_NAME = "BrilliantBirchProduct"
+    PROGRAM_NAME = "BrilliantAnnotator"
+    FILE_DESCRIPTION = "BrilliantAnnotator"
 
-    # 产品版本固定为 1.2.0.0（与 __version__ 一致）
-    PRODUCT_VERSION = "1.2.0.0"
-    PRODUCT_VERSION_TUPLE = (1, 2, 0, 0)
+    # 产品版本固定为 2.1.0（与 __version__ 一致）
+    PRODUCT_VERSION = "2.1.0"
+    PRODUCT_VERSION_TUPLE = (2, 1, 0)
 
     def __init__(self, counter_file: str = "version_counter.txt"):
         """初始化版本管理器。

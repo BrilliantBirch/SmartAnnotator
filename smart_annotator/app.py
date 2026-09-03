@@ -4,7 +4,7 @@
 
 三栏布局（参考 labelme / X-Anylabel）：
     - 左侧：快捷操作栏（LeftToolbar）—— 文件/自动标注/标注工具
-    - 中间：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑/预览
+    - 中间：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑
     - 右侧：信息栏（RightPanel）—— 标签/对象/文件/关键点列表
 
 标准菜单栏（文件/编辑/工具/帮助）+ 快捷键体系：
@@ -12,7 +12,7 @@
       另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
     - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、删除选中标注、
       清空标注、删除标注文件 Delete、删除图片及标注 Shift+Delete
-    - 工具：加载模型、自动标注单张/全部、格式转换、预览模式 F9
+    - 工具：加载模型、自动标注单张/全部、格式转换
     - 标注工具：编辑 V、矩形 R、点 P、多边形 G
     - 图片浏览：A 上一张、D 下一张
 
@@ -21,7 +21,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
-更新: 2026-09-03 A/D 图片浏览、自动保存、编辑模式 Ctrl+E、对象列表右键编辑/删除与多选联动
+更新: 2026-09-03 labelme 风格属性弹窗、画布右键完整上下文菜单、移除预览模式、
+      画布多选同步对象列表选中
 """
 
 from pathlib import Path
@@ -102,9 +103,6 @@ class MainWindow(QMainWindow):
 
         # 自动标注配置（加载模型后可用）
         self.annotate_config: "SysConfig | None" = None
-
-        # 预览（只读）模式
-        self._preview_mode: bool = False
         # 后台扫描汇总的标签与关键点（关键点列表显示由扫描结果自动识别）
         self._all_labels: list = []
         self._label_keypoints: list = []
@@ -243,14 +241,6 @@ class MainWindow(QMainWindow):
         self.act_convert.triggered.connect(self._open_convert_dialog)
         menu_tool.addAction(self.act_convert)
 
-        menu_tool.addSeparator()
-
-        # 预览模式切换
-        self.act_preview = QAction("预览模式", self)
-        self.act_preview.setShortcut(QKeySequence("F9"))
-        self.act_preview.triggered.connect(self._toggle_preview)
-        menu_tool.addAction(self.act_preview)
-
         # ===== 帮助 =====
         menu_help = menu_bar.addMenu("帮助(&H)")
         self.act_about = QAction("关于", self)
@@ -289,7 +279,6 @@ class MainWindow(QMainWindow):
         self.left_toolbar.annotate_single_requested.connect(self._on_annotate_single)
         self.left_toolbar.annotate_all_requested.connect(self._open_annotate_dialog)
         self.left_toolbar.tool_selected.connect(self._on_tool_selected)
-        self.left_toolbar.preview_toggled.connect(self._on_preview_toggled)
 
         # 画布
         self.canvas.shapes_changed.connect(self._on_shapes_changed)
@@ -619,7 +608,7 @@ class MainWindow(QMainWindow):
         self._update_status()
         LOGGER.info(f"已删除文件: {files_to_delete}")
 
-    # -------------------------- 工具切换 / 预览 --------------------------
+    # -------------------------- 工具切换 --------------------------
     def _on_tool_selected(self, tool: str) -> None:
         """切换标注工具并同步画布、工具栏与菜单选中态。"""
         self.left_toolbar.set_tool(tool)
@@ -627,18 +616,6 @@ class MainWindow(QMainWindow):
         if act is not None:
             act.setChecked(True)
         self.canvas.set_tool(None if tool == TOOL_SELECT else tool)
-
-    def _toggle_preview(self) -> None:
-        """切换预览模式（以工具栏按钮为唯一状态源）。"""
-        btn = self.left_toolbar.btn_preview
-        btn.setChecked(not btn.isChecked())
-
-    def _on_preview_toggled(self, enabled: bool) -> None:
-        """预览模式切换：画布只读 + 更新编辑可用性。"""
-        self._preview_mode = enabled
-        self.canvas.set_preview_mode(enabled)
-        self._update_edit_state()
-        self._update_status()
 
     # -------------------------- 自动标注 --------------------------
     def _open_annotate_dialog(self) -> None:
@@ -792,18 +769,63 @@ class MainWindow(QMainWindow):
         """进入编辑模式（工具切换为"编辑"，允许拖拽/端点缩放/属性修改）。"""
         self._on_tool_selected(TOOL_SELECT)
 
-    def _on_canvas_context_menu(self) -> None:
-        """画布右键（空白或对象，无绘制草稿）：弹出上下文菜单进入编辑模式。
+    def _on_canvas_context_menu(self, shape) -> None:
+        """画布右键上下文菜单（空白或对象，无绘制草稿时）。
 
-        已处于编辑模式或预览模式时无需处理。
+        - 非编辑模式（绘制工具激活）：显示"进入编辑模式"
+        - 编辑模式 + 命中对象：显示"编辑属性"与"删除"（删除作用于全部选中）
+        - 编辑模式 + 空白处：不弹菜单（编辑能力已可用）
+
+        Args:
+            shape: 右键命中的形状字典，空白处为 None。
         """
-        if self.canvas.tool() is None or self._preview_mode:
+        # 已处于编辑模式：命中对象时提供编辑/删除菜单
+        if self.canvas.tool() is None:
+            if shape is None:
+                return
+            # 确保命中的对象进入选中集合（未被选中则单选之；按对象身份比较）
+            if not any(s is shape for s in self.canvas.selected_shapes()):
+                self.canvas.select_shape(shape)
+            menu = QMenu(self)
+            act_edit = menu.addAction("编辑属性")
+            act_delete = menu.addAction("删除")
+            chosen = menu.exec(QCursor.pos())
+            if chosen is act_edit:
+                self._on_edit_object(self._shape_index(shape))
+            elif chosen is act_delete:
+                indices = self._selected_shape_indices()
+                self.canvas.delete_shapes_at(indices)
             return
+
+        # 非编辑模式：提供"进入编辑模式"入口
         menu = QMenu(self)
-        act = menu.addAction("进入编辑模式")
+        act_enter = menu.addAction("进入编辑模式")
         chosen = menu.exec(QCursor.pos())
-        if chosen is act:
+        if chosen is act_enter:
             self._enter_edit_mode()
+
+    def _shape_index(self, shape) -> int:
+        """返回形状在画布形状列表中的下标（未找到返回 -1）。
+
+        Args:
+            shape: 形状字典。
+
+        Returns:
+            下标或 -1。
+        """
+        for i, s in enumerate(self.canvas.shapes()):
+            if s is shape:
+                return i
+        return -1
+
+    def _selected_shape_indices(self) -> list:
+        """返回画布当前全部选中形状的下标列表。
+
+        Returns:
+            下标列表（可能为空）。
+        """
+        ids = {id(s) for s in self.canvas.selected_shapes()}
+        return [i for i, s in enumerate(self.canvas.shapes()) if id(s) in ids]
 
     # -------------------------- 对象列表（a）编辑与删除 --------------------------
     def _on_edit_object(self, index: int) -> None:
@@ -816,9 +838,6 @@ class MainWindow(QMainWindow):
         """
         shapes = self.canvas.shapes()
         if not (0 <= index < len(shapes)):
-            return
-        if self._preview_mode:
-            showMessageBox(QMessageBox.Icon.Warning, "预览（只读）模式下无法编辑对象")
             return
         shape = shapes[index]
         # 需求：属性修改仅编辑模式允许 → 先切换到编辑模式
@@ -932,7 +951,11 @@ class MainWindow(QMainWindow):
         self.right_panel.set_labels(sorted(labels))
 
     def _refresh_objects(self) -> None:
-        """刷新当前图片对象列表（含类别颜色圆点）。"""
+        """刷新当前图片对象列表（含类别颜色圆点）。
+
+        填充后按画布当前选中集合重新同步列表选中态，避免列表重建
+        （清空后重填）导致画布多选在 a 列表中的同步选中丢失。
+        """
         entries = [
             (
                 f"{shape.get('label', '')} ({shape.get('shape_type', '')})",
@@ -941,6 +964,10 @@ class MainWindow(QMainWindow):
             for shape in self.canvas.shapes()
         ]
         self.right_panel.set_objects(entries)
+        # 同步画布选中集合到对象列表（select_objects 不发射信号，无回环）
+        indices = self._selected_shape_indices()
+        if indices:
+            self.right_panel.select_objects(indices)
 
     def _refresh_keypoints(self) -> None:
         """按后台扫描结果自动刷新关键点列表的可见性与内容。
@@ -959,27 +986,24 @@ class MainWindow(QMainWindow):
         return self._current_index >= 0 and bool(self.canvas.image_path())
 
     def _update_edit_state(self) -> None:
-        """统一更新编辑相关控件的可用性（目录校验 + 预览模式）。"""
+        """统一更新编辑相关控件的可用性（目录校验）。"""
         has_image = self._has_workspace()
-        editable = has_image and not self._preview_mode
 
         # 工具栏
-        self.left_toolbar.set_edit_enabled(editable)
-        self.left_toolbar.set_preview_enabled(has_image)
-        # 文件删除不依赖预览模式，有图片即可用
+        self.left_toolbar.set_edit_enabled(has_image)
         self.left_toolbar.set_file_ops_enabled(has_image)
 
         # 菜单动作
         self.act_save.setEnabled(has_image)
         self.act_save_as.setEnabled(has_image)
-        self.act_delete.setEnabled(editable)
-        self.act_clear.setEnabled(editable)
+        self.act_delete.setEnabled(has_image)
+        self.act_clear.setEnabled(has_image)
         self.act_undo.setEnabled(has_image)
         self.act_redo.setEnabled(has_image)
         self.act_delete_file.setEnabled(has_image)
         self.act_delete_image.setEnabled(has_image)
         for act in self._tool_actions.values():
-            act.setEnabled(editable)
+            act.setEnabled(has_image)
 
     def _update_status(self) -> None:
         """更新状态栏：当前图片序号与未保存标记。"""
@@ -988,9 +1012,8 @@ class MainWindow(QMainWindow):
             return
         total = len(self._image_files)
         dirty = "（未保存）" if self._dirty else ""
-        preview = "（预览）" if self._preview_mode else ""
         name = Path(self._current_image_path()).name
-        self._status_label.setText(f"{self._current_index + 1}/{total}  {name}{dirty}{preview}")
+        self._status_label.setText(f"{self._current_index + 1}/{total}  {name}{dirty}")
 
     # -------------------------- 帮助 --------------------------
     def _on_about(self) -> None:
@@ -1000,7 +1023,7 @@ class MainWindow(QMainWindow):
             f"{__appname__} v{__version__}\n\n"
             "智能数据标注工具：自动标注 + 标注预览 + 格式转换\n"
             "标注格式完全复用 labelme JSON。\n\n"
-            "快捷键：V 编辑 / R 矩形 / P 点 / G 多边形 / F9 预览\n"
+            "快捷键：V 编辑 / R 矩形 / P 点 / G 多边形\n"
             "Ctrl+E 进入编辑模式 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做\n"
             "A 上一张 / D 下一张\n"
             "Delete 删除标注文件 / Shift+Delete 删除图片及标注",

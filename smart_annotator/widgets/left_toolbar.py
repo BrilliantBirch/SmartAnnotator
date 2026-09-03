@@ -13,7 +13,7 @@
 
 作者: BaiBinnan
 创建日期: 2026-09-02
-更新: 2026-09-03 "选择"工具更名为"编辑"（编辑模式，Ctrl+E 可进入）
+更新: 2026-09-03 "选择"工具更名为"编辑"，移除预览模式按钮
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -92,7 +92,6 @@ class LeftToolbar(QWidget):
         load_model_requested: 请求加载推理模型。
         annotate_single_requested: 请求自动标注当前图片。
         annotate_all_requested: 请求自动标注全部图片。
-        preview_toggled(bool): 请求切换预览（只读）模式。
         tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
     """
 
@@ -106,7 +105,6 @@ class LeftToolbar(QWidget):
     load_model_requested = Signal()
     annotate_single_requested = Signal()
     annotate_all_requested = Signal()
-    preview_toggled = Signal(bool)
     tool_selected = Signal(str)
 
     def __init__(self, parent=None):
@@ -176,13 +174,6 @@ class LeftToolbar(QWidget):
         # 默认选中"编辑"工具（编辑模式：拖拽/端点缩放/多选）
         self._tool_buttons[TOOL_SELECT].setChecked(True)
 
-        # 预览模式（只读）切换
-        root.addWidget(self._separator())
-        self.btn_preview = _ToolBarButton("预览模式", "F9")
-        self.btn_preview.setCheckable(True)
-        self.btn_preview.toggled.connect(self.preview_toggled.emit)
-        root.addWidget(self.btn_preview)
-
         root.addStretch()
 
     def _separator(self) -> QFrame:
@@ -223,7 +214,7 @@ class LeftToolbar(QWidget):
         self.btn_annotate_all.setEnabled(enabled)
 
     def set_edit_enabled(self, enabled: bool) -> None:
-        """统一启用/禁用所有编辑功能（保存/删除/标注工具/预览）。
+        """统一启用/禁用所有编辑功能（保存/删除/标注工具）。
 
         主窗口在校验工作目录（未打开文件夹或目录下无图像）后调用，禁用
         或恢复与标注编辑相关的全部按钮，避免对空画布执行无效编辑。
@@ -237,18 +228,8 @@ class LeftToolbar(QWidget):
         for btn in self._tool_buttons.values():
             btn.setEnabled(enabled)
 
-    def set_preview_enabled(self, enabled: bool) -> None:
-        """启用/禁用预览模式切换按钮（有图像时可用）。
-
-        Args:
-            enabled: 是否可用。
-        """
-        self.btn_preview.setEnabled(enabled)
-
     def set_file_ops_enabled(self, enabled: bool) -> None:
         """启用/禁用文件删除相关按钮（有工作文件时可用）。
-
-        与 set_edit_enabled 分离：文件删除不依赖是否处于预览（只读）模式。
 
         Args:
             enabled: 是否可用。

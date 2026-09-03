@@ -16,7 +16,7 @@
 更新: 2026-09-03 对象列表更名"标签"、多选（ExtendedSelection）、右键上下文菜单
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QItemSelectionModel
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QWidget,
@@ -105,12 +105,13 @@ class RightPanel(QWidget):
     """
 
     label_selected = Signal(str)
-    objects_selected = Signal(list)
+    # 参数为对象下标列表（object 签名避免 QVariantList 转换）
+    objects_selected = Signal(object)
     file_selected = Signal(int)
     keypoint_selected = Signal(str)
     add_label_requested = Signal()
     edit_object_requested = Signal(int)
-    delete_objects_requested = Signal(list)
+    delete_objects_requested = Signal(object)
     enter_edit_mode_requested = Signal()
 
     def __init__(self, parent=None):
@@ -195,14 +196,20 @@ class RightPanel(QWidget):
     def set_objects(self, entries) -> None:
         """填充当前图片对象列表，每项前显示与对象类别颜色一致的圆点。
 
+        清空与重建全程屏蔽信号：否则 clear() 会触发 itemSelectionChanged
+        → objects_selected([]) → 反向清空画布选中集合（多选丢失）。
+
         Args:
             entries: (描述文本, 标签名) 元组列表，如 [("person (rectangle)", "person")]。
         """
-        self.object_section.list.clear()
+        lst = self.object_section.list
+        lst.blockSignals(True)
+        lst.clear()
         for desc, label in entries:
             item = QListWidgetItem(str(desc))
             item.setIcon(_color_dot_icon(color_for_label(str(label))))
-            self.object_section.list.addItem(item)
+            lst.addItem(item)
+        lst.blockSignals(False)
 
     def _on_object_selection_changed(self) -> None:
         """对象列表选中集合变化：发射选中下标列表。"""
@@ -245,6 +252,10 @@ class RightPanel(QWidget):
     def select_objects(self, indices) -> None:
         """程序化选中指定对象集合（用于画布多选联动，不发射信号）。
 
+        注意：不得调用 setCurrentRow 设置当前项——其内部选择命令会
+        清除已设置的选中集合（ExtendedSelection 下实测破坏多选），
+        必须以 NoUpdate 命令仅移动当前项。
+
         Args:
             indices: 对象下标列表（越界项自动忽略）。
         """
@@ -254,9 +265,14 @@ class RightPanel(QWidget):
         for i in indices:
             if 0 <= i < lst.count():
                 lst.item(i).setSelected(True)
-        # 同步当前行（高亮首项）
+        # 仅移动当前项（NoUpdate：不改变选中集合）
         if indices:
-            lst.setCurrentRow(min(indices))
+            first = min(indices)
+            if 0 <= first < lst.count():
+                lst.selectionModel().setCurrentIndex(
+                    lst.model().index(first, 0),
+                    QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
         else:
             lst.setCurrentRow(-1)
         lst.blockSignals(False)

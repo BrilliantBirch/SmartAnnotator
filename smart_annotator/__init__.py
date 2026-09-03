@@ -9,4 +9,4 @@ VAI_E_SmartAnnotator — 基于 PySide6 的智能标注工具
 """
 
 __appname__ = "VAI_E_SmartAnnotator"
-__version__ = "1.2.0"
+__version__ = "2.1.0"

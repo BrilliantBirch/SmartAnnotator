@@ -2,7 +2,7 @@
 """
 标注画布组件 - Canvas(QGraphicsView)
 
-图像显示 + 标注对象的绘制、编辑与预览：
+图像显示 + 标注对象的绘制与编辑：
     - 背景图像：QPixmap 1:1 绘制在场景原点，场景坐标即图像像素坐标
     - 标注工具：矩形（rectangle）、点（point）、多边形（polygon）
     - 绘制辅助：十字虚线引导线（延伸至图像四边界）+ 已放置顶点显示
@@ -15,7 +15,7 @@
 
 作者: BaiBinnan
 创建日期: 2026-09-02
-更新: 2026-09-03 多选/框选、编辑模式（掩码+端点缩放）、右键上下文菜单、绘制引导线
+更新: 2026-09-03 移除预览模式、右键菜单携带命中形状
 """
 
 import copy
@@ -104,11 +104,13 @@ class Canvas(QGraphicsView):
     """
 
     shapes_changed = Signal()
-    selection_changed = Signal(list)
+    # 参数为形状字典列表。必须用 object 签名：list 签名会经 QVariantList
+    # 转换复制字典元素导致 id() 身份失效，主窗口无法回联选中下标
+    selection_changed = Signal(object)
     # 单个对象绘制完成时发射（参数为新建形状字典，供主窗口弹出属性编辑）
     shape_created = Signal(object)
-    # 非绘制模式下右键：请求主窗口弹出上下文菜单（进入编辑模式）
-    context_menu_requested = Signal()
+    # 空闲状态右键（无绘制草稿）：参数为命中形状字典或 None（空白处）
+    context_menu_requested = Signal(object)
 
     def __init__(self, parent=None):
         """初始化画布：建立场景、图像项与交互状态。"""
@@ -180,9 +182,6 @@ class Canvas(QGraphicsView):
         # 撤销/重做栈（存放形状列表的深拷贝快照）
         self._undo_stack: List[List[Dict]] = []
         self._redo_stack: List[List[Dict]] = []
-
-        # 预览模式（只读，禁止编辑）
-        self._preview_mode = False
 
     # -------------------------- 几何换算助手 --------------------------
     def _set_qhints(self) -> None:
@@ -317,9 +316,6 @@ class Canvas(QGraphicsView):
         Args:
             tool: 'rectangle' / 'point' / 'polygon' / None（编辑模式）。
         """
-        # 预览模式下强制只读，不启用任何绘制工具
-        if self._preview_mode:
-            tool = None
         self._tool = tool
         self._clear_draft()
         self._clear_guides()
@@ -330,24 +326,6 @@ class Canvas(QGraphicsView):
             self.unsetCursor()
         # 重渲染以更新编辑端点的显示/隐藏（仅编辑模式显示端点）
         self._render()
-
-    def set_preview_mode(self, enabled: bool) -> None:
-        """切换预览（只读）模式：禁用绘制/编辑，仅保留查看与缩放。
-
-        Args:
-            enabled: 是否进入预览模式。
-        """
-        self._preview_mode = enabled
-        if enabled:
-            self.set_tool(None)
-            self.select_shape(None)
-        self._clear_draft()
-        self._clear_guides()
-        self._clear_rubber()
-
-    def preview_mode(self) -> bool:
-        """返回当前是否处于预览模式。"""
-        return self._preview_mode
 
     def tool(self) -> Optional[str]:
         """返回当前标注工具名。"""
@@ -360,7 +338,7 @@ class Canvas(QGraphicsView):
     # -------------------------- 编辑操作 --------------------------
     def delete_selected(self) -> None:
         """删除当前全部选中的形状（支持多选批量删除）。"""
-        if not self._selected_ids or self._preview_mode:
+        if not self._selected_ids:
             return
         self._push_undo()
         selected = set(self._selected_ids)
@@ -377,7 +355,7 @@ class Canvas(QGraphicsView):
             indices: 形状在列表中的下标集合（越界项自动忽略）。
         """
         idx_set = {i for i in indices if 0 <= i < len(self._shapes)}
-        if not idx_set or self._preview_mode:
+        if not idx_set:
             return
         self._push_undo()
         self._shapes = [s for i, s in enumerate(self._shapes) if i not in idx_set]
@@ -536,7 +514,7 @@ class Canvas(QGraphicsView):
             # OCR：label 为 text 且 description 非空时在图像上显示描述
             self._maybe_add_ocr_text(shape)
 
-        # 编辑模式（工具为 None 且非预览）：渲染可拖动编辑端点
+        # 编辑模式（工具为 None）：渲染可拖动编辑端点
         self._render_vertices()
         self._highlight_selection()
 
@@ -596,7 +574,7 @@ class Canvas(QGraphicsView):
         """编辑模式下渲染全部形状的可拖动编辑端点。
 
         矩形显示左上/右下两个端点；多边形显示全部顶点；点形状即顶点本身
-        不额外渲染。非编辑模式（绘制工具激活或预览）不显示端点。
+        不额外渲染。非编辑模式（绘制工具激活）不显示端点。
         """
         # 清理旧端点项
         for items in self._vertex_items.values():
@@ -606,8 +584,8 @@ class Canvas(QGraphicsView):
         self._vertex_items = {}
         self._vertex_map = {}
 
-        # 仅编辑模式（工具为 None）且非预览模式时显示
-        if self._tool is not None or self._preview_mode:
+        # 仅编辑模式（工具为 None）时显示
+        if self._tool is not None:
             return
 
         for shape in self._shapes:
@@ -649,7 +627,7 @@ class Canvas(QGraphicsView):
         Args:
             scene: 当前鼠标场景坐标。
         """
-        if self._preview_mode or self._tool is not None:
+        if self._tool is not None:
             return
         hit_id = self._hit_shape_id(scene)
         if hit_id == self._hover_id:
@@ -799,8 +777,6 @@ class Canvas(QGraphicsView):
             rect: 框选矩形（场景坐标）。
         """
         self._clear_rubber()
-        if self._preview_mode:
-            return
         for shape in self._shapes:
             item = self._shape_items.get(id(shape))
             if item is None:
@@ -848,11 +824,7 @@ class Canvas(QGraphicsView):
         pos = event.position().toPoint()
         scene = self._scene_pos(pos)
 
-        # 预览（只读）模式下不响应任何绘制/选中/拖拽
-        if self._preview_mode:
-            return
-
-        # 右键：绘制草稿进行中取消/闭合；空闲时（含编辑模式）请求上下文菜单
+        # 右键：绘制草稿进行中取消/闭合；空闲时请求上下文菜单（携带命中形状）
         if event.button() == Qt.MouseButton.RightButton:
             if self._tool == labelme_io.SHAPE_POLYGON and self._draft_points:
                 # 多边形绘制中：>=3 顶点右键闭合，否则取消
@@ -865,7 +837,8 @@ class Canvas(QGraphicsView):
                 self._clear_draft()
             else:
                 # 空白或对象上右键（绘制工具空闲或编辑模式）：请求上下文菜单
-                self.context_menu_requested.emit()
+                hit = self._find_shape_by_id(self._hit_shape_id(scene))
+                self.context_menu_requested.emit(hit)
             return
 
         # ===== 绘制工具激活 =====
