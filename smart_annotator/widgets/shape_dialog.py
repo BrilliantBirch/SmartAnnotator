@@ -3,7 +3,8 @@
 标注对象属性编辑对话框 - ShapeDialog（labelme 风格）
 
 复刻 labelme LabelDialog 布局（参考截图）：
-    - 顶部行：标签编辑框（可输入新标签，输入时过滤下方列表）+ Group ID 输入框
+    - 顶部行：标签编辑框（可输入新标签，输入时过滤下方列表）+
+      Group ID 可编辑下拉框（下拉项为画布已有分组，也可直接键入新组号）
     - 第二行：OK / Cancel 按钮
     - 中间：已有标签列表（QListWidget，单击选择，双击即确认）
     - 底部：Label description 描述输入框
@@ -13,12 +14,16 @@
 作者: BaiBinnan
 创建日期: 2026-09-02
 更新: 2026-09-03 重构为 labelme 风格布局（标签列表 + 顶部编辑过滤 + Group ID + 描述）
+更新: 2026-09-03 Group ID 改为可编辑 QComboBox（下拉填充画布已有分组，去重升序），
+      构造签名增加 group_ids 参数
+更新: 2026-09-03 标签列表单击选中项同步 label 编辑框（选中即预览）
 """
 
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QGridLayout,
     QLineEdit,
@@ -34,12 +39,19 @@ class ShapeDialog(QDialog):
     使用 get_shape_props 静态方法一键获取编辑结果，失败（取消）返回 None。
     """
 
-    def __init__(self, labels: List[str], shape: Dict[str, Any], parent=None):
-        """初始化对话框，回填当前形状属性并填充标签列表。
+    def __init__(
+        self,
+        labels: List[str],
+        shape: Dict[str, Any],
+        group_ids: Optional[List[int]] = None,
+        parent=None,
+    ):
+        """初始化对话框，回填当前形状属性并填充标签列表与分组下拉项。
 
         Args:
             labels: 已有类别名称列表（填充标签列表）。
             shape: 当前形状字典（labelme 格式）。
+            group_ids: 画布现有分组编号集合（填充 Group ID 下拉项），可为 None。
             parent: 父控件。
         """
         super().__init__(parent)
@@ -56,12 +68,20 @@ class ShapeDialog(QDialog):
         self.label_edit.textChanged.connect(self._filter_labels)
         grid.addWidget(self.label_edit, 0, 0)
 
-        # Group ID 输入框（空 = 无分组；整数 = 组号）
-        self.group_edit = QLineEdit()
+        # Group ID 可编辑下拉框（空 = 无分组；整数 = 组号）
+        self.group_edit = QComboBox()
+        self.group_edit.setEditable(True)
         self.group_edit.setPlaceholderText("Group ID")
         self.group_edit.setMaximumWidth(110)
+        # 下拉项：画布现有分组编号（去重、升序）
+        gids = sorted({g for g in (group_ids or []) if isinstance(g, int) and g >= 0})
+        for g in gids:
+            self.group_edit.addItem(str(g))
+        # 回填当前形状分组（可编辑框允许任意值，不要求存在于选项中）
         gid = shape.get("group_id")
-        self.group_edit.setText(str(gid) if isinstance(gid, int) and gid >= 0 else "")
+        self.group_edit.setCurrentText(
+            str(gid) if isinstance(gid, int) and gid >= 0 else ""
+        )
         grid.addWidget(self.group_edit, 0, 1)
 
         # ===== 第二行：OK / Cancel =====
@@ -80,6 +100,8 @@ class ShapeDialog(QDialog):
             self.label_list.addItem(QListWidgetItem(str(name)))
         # 双击列表项 = 选择并确认（与 labelme 一致）
         self.label_list.itemDoubleClicked.connect(self._on_item_double)
+        # 单击选中列表项：label 编辑框同步该项文本（选中即预览，双击仍为选择并确认）
+        self.label_list.itemClicked.connect(self._on_item_clicked)
         grid.addWidget(self.label_list, 2, 0, 1, 2)
 
         # ===== 底部：描述输入框 =====
@@ -109,6 +131,18 @@ class ShapeDialog(QDialog):
             item = self.label_list.item(i)
             item.setHidden(bool(keyword) and keyword not in item.text().lower())
 
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        """单击标签列表项：同步 label 编辑框内容为该项文本。
+
+        回环安全：setText 触发 textChanged → _filter_labels 仅对列表项
+        setHidden 过滤，不改变列表选中态，因此不会再次触发 itemClicked，
+        无信号回环。
+
+        Args:
+            item: 被单击的列表项。
+        """
+        self.label_edit.setText(item.text())
+
     def _on_item_double(self, item: QListWidgetItem) -> None:
         """双击标签项：填入编辑框并确认对话框。
 
@@ -127,7 +161,7 @@ class ShapeDialog(QDialog):
         """
         label = self.label_edit.text().strip()
         description = self.desc_edit.text().strip()
-        gid_text = self.group_edit.text().strip()
+        gid_text = self.group_edit.currentText().strip()
         try:
             gid = int(gid_text) if gid_text else None
         except ValueError:
@@ -136,19 +170,23 @@ class ShapeDialog(QDialog):
 
     @staticmethod
     def get_shape_props(
-        labels: List[str], shape: Dict[str, Any], parent=None
+        labels: List[str],
+        shape: Dict[str, Any],
+        group_ids: Optional[List[int]] = None,
+        parent=None,
     ) -> Optional[Tuple[str, str, Optional[int]]]:
         """弹窗编辑形状属性，返回结果或 None（取消时）。
 
         Args:
             labels: 已有类别列表。
             shape: 形状字典。
+            group_ids: 画布现有分组编号集合（填充 Group ID 下拉选项），可为 None。
             parent: 父控件。
 
         Returns:
             (标签, 描述, 分组编号) 或 None。
         """
-        dialog = ShapeDialog(labels, shape, parent)
+        dialog = ShapeDialog(labels, shape, group_ids, parent)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             return dialog.result_values()
         return None

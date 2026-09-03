@@ -3,7 +3,7 @@
 右侧信息栏组件 - RightPanel
 
 经典三栏布局的右栏（参考 labelme / X-Anylabel 风格），纵向堆叠多组列表：
-    - 标签列表（b）：工作路径下全部标签（单击/双击设为当前绘制标签，可新增）
+    - 标签列表（b）：工作路径下全部标签（单击/双击设为当前绘制标签）
     - 标签对象列表（a，标题"标签"）：当前图片上的全部标注对象，
       支持多选与右键菜单（编辑属性/删除/进入编辑模式）
     - 文件列表：工作路径下全部图片
@@ -14,6 +14,7 @@
 作者: BaiBinnan
 创建日期: 2026-09-02
 更新: 2026-09-03 对象列表更名"标签"、多选（ExtendedSelection）、右键上下文菜单
+更新: 2026-09-03 移除标签列表"+"新增按钮与 add_label_requested 信号（新标签经属性弹窗键入创建）
 """
 
 from PySide6.QtCore import Qt, Signal, QItemSelectionModel
@@ -24,7 +25,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
-    QPushButton,
     QFrame,
     QListWidgetItem,
     QMenu,
@@ -75,8 +75,6 @@ class _Section(QFrame):
         self.title_label.setStyleSheet("color: #71717a; font-weight: 600; border: 0;")
         header.addWidget(self.title_label)
         header.addStretch()
-        self._extra = QHBoxLayout()
-        header.addLayout(self._extra)
         lay.addLayout(header)
 
         self.list = QListWidget()
@@ -84,10 +82,6 @@ class _Section(QFrame):
             "QListWidget { background-color: #fafafa; border: 0; }"
         )
         lay.addWidget(self.list, 1)
-
-    def add_header_widget(self, widget: QWidget) -> None:
-        """在标题行右侧添加一个控件（如"+"新增按钮）。"""
-        self._extra.addWidget(widget)
 
 
 class RightPanel(QWidget):
@@ -98,7 +92,6 @@ class RightPanel(QWidget):
         objects_selected(list): 用户在对象列表中选中对象集合（参数为对象下标列表）。
         file_selected(int): 用户在文件列表中选中文件（参数为文件下标）。
         keypoint_selected(str): 用户在关键点列表中选中关键点。
-        add_label_requested: 用户请求新增标签。
         edit_object_requested(int): 对象列表右键请求编辑指定对象（参数为下标）。
         delete_objects_requested(list): 对象列表右键请求删除选中对象（参数为下标列表）。
         enter_edit_mode_requested: 对象列表右键请求进入编辑模式。
@@ -109,7 +102,6 @@ class RightPanel(QWidget):
     objects_selected = Signal(object)
     file_selected = Signal(int)
     keypoint_selected = Signal(str)
-    add_label_requested = Signal()
     edit_object_requested = Signal(int)
     delete_objects_requested = Signal(object)
     enter_edit_mode_requested = Signal()
@@ -125,18 +117,13 @@ class RightPanel(QWidget):
 
         # ===== 标签列表（b）=====
         self.label_section = _Section("标签列表")
-        btn_add = QPushButton("+")
-        btn_add.setFixedSize(22, 22)
-        btn_add.setToolTip("新增标签")
-        btn_add.clicked.connect(self.add_label_requested.emit)
-        self.label_section.add_header_widget(btn_add)
         self.label_section.list.itemDoubleClicked.connect(self._on_label_double)
         # 单击即选中标签作为当前绘制标签（直接选择预设标签进行标注）
         self.label_section.list.itemClicked.connect(self._on_label_click)
         root.addWidget(self.label_section, 1)
 
         # ===== 标签对象列表（a，标题"标签"）=====
-        self.object_section = _Section("标签")
+        self.object_section = _Section("对象")
         self.object_section.list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )

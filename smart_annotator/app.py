@@ -7,11 +7,11 @@
     - 中间：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑
     - 右侧：信息栏（RightPanel）—— 标签/对象/文件/关键点列表
 
-标准菜单栏（文件/编辑/工具/帮助）+ 快捷键体系：
+标准菜单栏（文件/编辑/视图/工具/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
       另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
     - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、删除选中标注、
-      清空标注、删除标注文件 Delete、删除图片及标注 Shift+Delete
+      清空标注、Delete 按焦点上下文删除、删除图片及标注 Shift+Delete
     - 工具：加载模型、自动标注单张/全部、格式转换
     - 标注工具：编辑 V、矩形 R、点 P、多边形 G
     - 图片浏览：A 上一张、D 下一张
@@ -23,10 +23,14 @@
 创建日期: 2026-08-10
 更新: 2026-09-03 labelme 风格属性弹窗、画布右键完整上下文菜单、移除预览模式、
       画布多选同步对象列表选中
+更新: 2026-09-03 空 label 形状静默丢弃、标签单一数据源、Delete 焦点路由、画布完整右键菜单、移除删除标注文件与标签新增按钮
+更新: 2026-09-03 修复 Delete 焦点路由对象列表分支 selectedItems 误调 row() 导致的崩溃
+更新: 2026-09-03 新增视图菜单（渲染开关与线宽/不透明度/字号档位，配置持久化 %APPDATA%/BrilliantAnnotator）、对象列表显示组号
 """
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QIcon, QShortcut, QCursor
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -38,15 +42,19 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QDialogButtonBox,
     QMessageBox,
-    QInputDialog,
     QMenu,
+    QApplication,
+    QLineEdit,
+    QTextEdit,
+    QPlainTextEdit,
 )
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
-from .config import SysConfig
+from .config import SysConfig, RenderConfig
 from .core import labelme_io
 from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir
+from .utils.render_store import load_render_config, save_render_config
 from .widgets.dialogs import chooseDir, showMessageBox
 from .widgets.left_toolbar import (
     LeftToolbar,
@@ -106,6 +114,8 @@ class MainWindow(QMainWindow):
         # 后台扫描汇总的标签与关键点（关键点列表显示由扫描结果自动识别）
         self._all_labels: list = []
         self._label_keypoints: list = []
+        # 画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator）
+        self._render_config: RenderConfig = load_render_config()
 
         # 后台线程
         self.annotate_worker = AnnotationWorker()
@@ -117,9 +127,17 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
 
+        # 应用持久化的渲染配置到画布
+        self.canvas.set_render_config(self._render_config)
+
         # 图片浏览快捷键：A 上一张 / D 下一张
         QShortcut(QKeySequence("A"), self, self._prev_image)
         QShortcut(QKeySequence("D"), self, self._next_image)
+        # Delete：按焦点上下文路由删除业务（对象列表/文件列表/画布选中）
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self, self._on_delete_shortcut)
+        # 形状复制/粘贴（画布内部剪贴板）
+        QShortcut(QKeySequence("Ctrl+C"), self, self.canvas.copy_selected)
+        QShortcut(QKeySequence("Ctrl+V"), self, self.canvas.paste_clipboard)
 
         self.setStyleSheet(GLOBAL_QSS)
 
@@ -197,15 +215,56 @@ class MainWindow(QMainWindow):
         menu_edit.addAction(self.act_clear)
 
         menu_edit.addSeparator()
-        self.act_delete_file = QAction("删除标注文件", self)
-        self.act_delete_file.setShortcut(QKeySequence("Delete"))
-        self.act_delete_file.triggered.connect(self._on_delete_annotation_file)
-        menu_edit.addAction(self.act_delete_file)
 
         self.act_delete_image = QAction("删除图片及标注", self)
         self.act_delete_image.setShortcut(QKeySequence("Shift+Delete"))
         self.act_delete_image.triggered.connect(self._on_delete_image_and_annotation)
         menu_edit.addAction(self.act_delete_image)
+
+        # ===== 视图 =====
+        menu_view = menu_bar.addMenu("视图(&V)")
+
+        # 渲染内容开关（checkable）
+        self.act_show_label = QAction("显示标签", self)
+        self.act_show_label.setCheckable(True)
+        self.act_show_label.setChecked(self._render_config.show_label)
+        self.act_show_label.toggled.connect(lambda on: self._on_render_option_changed("show_label", on))
+        menu_view.addAction(self.act_show_label)
+
+        self.act_show_group = QAction("显示组号", self)
+        self.act_show_group.setCheckable(True)
+        self.act_show_group.setChecked(self._render_config.show_group)
+        self.act_show_group.toggled.connect(lambda on: self._on_render_option_changed("show_group", on))
+        menu_view.addAction(self.act_show_group)
+
+        self.act_show_description = QAction("显示描述", self)
+        self.act_show_description.setCheckable(True)
+        self.act_show_description.setChecked(self._render_config.show_description)
+        self.act_show_description.toggled.connect(lambda on: self._on_render_option_changed("show_description", on))
+        menu_view.addAction(self.act_show_description)
+
+        menu_view.addSeparator()
+
+        # 框线宽度档位（互斥单选）
+        menu_view.addMenu(self._build_render_option_menu(
+            "框线宽度",
+            [("1px", 1.0), ("2px", 2.0), ("3px", 3.0), ("4px", 4.0)],
+            "pen_width",
+        ))
+
+        # 填充不透明度档位（互斥单选）
+        menu_view.addMenu(self._build_render_option_menu(
+            "填充不透明度",
+            [("10%", 0.1), ("20%", 0.2), ("30%", 0.3), ("50%", 0.5), ("70%", 0.7)],
+            "opacity",
+        ))
+
+        # 字体大小档位（互斥单选）
+        menu_view.addMenu(self._build_render_option_menu(
+            "字体大小",
+            [("10", 10), ("12", 12), ("14", 14), ("16", 16), ("20", 20)],
+            "font_size",
+        ))
 
         # ===== 工具 =====
         menu_tool = menu_bar.addMenu("工具(&T)")
@@ -247,6 +306,47 @@ class MainWindow(QMainWindow):
         self.act_about.triggered.connect(self._on_about)
         menu_help.addAction(self.act_about)
 
+    def _build_render_option_menu(self, title: str, options: list, attr: str) -> QMenu:
+        """构建渲染档位子菜单（互斥单选，当前档位打勾）。
+
+        Args:
+            title: 子菜单标题。
+            options: (显示文本, 配置值) 元组列表。
+            attr: RenderConfig 字段名。
+
+        Returns:
+            子菜单。
+        """
+        menu = QMenu(title, self)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        current = getattr(self._render_config, attr)
+        for text, value in options:
+            act = QAction(text, self)
+            act.setCheckable(True)
+            act.setChecked(abs(float(current) - float(value)) < 1e-9)
+            act.triggered.connect(
+                lambda checked=False, v=value, a=attr: self._on_render_option_changed(a, v)
+            )
+            group.addAction(act)
+            menu.addAction(act)
+        return menu
+
+    def _on_render_option_changed(self, attr: str, value) -> None:
+        """渲染设置变更：更新配置、应用到画布并即时持久化。
+
+        Args:
+            attr: RenderConfig 字段名。
+            value: 新配置值。
+        """
+        setattr(self._render_config, attr, value)
+        self.canvas.set_render_config(self._render_config)
+        try:
+            save_render_config(self._render_config)
+        except OSError as e:
+            LOGGER.warning(f"渲染配置保存失败: {e}")
+        self.statusBar().showMessage(f"渲染设置已更新: {attr} = {value}", 1500)
+
     # -------------------------- 三栏布局 --------------------------
     def _build_ui(self) -> None:
         """构建三栏式主体布局。"""
@@ -273,7 +373,6 @@ class MainWindow(QMainWindow):
         self.left_toolbar.save_requested.connect(self._on_save)
         self.left_toolbar.save_as_requested.connect(self._on_save_as)
         self.left_toolbar.delete_requested.connect(self._on_delete)
-        self.left_toolbar.delete_file_requested.connect(self._on_delete_annotation_file)
         self.left_toolbar.delete_image_requested.connect(self._on_delete_image_and_annotation)
         self.left_toolbar.load_model_requested.connect(self._open_annotate_dialog)
         self.left_toolbar.annotate_single_requested.connect(self._on_annotate_single)
@@ -292,7 +391,6 @@ class MainWindow(QMainWindow):
         self.right_panel.objects_selected.connect(self._on_objects_selected)
         self.right_panel.file_selected.connect(self._on_file_selected)
         self.right_panel.keypoint_selected.connect(self._on_label_selected)
-        self.right_panel.add_label_requested.connect(self._on_add_label)
         # 对象列表（a）右键菜单：编辑属性 / 删除 / 进入编辑模式
         self.right_panel.edit_object_requested.connect(self._on_edit_object)
         self.right_panel.delete_objects_requested.connect(self._on_delete_objects)
@@ -543,31 +641,33 @@ class MainWindow(QMainWindow):
         """清空当前图片全部标注。"""
         self.canvas.clear_shapes()
 
-    # -------------------------- 文件删除 --------------------------
-    def _on_delete_annotation_file(self) -> None:
-        """删除当前图片对应的标注 JSON 文件（Delete 键）。
+    def _on_delete_shortcut(self) -> None:
+        """Delete 快捷键：按当前焦点控件路由删除业务。
 
-        删除后清空画布形状并刷新对象列表，保持界面状态一致。
+        路由顺序：文本输入控件不拦截 → 对象列表删选中对象 →
+        文件列表删选中图像及标注（含确认框）→ 默认删画布选中形状。
         """
-        json_path = self._current_json_path()
-        if not json_path:
-            showMessageBox(QMessageBox.Icon.Warning, "当前无标注文件可删除")
+        fw = QApplication.focusWidget()
+        # 焦点在文本输入控件：不拦截，保留正常文本删除行为
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
             return
-        if not Path(json_path).exists():
-            showMessageBox(QMessageBox.Icon.Warning, f"标注文件不存在: {json_path}")
+        # 焦点在对象列表：删除列表选中对象（与画布选中态双向同步）
+        obj_list = self.right_panel.object_section.list
+        if fw is obj_list or (fw is not None and obj_list.isAncestorOf(fw)):
+            rows = sorted({obj_list.row(item) for item in obj_list.selectedItems()})
+            if rows:
+                self.canvas.delete_shapes_at(rows)
             return
-        if QMessageBox.question(
-            self, "确认删除", f"确定要删除标注文件:\n{json_path}?"
-        ) != QMessageBox.StandardButton.Yes:
+        # 焦点在文件列表：删除选中图像及同名标注（复用含确认框的健壮删除逻辑）
+        file_list = self.right_panel.file_section.list
+        if fw is file_list or (fw is not None and file_list.isAncestorOf(fw)):
+            if self._has_workspace() and file_list.currentRow() >= 0:
+                self._on_delete_image_and_annotation()
             return
-        # 删除标注文件并清空当前画布标注
-        Path(json_path).unlink()
-        self.canvas.clear_shapes()
-        self._dirty = False
-        self._refresh_objects()
-        self._update_status()
-        LOGGER.info(f"已删除标注文件: {json_path}")
+        # 默认（画布或其他控件）：删除画布选中形状（无选中则无操作）
+        self.canvas.delete_selected()
 
+    # -------------------------- 文件删除 --------------------------
     def _on_delete_image_and_annotation(self) -> None:
         """删除当前图片及其同名标注文件（Shift+Delete 键）。
 
@@ -702,16 +802,21 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 绘制完成属性弹窗 --------------------------
     def _on_shape_created(self, shape) -> None:
-        """单个对象绘制完成：弹出属性编辑窗（标签搜索/描述/分组序号）。
-
-        Args:
-            shape: 新建的形状字典。
-        """
-        labels = self._all_labels[:] if self._all_labels else [self.canvas.current_label()]
-        result = ShapeDialog.get_shape_props(labels, shape, self)
+        """单个对象绘制完成：弹出属性编辑窗；label 为空时静默丢弃该形状（不弹窗）。"""
+        labels = self._all_labels[:]
+        result = ShapeDialog.get_shape_props(labels, shape, self._canvas_group_ids(), self)
         if result is None:
+            # 取消弹窗：无预填标签（未预设当前标签）时同样视为无 label，静默丢弃
+            if not str(shape.get("label", "")).strip():
+                self.canvas.discard_shape(shape)
+                self.statusBar().showMessage("未设置标签，已取消该标注", 2000)
             return
         label, description, group_id = result
+        if not label:
+            # 空 label：形状不生效，静默丢弃（无弹窗提醒）
+            self.canvas.discard_shape(shape)
+            self.statusBar().showMessage("未设置标签，已取消该标注", 2000)
+            return
         shape["label"] = label
         shape["description"] = description
         shape["group_id"] = group_id
@@ -770,39 +875,83 @@ class MainWindow(QMainWindow):
         self._on_tool_selected(TOOL_SELECT)
 
     def _on_canvas_context_menu(self, shape) -> None:
-        """画布右键上下文菜单（空白或对象，无绘制草稿时）。
+        """画布右键完整上下文菜单（空白或对象，无绘制草稿时）。
 
-        - 非编辑模式（绘制工具激活）：显示"进入编辑模式"
-        - 编辑模式 + 命中对象：显示"编辑属性"与"删除"（删除作用于全部选中）
-        - 编辑模式 + 空白处：不弹菜单（编辑能力已可用）
+        菜单项：编辑属性/删除/复制/粘贴/撤销/重做/创建矩形/创建点/
+        创建多边形/编辑模式/清空标注；按当前状态启用/禁用。
+        菜单项不绑定快捷键（避免与菜单栏动作歧义）。
 
         Args:
             shape: 右键命中的形状字典，空白处为 None。
         """
-        # 已处于编辑模式：命中对象时提供编辑/删除菜单
-        if self.canvas.tool() is None:
-            if shape is None:
-                return
-            # 确保命中的对象进入选中集合（未被选中则单选之；按对象身份比较）
-            if not any(s is shape for s in self.canvas.selected_shapes()):
-                self.canvas.select_shape(shape)
-            menu = QMenu(self)
-            act_edit = menu.addAction("编辑属性")
-            act_delete = menu.addAction("删除")
-            chosen = menu.exec(QCursor.pos())
-            if chosen is act_edit:
-                self._on_edit_object(self._shape_index(shape))
-            elif chosen is act_delete:
-                indices = self._selected_shape_indices()
-                self.canvas.delete_shapes_at(indices)
+        # 无工作区（未打开图像）不弹出菜单
+        if not self._has_workspace():
             return
+        # 命中对象未选中时先单选之（保证删除/编辑属性作用于该对象）
+        if shape is not None and not any(s is shape for s in self.canvas.selected_shapes()):
+            self.canvas.select_shape(shape)
+        selected = self.canvas.selected_shapes()
 
-        # 非编辑模式：提供"进入编辑模式"入口
         menu = QMenu(self)
-        act_enter = menu.addAction("进入编辑模式")
+        # 对象操作区
+        act_edit = menu.addAction("编辑属性")
+        act_edit.setEnabled(len(selected) == 1)
+        act_del = menu.addAction("删除")
+        act_del.setEnabled(bool(selected))
+        act_copy = menu.addAction("复制")
+        act_copy.setEnabled(bool(selected))
+        act_paste = menu.addAction("粘贴")
+        act_paste.setEnabled(self.canvas.has_clipboard())
+        menu.addSeparator()
+        # 历史操作区
+        act_undo = menu.addAction("撤销")
+        act_undo.setEnabled(self.canvas.can_undo())
+        act_redo = menu.addAction("重做")
+        act_redo.setEnabled(self.canvas.can_redo())
+        menu.addSeparator()
+        # 工具切换区（当前工具打勾）
+        act_rect = menu.addAction("创建矩形")
+        act_rect.setCheckable(True)
+        act_rect.setChecked(self.canvas.tool() == labelme_io.SHAPE_RECTANGLE)
+        act_point = menu.addAction("创建点")
+        act_point.setCheckable(True)
+        act_point.setChecked(self.canvas.tool() == labelme_io.SHAPE_POINT)
+        act_polygon = menu.addAction("创建多边形")
+        act_polygon.setCheckable(True)
+        act_polygon.setChecked(self.canvas.tool() == labelme_io.SHAPE_POLYGON)
+        act_edit_mode = menu.addAction("编辑模式")
+        act_edit_mode.setCheckable(True)
+        act_edit_mode.setChecked(self.canvas.tool() is None)
+        menu.addSeparator()
+        # 危险操作区
+        act_clear = menu.addAction("清空标注")
+        act_clear.setEnabled(bool(self.canvas.shapes()))
+
         chosen = menu.exec(QCursor.pos())
-        if chosen is act_enter:
+        if chosen is None:
+            return
+        if chosen is act_edit:
+            self._on_edit_object(self._shape_index(selected[0]))
+        elif chosen is act_del:
+            self.canvas.delete_selected()
+        elif chosen is act_copy:
+            self.canvas.copy_selected()
+        elif chosen is act_paste:
+            self.canvas.paste_clipboard()
+        elif chosen is act_undo:
+            self.canvas.undo()
+        elif chosen is act_redo:
+            self.canvas.redo()
+        elif chosen is act_rect:
+            self._on_tool_selected(TOOL_RECTANGLE)
+        elif chosen is act_point:
+            self._on_tool_selected(TOOL_POINT)
+        elif chosen is act_polygon:
+            self._on_tool_selected(TOOL_POLYGON)
+        elif chosen is act_edit_mode:
             self._enter_edit_mode()
+        elif chosen is act_clear:
+            self._on_clear()
 
     def _shape_index(self, shape) -> int:
         """返回形状在画布形状列表中的下标（未找到返回 -1）。
@@ -828,6 +977,11 @@ class MainWindow(QMainWindow):
         return [i for i, s in enumerate(self.canvas.shapes()) if id(s) in ids]
 
     # -------------------------- 对象列表（a）编辑与删除 --------------------------
+    def _canvas_group_ids(self) -> list:
+        """返回画布全部形状已有 group_id（去重、升序，供属性弹窗下拉框）。"""
+        gids = {s.get("group_id") for s in self.canvas.shapes()}
+        return sorted(g for g in gids if isinstance(g, int) and g >= 0)
+
     def _on_edit_object(self, index: int) -> None:
         """编辑对象列表中指定对象的属性（复用属性弹窗）。
 
@@ -842,8 +996,8 @@ class MainWindow(QMainWindow):
         shape = shapes[index]
         # 需求：属性修改仅编辑模式允许 → 先切换到编辑模式
         self._enter_edit_mode()
-        labels = self._all_labels[:] if self._all_labels else [self.canvas.current_label()]
-        result = ShapeDialog.get_shape_props(labels, shape, self)
+        labels = self._all_labels[:]
+        result = ShapeDialog.get_shape_props(labels, shape, self._canvas_group_ids(), self)
         if result is None:
             return
         label, description, group_id = result
@@ -899,17 +1053,6 @@ class MainWindow(QMainWindow):
         self.canvas.set_current_label(label)
         self._status_label.setText(f"当前标签: {label}")
 
-    def _on_add_label(self) -> None:
-        """新增标签并设为当前绘制标签。"""
-        text, ok = QInputDialog.getText(self, "新增标签", "标签名称:")
-        if not ok or not text.strip():
-            return
-        label = text.strip()
-        self.canvas.set_current_label(label)
-        self._all_labels.append(label)
-        self._refresh_labels()
-        self._status_label.setText(f"当前标签: {label}")
-
     # -------------------------- 列表刷新 --------------------------
     def _start_label_scan(self) -> None:
         """启动后台标签扫描（汇总工作目录下全部标注的类别/关键点）。
@@ -942,27 +1085,36 @@ class MainWindow(QMainWindow):
         self._refresh_keypoints()
 
     def _refresh_labels(self) -> None:
-        """即时刷新标签列表（合并后台扫描结果与当前画布标签）。"""
+        """刷新标签列表并回写 _all_labels（扫描结果 ∪ 画布标签，标签唯一数据源）。
+
+        属性弹窗与右侧标签列表共用 _all_labels，保证两处列表完全同步。
+        """
         labels = set(self._all_labels)
         for shape in self.canvas.shapes():
             label = shape.get("label", "")
             if label:
                 labels.add(label)
-        self.right_panel.set_labels(sorted(labels))
+        self._all_labels = sorted(labels)
+        self.right_panel.set_labels(self._all_labels)
 
     def _refresh_objects(self) -> None:
-        """刷新当前图片对象列表（含类别颜色圆点）。
+        """刷新当前图片对象列表（含类别颜色圆点与组号）。
 
+        条目文本为 "label [G组号] (shape_type)"：有分组（group_id 为
+        非负整数）时显示组号；对象列表恒显示组号，不受画布渲染开关影响。
         填充后按画布当前选中集合重新同步列表选中态，避免列表重建
         （清空后重填）导致画布多选在 a 列表中的同步选中丢失。
         """
-        entries = [
-            (
-                f"{shape.get('label', '')} ({shape.get('shape_type', '')})",
-                shape.get("label", ""),
-            )
-            for shape in self.canvas.shapes()
-        ]
+        entries = []
+        for shape in self.canvas.shapes():
+            label = shape.get("label", "")
+            gid = shape.get("group_id")
+            # 有分组时在条目中显示组号（对象列表恒显示，不受画布渲染开关影响）
+            if isinstance(gid, int) and gid >= 0:
+                text = f"{label} [G{gid}] ({shape.get('shape_type', '')})"
+            else:
+                text = f"{label} ({shape.get('shape_type', '')})"
+            entries.append((text, label))
         self.right_panel.set_objects(entries)
         # 同步画布选中集合到对象列表（select_objects 不发射信号，无回环）
         indices = self._selected_shape_indices()
@@ -1000,7 +1152,6 @@ class MainWindow(QMainWindow):
         self.act_clear.setEnabled(has_image)
         self.act_undo.setEnabled(has_image)
         self.act_redo.setEnabled(has_image)
-        self.act_delete_file.setEnabled(has_image)
         self.act_delete_image.setEnabled(has_image)
         for act in self._tool_actions.values():
             act.setEnabled(has_image)
@@ -1025,8 +1176,8 @@ class MainWindow(QMainWindow):
             "标注格式完全复用 labelme JSON。\n\n"
             "快捷键：V 编辑 / R 矩形 / P 点 / G 多边形\n"
             "Ctrl+E 进入编辑模式 / Ctrl+Z 撤销 / Ctrl+Shift+Z 重做\n"
-            "A 上一张 / D 下一张\n"
-            "Delete 删除标注文件 / Shift+Delete 删除图片及标注",
+            "Ctrl+C 复制 / Ctrl+V 粘贴 / Delete 按焦点删除（对象/文件/画布选中）\n"
+            "A 上一张 / D 下一张 / Shift+Delete 删除图片及标注",
         )
 
     # -------------------------- 关闭处理 --------------------------

@@ -37,20 +37,20 @@ def _resolve_icon_path() -> Path:
     """
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "app.ico"
-    return Path(resource_path("build/app.ico"))
+    return Path(resource_path("app.ico"))
 
 
 def main() -> None:
     """程序入口 — 创建 QApplication 并显示主窗口。"""
     app = QApplication(sys.argv)
-    app.setApplicationName("VAI_E_SmartAnnotator")
-    app.setOrganizationName("武汉川丰软件")
+    app.setApplicationName("BrilliantAnnotator")
+    app.setOrganizationName("BrilliantBirch")
 
     # 设置窗口/任务栏图标（Windows 下绑定 AppUserModelID，避免任务栏无图标/分组错误）
     if sys.platform == "win32":
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "CFSoft.VAI_E_SmartAnnotator"
+                "BrilliantBirch.BriliantAnnotator"
             )
         except (AttributeError, OSError):
             pass  # 非 Windows 或设置失败时忽略，不影响主功能
@@ -63,7 +63,8 @@ def main() -> None:
     window = MainWindow()
     if icon_path.exists():
         window.set_window_icon(QIcon(str(icon_path)))
-    window.show()
+    # window.show()
+    window.showMaximized()
 
     sys.exit(app.exec())
 

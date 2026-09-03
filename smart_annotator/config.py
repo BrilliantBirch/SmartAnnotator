@@ -222,6 +222,84 @@ class SysConfig:
     annotate_config: AnnotateConfig = field(default_factory=AnnotateConfig)
 
 
+@dataclass
+class RenderConfig:
+    """画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator/render_config.json）。
+
+    Attributes:
+        show_label: 是否在画布渲染形状标签文本。
+        show_group: 是否在画布渲染形状组号（G{group_id}）。
+        show_description: 是否在画布渲染形状描述文本。
+        pen_width: 矩形/多边形描边线宽（像素，选中态为 pen_width + 2）。
+        opacity: 多边形填充不透明度（0.0-1.0）。
+        font_size: 渲染文本字号（磅）。
+    """
+
+    show_label: bool = True
+    show_group: bool = False
+    show_description: bool = True
+    pen_width: float = 2.0
+    opacity: float = 0.3
+    font_size: int = 12
+
+    def to_dict(self) -> dict:
+        """序列化为字典（JSON 持久化用）。
+
+        Returns:
+            字段名字典。
+        """
+        return {
+            "show_label": self.show_label,
+            "show_group": self.show_group,
+            "show_description": self.show_description,
+            "pen_width": self.pen_width,
+            "opacity": self.opacity,
+            "font_size": self.font_size,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RenderConfig":
+        """从字典构造（缺失/非法字段回退默认值）。
+
+        逐字段校验类型（bool/int/float；bool 为 int 子类，整型校验需排除），
+        数值越界时钳制到合法区间（opacity→[0,1]、pen_width→[0.5,10]、
+        font_size→[6,72]）。
+
+        Args:
+            data: 字段名字典。
+
+        Returns:
+            RenderConfig 实例。
+        """
+        # 以默认实例为基底，逐字段按校验结果覆盖
+        cfg = cls()
+        # 非字典输入直接返回默认配置
+        if not isinstance(data, dict):
+            return cfg
+
+        # ===== 布尔字段校验 =====
+        if isinstance(data.get("show_label"), bool):
+            cfg.show_label = data["show_label"]
+        if isinstance(data.get("show_group"), bool):
+            cfg.show_group = data["show_group"]
+        if isinstance(data.get("show_description"), bool):
+            cfg.show_description = data["show_description"]
+
+        # ===== 浮点字段校验（接受 int，排除 bool；越界钳制） =====
+        pen_width = data.get("pen_width")
+        if isinstance(pen_width, (int, float)) and not isinstance(pen_width, bool):
+            cfg.pen_width = min(10.0, max(0.5, float(pen_width)))
+        opacity = data.get("opacity")
+        if isinstance(opacity, (int, float)) and not isinstance(opacity, bool):
+            cfg.opacity = min(1.0, max(0.0, float(opacity)))
+
+        # ===== 整数字段校验（排除 bool；越界钳制） =====
+        font_size = data.get("font_size")
+        if isinstance(font_size, int) and not isinstance(font_size, bool):
+            cfg.font_size = min(72, max(6, int(font_size)))
+        return cfg
+
+
 # ===== 枚举强制转换辅助函数 =====
 def _coerce_mode(value: Any) -> MODE:
     """将值转换为 MODE 枚举（接受枚举、名称字符串、整数值）。"""

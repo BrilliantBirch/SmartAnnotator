@@ -14,6 +14,7 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-03 新增 QComboBox 下拉箭头、禁用态与 QMenu 样式（修复下拉按钮不可见、禁用无视觉反馈）
 """
 
 GLOBAL_QSS = """
@@ -41,6 +42,18 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
 QComboBox::drop-down {
     border: 0;
     width: 24px;
+    border-radius: 6px;
+}
+QComboBox::drop-down:hover {
+    background-color: #f4f4f5;
+}
+/* 纯 QSS border 三角形绘制下拉箭头（drop-down 去边框后默认箭头消失，需自绘替代）*/
+QComboBox::down-arrow {
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 6px solid #71717a;
 }
 QComboBox QAbstractItemView {
     background-color: #ffffff;
@@ -49,6 +62,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #f4f4f5;
     selection-color: #18181b;
     outline: 0;
+}
+
+/* ===== 禁用态（灰字 + 浅灰底，明确视觉反馈）===== */
+QPushButton:disabled,
+QLineEdit:disabled,
+QComboBox:disabled,
+QSpinBox:disabled,
+QDoubleSpinBox:disabled {
+    color: #a1a1aa;
+    background-color: #f4f4f5;
+    border-color: #e4e4e7;
+}
+QComboBox:disabled::down-arrow {
+    border-top-color: #d4d4d8;
 }
 
 /* ===== 滚动区域 ===== */
@@ -152,6 +179,30 @@ QListWidget::item:selected {
 /* ===== 标签（弱化文字）===== */
 QLabel {
     background-color: transparent;
+}
+
+/* ===== 菜单（白底圆角，禁用项置灰）===== */
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #e4e4e7;
+    border-radius: 8px;
+    padding: 4px;
+}
+/* item 不写 color：继承 QWidget 的 #18181b，避免覆盖下方禁用置灰规则 */
+QMenu::item {
+    padding: 6px 24px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background-color: #f4f4f5;
+}
+QMenu::item:disabled {
+    color: #a1a1aa;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #e4e4e7;
+    margin: 4px 8px;
 }
 
 /* ===== 工具提示 ===== */

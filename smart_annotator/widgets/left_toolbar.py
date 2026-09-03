@@ -3,7 +3,7 @@
 左侧快捷操作栏组件 - LeftToolbar
 
 经典三栏布局的左栏（参考 labelme / X-Anylabel 风格），纵向排列功能按钮：
-    - 文件操作：打开文件夹、打开文件、保存、另存为、删除标注/图片文件
+    - 文件操作：打开文件夹、打开文件、保存、另存为、删除图片文件
     - 编辑操作：删除选中
     - 自动标注：加载模型、自动标注单张、自动标注全部
     - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形（互斥可选，含快捷键提示）
@@ -14,6 +14,8 @@
 作者: BaiBinnan
 创建日期: 2026-09-02
 更新: 2026-09-03 "选择"工具更名为"编辑"，移除预览模式按钮
+更新: 2026-09-03 移除"删除标注文件"按钮与 delete_file_requested 信号（Delete 改由主窗口按焦点路由）
+更新: 2026-09-03 按钮禁用态增强（灰字 + 浅灰底，明确视觉反馈）
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -73,7 +75,10 @@ class _ToolBarButton(QPushButton):
                 background-color: #18181b;
                 color: #fafafa;
             }
-            QPushButton:disabled { color: #d4d4d8; }
+            QPushButton:disabled {
+                background-color: #f4f4f5;
+                color: #a1a1aa;
+            }
             """
         )
 
@@ -87,7 +92,6 @@ class LeftToolbar(QWidget):
         save_requested: 请求保存当前标注。
         save_as_requested: 请求另存为标注。
         delete_requested: 请求删除选中标注（形状）。
-        delete_file_requested: 请求删除当前标注文件（Delete）。
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
         load_model_requested: 请求加载推理模型。
         annotate_single_requested: 请求自动标注当前图片。
@@ -100,7 +104,6 @@ class LeftToolbar(QWidget):
     save_requested = Signal()
     save_as_requested = Signal()
     delete_requested = Signal()
-    delete_file_requested = Signal()
     delete_image_requested = Signal()
     load_model_requested = Signal()
     annotate_single_requested = Signal()
@@ -127,8 +130,6 @@ class LeftToolbar(QWidget):
         self.btn_save_as.clicked.connect(self.save_as_requested.emit)
         self.btn_delete = _ToolBarButton("删除选中")
         self.btn_delete.clicked.connect(self.delete_requested.emit)
-        self.btn_delete_file = _ToolBarButton("删除标注文件", "Delete")
-        self.btn_delete_file.clicked.connect(self.delete_file_requested.emit)
         self.btn_delete_image = _ToolBarButton("删除图片文件", "Shift+Delete")
         self.btn_delete_image.clicked.connect(self.delete_image_requested.emit)
 
@@ -150,7 +151,6 @@ class LeftToolbar(QWidget):
         root.addWidget(self.btn_save)
         root.addWidget(self.btn_save_as)
         root.addWidget(self.btn_delete)
-        root.addWidget(self.btn_delete_file)
         root.addWidget(self.btn_delete_image)
         root.addWidget(self._separator())
         root.addWidget(self.btn_load_model)
@@ -234,5 +234,4 @@ class LeftToolbar(QWidget):
         Args:
             enabled: 是否可用。
         """
-        self.btn_delete_file.setEnabled(enabled)
         self.btn_delete_image.setEnabled(enabled)

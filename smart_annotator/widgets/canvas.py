@@ -7,7 +7,8 @@
     - 标注工具：矩形（rectangle）、点（point）、多边形（polygon）
     - 绘制辅助：十字虚线引导线（延伸至图像四边界）+ 已放置顶点显示
     - 编辑模式（工具为"编辑"）：多选（Shift+点击 / Ctrl+框选）、
-      批量拖拽移动、端点拖动缩放、hover 半透明掩码、可编辑端点显示
+      批量拖拽移动、端点拖动缩放、hover 半透明掩码、
+      可编辑端点仅选中形状显示
     - 滚轮缩放 + Esc 取消当前绘制
 
 形状以 labelme 标准字典为唯一数据源（见 core/labelme_io.py），
@@ -16,6 +17,8 @@
 作者: BaiBinnan
 创建日期: 2026-09-02
 更新: 2026-09-03 移除预览模式、右键菜单携带命中形状
+更新: 2026-09-03 新增 discard_shape/copy_selected/paste_clipboard/has_clipboard/can_undo/can_redo（空 label 丢弃、内部剪贴板与撤销状态查询）
+更新: 2026-09-03 端点仅选中形状显示；新增 set_render_config（线宽/不透明度/字号）与通用文本渲染（标签/组号/描述，替代 OCR 特例）
 """
 
 import copy
@@ -30,6 +33,7 @@ from PySide6.QtGui import (
     QPolygonF,
     QCursor,
     QPainter,
+    QFont,
 )
 from PySide6.QtWidgets import (
     QGraphicsView,
@@ -43,6 +47,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
 )
 
+from ..config import RenderConfig
 from ..core import labelme_io
 
 # 顶点（点/多边形顶点）绘制半径（像素）
@@ -70,7 +75,9 @@ _LABEL_COLOR_CACHE: Dict[str, QColor] = {}
 _COLOR_SEQ = [0]
 # 撤销/重做栈的最大深度
 _MAX_UNDO = 50
-# OCR 文本在图像上的显示截断长度（超过则用 .. 截断）
+# 粘贴剪贴板形状时的顶点坐标偏移量（像素，避免粘贴件与原形状完全重叠）
+_PASTE_OFFSET = 10.0
+# 形状描述文本在图像上的显示截断长度（超过则用 .. 截断）
 _OCR_TRUNCATE = 32
 
 
@@ -138,7 +145,7 @@ class Canvas(QGraphicsView):
         self._shape_items: Dict[int, QGraphicsItem] = {}
         # 反向索引：QGraphicsItem id -> 形状 id
         self._item_shape: Dict[int, int] = {}
-        # OCR 文本显示项（label 为 text 且 description 非空的形状叠加显示描述）
+        # 形状文本显示项（按渲染配置叠加显示标签/组号/描述）
         self._text_items: List[QGraphicsTextItem] = []
 
         # 当前标注工具：None/'rectangle'/'point'/'polygon'（None 即编辑模式）
@@ -182,6 +189,11 @@ class Canvas(QGraphicsView):
         # 撤销/重做栈（存放形状列表的深拷贝快照）
         self._undo_stack: List[List[Dict]] = []
         self._redo_stack: List[List[Dict]] = []
+        # 内部剪贴板（存放选中形状的深拷贝，供复制/粘贴）
+        self._clipboard: List[Dict] = []
+
+        # 画布渲染配置（线宽/不透明度/字号/文本开关，由主窗口视图菜单设置）
+        self._render_config: RenderConfig = RenderConfig()
 
     # -------------------------- 几何换算助手 --------------------------
     def _set_qhints(self) -> None:
@@ -309,6 +321,15 @@ class Canvas(QGraphicsView):
         """
         self._current_label = label
 
+    def set_render_config(self, cfg: RenderConfig) -> None:
+        """应用画布渲染配置并全量重绘（纯显示效果，不改变标注数据与脏状态）。
+
+        Args:
+            cfg: 渲染配置。
+        """
+        self._render_config = cfg
+        self._render()
+
     # -------------------------- 工具切换 --------------------------
     def set_tool(self, tool: Optional[str]) -> None:
         """切换标注工具（tool 为 None 即进入编辑模式）。
@@ -364,6 +385,32 @@ class Canvas(QGraphicsView):
         self.shapes_changed.emit()
         self.selection_changed.emit([])
 
+    def discard_shape(self, shape: Dict) -> None:
+        """静默丢弃指定形状（用于“空 label 形状不生效”），不记录撤销快照。
+
+        按对象身份（is）从形状列表移除；若撤销栈顶快照与移除后的
+        形状列表深度相等，则弹出该栈顶快照（清理“创建后即丢弃”
+        产生的无效撤销记录）。
+
+        Args:
+            shape: 要丢弃的形状字典。
+        """
+        # 形状不在列表中：无操作
+        if not any(s is shape for s in self._shapes):
+            return
+        # 按对象身份过滤移除
+        self._shapes = [s for s in self._shapes if s is not shape]
+        # 清理无效撤销记录：栈顶快照与移除后的形状列表一致时弹出
+        if self._undo_stack and self._undo_stack[-1] == self._shapes:
+            self._undo_stack.pop()
+        # 同步移除选中集合中的该形状 id
+        sid = id(shape)
+        self._selected_ids = [x for x in self._selected_ids if x != sid]
+        # 重渲染并通知外部
+        self._render()
+        self.shapes_changed.emit()
+        self.selection_changed.emit(self.selected_shapes())
+
     # -------------------------- 撤销 / 重做 --------------------------
     def _snapshot(self) -> List[Dict]:
         """返回当前形状列表的深拷贝快照。"""
@@ -397,6 +444,71 @@ class Canvas(QGraphicsView):
         self._render()
         self.shapes_changed.emit()
         self.selection_changed.emit([])
+
+    def can_undo(self) -> bool:
+        """返回撤销栈是否非空（是否存在可撤销的变更）。
+
+        Returns:
+            可撤销返回 True，否则 False。
+        """
+        return bool(self._undo_stack)
+
+    def can_redo(self) -> bool:
+        """返回重做栈是否非空（是否存在可重做的变更）。
+
+        Returns:
+            可重做返回 True，否则 False。
+        """
+        return bool(self._redo_stack)
+
+    # -------------------------- 剪贴板（复制 / 粘贴） --------------------------
+    def copy_selected(self) -> int:
+        """深拷贝当前选中形状到内部剪贴板。
+
+        无选中时清空剪贴板。不修改形状数据、不发射信号、不记录撤销。
+
+        Returns:
+            复制的形状数量。
+        """
+        selected = self.selected_shapes()
+        if not selected:
+            self._clipboard = []
+            return 0
+        self._clipboard = copy.deepcopy(selected)
+        return len(self._clipboard)
+
+    def paste_clipboard(self) -> None:
+        """粘贴内部剪贴板形状：深拷贝并整体偏移 _PASTE_OFFSET 后追加。
+
+        粘贴产生的新形状集合成为当前选中；操作记录撤销快照。
+        """
+        if not self._clipboard:
+            return
+        # 粘贴属于形状变更：记录撤销快照
+        self._push_undo()
+        # 逐个深拷贝并整体偏移全部顶点坐标，追加到形状列表
+        pasted: List[Dict] = []
+        for src in self._clipboard:
+            shape = copy.deepcopy(src)
+            for p in shape.get("points", []):
+                p[0] += _PASTE_OFFSET
+                p[1] += _PASTE_OFFSET
+            self._shapes.append(shape)
+            pasted.append(shape)
+        # 新形状集合设为选中
+        self._selected_ids = [id(s) for s in pasted]
+        # 重渲染并通知外部
+        self._render()
+        self.shapes_changed.emit()
+        self.selection_changed.emit(self.selected_shapes())
+
+    def has_clipboard(self) -> bool:
+        """返回内部剪贴板是否非空。
+
+        Returns:
+            剪贴板非空返回 True，否则 False。
+        """
+        return bool(self._clipboard)
 
     def select_shape(self, shape: Optional[Dict]) -> None:
         """按形状字典选中（None 取消全部选中）。
@@ -460,7 +572,7 @@ class Canvas(QGraphicsView):
             图形项；不支持的形状类型返回 None。
         """
         color = color_for_label(shape.get("label", ""))
-        pen = QPen(color, 2)
+        pen = QPen(color, self._render_config.pen_width)
         pen.setCosmetic(True)
         shape_type = shape.get("shape_type", "")
         points = shape.get("points", [])
@@ -485,14 +597,14 @@ class Canvas(QGraphicsView):
             item = QGraphicsPolygonItem(poly)
             item.setPen(pen)
             item.setBrush(QBrush(QColor(color)))
-            item.setOpacity(0.3)
+            item.setOpacity(self._render_config.opacity)
             return item
 
         return None
 
     def _render(self) -> None:
         """根据当前形状列表重建所有图形项。"""
-        # 清除旧图形项（保留背景图片项）与 OCR 文本项
+        # 清除旧图形项（保留背景图片项）与形状文本项
         for item in list(self._shape_items.values()):
             self._scene.removeItem(item)
         self._shape_items = {}
@@ -511,34 +623,59 @@ class Canvas(QGraphicsView):
             self._scene.addItem(item)
             self._shape_items[id(shape)] = item
             self._item_shape[id(item)] = id(shape)
-            # OCR：label 为 text 且 description 非空时在图像上显示描述
-            self._maybe_add_ocr_text(shape)
+            # 文本渲染：按渲染配置显示标签/组号/描述
+            self._maybe_add_shape_text(shape)
 
         # 编辑模式（工具为 None）：渲染可拖动编辑端点
         self._render_vertices()
         self._highlight_selection()
 
-    def _maybe_add_ocr_text(self, shape: Dict) -> None:
-        """OCR 任务：label 为 text 且 description 非空时，在图像上叠加显示描述。
+    def _maybe_add_shape_text(self, shape: Dict) -> None:
+        """按渲染配置在形状第一个点上方渲染文本（标签/组号/描述，多行）。
 
-        文本超过 _OCR_TRUNCATE 个字符时用 ".." 截断，颜色与标签类别一致。
+        - 标签：show_label 开且 label 非空；label 为 "text"（OCR 形状）时跳过
+        - 组号：show_group 开且 group_id 非 None，显示 "G{group_id}"
+        - 描述：show_description 开且非空，超过 _OCR_TRUNCATE 字符截断加 ".."
+        - 全部关闭或无内容时不渲染；文本颜色与类别色一致，字号取配置。
+        - 纯显示效果：不改变标注数据。
 
         Args:
             shape: 形状字典。
         """
-        if str(shape.get("label", "")) != "text":
-            return
+        cfg = self._render_config
+        label = str(shape.get("label", "") or "")
+        parts: List[str] = []
+        # 标签部分（OCR 形状 label 恒为 text，无展示意义，跳过）
+        if cfg.show_label and label and label != "text":
+            parts.append(label)
+        # 组号部分
+        gid = shape.get("group_id")
+        if cfg.show_group and isinstance(gid, int) and gid >= 0:
+            parts.append(f"G{gid}")
+        # 描述部分（超长截断）
         desc = str(shape.get("description", "") or "")
-        if not desc:
+        if cfg.show_description and desc:
+            if len(desc) > _OCR_TRUNCATE:
+                desc = desc[:_OCR_TRUNCATE] + ".."
+            parts.append(desc)
+        if not parts:
             return
-        if len(desc) > _OCR_TRUNCATE:
-            desc = desc[:_OCR_TRUNCATE] + ".."
         points = shape.get("points") or []
         if not points:
             return
-        text_item = QGraphicsTextItem(desc)
-        text_item.setDefaultTextColor(color_for_label("text"))
-        text_item.setPos(float(points[0][0]), float(points[0][1]) - 18)
+        # 多行文本（HTML 换行），颜色与类别色一致
+        html = "<br>".join(p.replace("<", "&lt;").replace(">", "&gt;") for p in parts)
+        text_item = QGraphicsTextItem()
+        font = QFont()
+        font.setPointSizeF(float(cfg.font_size))
+        text_item.setFont(font)
+        text_item.setHtml(
+            f'<span style="color:{color_for_label(label).name()};">{html}</span>'
+        )
+        text_item.setPos(
+            float(points[0][0]),
+            float(points[0][1]) - (float(cfg.font_size) + 4),
+        )
         text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(text_item)
         self._text_items.append(text_item)
@@ -555,9 +692,9 @@ class Canvas(QGraphicsView):
             if color is None:
                 continue
             if shape_id in selected:
-                pen = QPen(color, 4)
+                pen = QPen(color, self._render_config.pen_width + 2)
             else:
-                pen = QPen(color, 2)
+                pen = QPen(color, self._render_config.pen_width)
             pen.setCosmetic(True)
             if hasattr(item, "setPen"):
                 # 点形状使用白色描边，保持可辨识
@@ -571,10 +708,10 @@ class Canvas(QGraphicsView):
                 item.setPen(pen)
 
     def _render_vertices(self) -> None:
-        """编辑模式下渲染全部形状的可拖动编辑端点。
+        """编辑模式下渲染**选中**形状的可拖动编辑端点。
 
         矩形显示左上/右下两个端点；多边形显示全部顶点；点形状即顶点本身
-        不额外渲染。非编辑模式（绘制工具激活）不显示端点。
+        不额外渲染。非编辑模式（绘制工具激活）或形状未选中时不显示端点。
         """
         # 清理旧端点项
         for items in self._vertex_items.values():
@@ -589,6 +726,9 @@ class Canvas(QGraphicsView):
             return
 
         for shape in self._shapes:
+            # 仅选中形状显示可拖动端点（未选中的形状即使在编辑模式也不显示）
+            if id(shape) not in self._selected_ids:
+                continue
             shape_type = shape.get("shape_type", "")
             points = shape.get("points", [])
             if shape_type == labelme_io.SHAPE_RECTANGLE:
@@ -970,8 +1110,8 @@ class Canvas(QGraphicsView):
     def keyPressEvent(self, event) -> None:
         """快捷键：Esc 取消当前绘制/框选/端点拖动。
 
-        Delete / Shift+Delete 由主窗口统一处理（删除标注文件/图片文件），
-        画布不再拦截 Delete，避免与文件删除快捷键冲突。
+        Delete 由主窗口按焦点上下文路由处理（对象列表/文件列表/画布选中删除），
+        画布不拦截。
         """
         if event.key() == Qt.Key.Key_Escape:
             if self._vertex_drag is not None:
