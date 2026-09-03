@@ -16,6 +16,8 @@
 更新: 2026-09-03 "选择"工具更名为"编辑"，移除预览模式按钮
 更新: 2026-09-03 移除"删除标注文件"按钮与 delete_file_requested 信号（Delete 改由主窗口按焦点路由）
 更新: 2026-09-03 按钮禁用态增强（灰字 + 浅灰底，明确视觉反馈）
+更新: 2026-09-03 标注按钮重命名（标注当前图片/标注所有图片）并新增
+      "标注视频"按钮（annotate_video_requested 信号）
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -94,8 +96,9 @@ class LeftToolbar(QWidget):
         delete_requested: 请求删除选中标注（形状）。
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
         load_model_requested: 请求加载推理模型。
-        annotate_single_requested: 请求自动标注当前图片。
-        annotate_all_requested: 请求自动标注全部图片。
+        annotate_single_requested: 请求标注当前画布图片。
+        annotate_all_requested: 请求标注工作路径中的全部图片。
+        annotate_video_requested: 请求标注工作路径下的视频文件。
         tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
     """
 
@@ -108,6 +111,7 @@ class LeftToolbar(QWidget):
     load_model_requested = Signal()
     annotate_single_requested = Signal()
     annotate_all_requested = Signal()
+    annotate_video_requested = Signal()
     tool_selected = Signal(str)
 
     def __init__(self, parent=None):
@@ -136,10 +140,12 @@ class LeftToolbar(QWidget):
         # ===== 自动标注 =====
         self.btn_load_model = _ToolBarButton("加载模型")
         self.btn_load_model.clicked.connect(self.load_model_requested.emit)
-        self.btn_annotate_single = _ToolBarButton("自动标注单张")
+        self.btn_annotate_single = _ToolBarButton("标注当前图片")
         self.btn_annotate_single.clicked.connect(self.annotate_single_requested.emit)
-        self.btn_annotate_all = _ToolBarButton("自动标注全部")
+        self.btn_annotate_all = _ToolBarButton("标注所有图片")
         self.btn_annotate_all.clicked.connect(self.annotate_all_requested.emit)
+        self.btn_annotate_video = _ToolBarButton("标注视频")
+        self.btn_annotate_video.clicked.connect(self.annotate_video_requested.emit)
 
         # ===== 标注工具（互斥可选）=====
         self._tool_buttons = {}
@@ -156,6 +162,7 @@ class LeftToolbar(QWidget):
         root.addWidget(self.btn_load_model)
         root.addWidget(self.btn_annotate_single)
         root.addWidget(self.btn_annotate_all)
+        root.addWidget(self.btn_annotate_video)
         root.addWidget(self._separator())
 
         for tool, text in (
@@ -212,6 +219,7 @@ class LeftToolbar(QWidget):
         """
         self.btn_annotate_single.setEnabled(enabled)
         self.btn_annotate_all.setEnabled(enabled)
+        self.btn_annotate_video.setEnabled(enabled)
 
     def set_edit_enabled(self, enabled: bool) -> None:
         """统一启用/禁用所有编辑功能（保存/删除/标注工具）。

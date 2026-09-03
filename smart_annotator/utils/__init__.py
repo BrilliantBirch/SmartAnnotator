@@ -27,6 +27,7 @@ from .files import (
     checkAnnotationFiles,
     move_files,
     getModelClasses,
+    getModelTaskType,
     resolve_dataset_dirs,
     scan_dataset_files,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "checkAnnotationFiles",
     "move_files",
     "getModelClasses",
+    "getModelTaskType",
     "resolve_dataset_dirs",
     "scan_dataset_files",
     "is_point_in_box",

@@ -11,6 +11,8 @@
     4. 2026-06-24 添加模型加载失败检查，避免静默崩溃
     5. 2026-07-07 添加视频文件处理支持，实现智能抽帧和冗余帧过滤
     6. 2026-08-26 支持按用户选择的类别过滤推理结果（selected_classes）
+    7. 2026-09-03 图片批次进度描述附带文件名；视频分支改为逐帧批次回调
+       （帧级进度 + 可中断，中止时已生成帧保留、剩余帧停止处理）
 """
 
 import cv2
@@ -147,8 +149,11 @@ class Annotator:
             for idx, annotation_pathList in enumerate(annotation_gen):
                 try:
                     progress = processed_tasks / total_tasks if total_tasks > 0 else 0
+                    # 进度描述附带本批文件名（供进度窗口日志展示）
+                    names = "、".join(Path(p).name for p in annotation_pathList[:2])
+                    suffix = f" 等{len(annotation_pathList)}张" if len(annotation_pathList) > 2 else ""
                     if not callback(
-                        f"正处理第{idx+1}批图片数据",
+                        f"标注图片: {names}{suffix}",
                         progress,
                     ):
                         return False
@@ -170,10 +175,15 @@ class Annotator:
                 try:
                     progress = processed_tasks / total_tasks if total_tasks > 0 else 0
                     if not callback(
-                        f"正处理视频 {video_idx+1}/{len(video_files)}: {Path(video_path).name}",
+                        f"开始处理视频 {video_idx+1}/{len(video_files)}: {Path(video_path).name}",
                         progress,
                     ):
                         return False
+
+                    # 预估抽帧总数（帧级进度：按总帧数/间隔估算）
+                    info = VideoProcessor.get_video_info(Path(video_path))
+                    total_frames = int(info.get("total_frames", 0)) if info else 0
+                    est_frames = max(1, total_frames // self.config.frame_interval + 1)
 
                     frame_iter = video_processor.extract_frames_iter(
                         Path(video_path), self.output
@@ -181,7 +191,17 @@ class Annotator:
                     annotation_gen = annotation_generator(
                         frame_iter, self.model.batch
                     )
+                    labeled_frames = 0
                     for idx, annotation_pathList in enumerate(annotation_gen):
+                        # 帧级进度与中断检查（中止时已生成帧保留）
+                        labeled_frames += len(annotation_pathList)
+                        inner = min(labeled_frames / est_frames, 1.0)
+                        progress = (processed_tasks + inner) / total_tasks if total_tasks > 0 else 0
+                        if not callback(
+                            f"标注视频帧: {Path(video_path).name} 已抽取 {video_processor.extracted_count} 帧",
+                            progress,
+                        ):
+                            return False
                         try:
                             self._label(annotation_pathList)
                         except Exception as e:

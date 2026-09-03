@@ -8,6 +8,8 @@ Annotator，保证与批量自动标注的类别过滤/格式化/坐标换算行
 
 作者: BaiBinnan
 创建日期: 2026-09-02
+更新: 2026-09-03 中止后不再发射推理结果（加载/推理完成后检查停止标志）；
+      模型加载与推理阶段分别发射进度描述
 """
 
 from PySide6.QtCore import Signal, QMutexLocker
@@ -52,8 +54,22 @@ class SingleAnnotateWorker(BaseWorker):
                 if self.stopped:
                     return
 
+            # 模型加载阶段（engine 反序列化耗时较长）
+            self.progress_desc.emit("正在加载模型...")
             annotator = Annotator(self.config)
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.progress_desc.emit("单张标注已中止")
+                    return
+
+            # 推理阶段
+            self.progress_desc.emit("正在推理...")
             shapes = annotator.annotate_image(self.image_path)
+            # 中止后丢弃结果（不回填画布）
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.progress_desc.emit("单张标注已中止")
+                    return
             self.shapes_ready.emit(shapes)
             self.progress_desc.emit(f"单张标注完成，共 {len(shapes)} 个对象")
 

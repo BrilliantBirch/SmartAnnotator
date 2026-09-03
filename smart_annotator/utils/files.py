@@ -6,6 +6,7 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-03 新增 getModelTaskType（按模型元数据/输出结构推导任务类型）
 """
 
 import glob
@@ -325,3 +326,79 @@ def getModelClasses(model_path) -> dict:
         return {}
 
     return {}
+
+
+def getModelTaskType(model_path):
+    """从模型元数据与输出结构推导任务类型（不加载推理会话，轻量解析）。
+
+    推导顺序（命中即返回）：
+        1. metadata 中的显式 "task" 键（值为 DETECT/POSE/SEGMENT，大小写不敏感）
+        2. metadata 含 "kpt_shape" → POSE（YOLO pose 导出约定）
+        3. 图输出张量数量 >= 2 → SEGMENT（分割模型输出 predictions + proto）
+        4. 其余（单输出、含 names 类别）→ DETECT
+    .engine 经内嵌 metadata 判定（kpt_shape/task），不含时回退同名 .onnx
+    判定输出结构；两者均不可用时返回 None（无法推导，交由用户选择）。
+
+    Args:
+        model_path: 模型文件路径（.onnx 或 .engine）。
+
+    Returns:
+        任务类型名称字符串 "DETECT" / "POSE" / "SEGMENT"；无法推导返回 None。
+    """
+    path = Path(model_path) if model_path else None
+    if path is None or not path.exists():
+        return None
+
+    suffix = path.suffix.lower()
+    # ===== engine：内嵌 metadata 判定，缺关键键时回退同名 .onnx =====
+    if suffix == ".engine":
+        metadata = _parse_engine_metadata(path)
+        task = _task_from_metadata(metadata)
+        if task is not None:
+            return task
+        onnx_path = path.with_suffix(".onnx")
+        if onnx_path.exists():
+            path = onnx_path
+            suffix = ".onnx"
+        else:
+            return None
+
+    if suffix != ".onnx":
+        return None
+
+    try:
+        import onnx
+
+        model = onnx.load(str(path), load_external_data=False)
+        # 元数据显式声明优先（task 键 / kpt_shape）
+        meta = {prop.key: prop.value for prop in model.metadata_props}
+        task = _task_from_metadata(meta)
+        if task is not None:
+            return task
+        # 输出结构推断：分割模型多输出（predictions + proto 等）
+        if len(model.graph.output) >= 2:
+            return "SEGMENT"
+        return "DETECT"
+    except Exception:
+        return None
+
+
+def _task_from_metadata(metadata: dict):
+    """按元数据字典判定任务类型（task 键优先，其次 kpt_shape）。
+
+    Args:
+        metadata: 元数据键值字典。
+
+    Returns:
+        任务类型名称字符串；无法判定返回 None。
+    """
+    if not isinstance(metadata, dict):
+        return None
+    # 显式 task 键（大小写不敏感）
+    task = str(metadata.get("task", "")).strip().upper()
+    if task in ("DETECT", "POSE", "SEGMENT"):
+        return task
+    # YOLO pose 导出约定：metadata 含 kpt_shape
+    if "kpt_shape" in metadata:
+        return "POSE"
+    return None

@@ -7,6 +7,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-03 模型加载前发射进度描述（engine 反序列化耗时较长，
+      进度窗口可显示"正在加载模型..."）
 """
 
 from smart_annotator.config import SysConfig
@@ -42,7 +44,8 @@ class AnnotationWorker(BaseWorker):
                 if self.stopped:
                     return
 
-            # 初始化标注器并执行任务
+            # 初始化标注器并执行任务（模型加载耗时较长，先发进度提示）
+            self.progress_desc.emit("正在加载模型...")
             annotator = Annotator(self.config)
             continue_running = annotator.run(self.run_callback)
 

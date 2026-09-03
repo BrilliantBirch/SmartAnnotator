@@ -33,14 +33,22 @@
       清空后立即按当前画布重建标签列表；扫描支持逐文件中断与进度提示
       （状态栏），停止后不再发射过期结果；标签强制转字符串防混合类型崩溃
 更新: 2026-09-03 列表复选框接线（对象/关键点列表可见性控制、point 形状分流关键点列表、文件列表只读已标注复选框、Delete 路由关键点分支）
+更新: 2026-09-03 模型加载窗口精简：仅保留模型加载（GPU 下 onnx 经用户确认
+      关窗后转 engine）与推理参数；任务类型按模型元数据自动推导（失败可手动选）
 更新: 2026-09-03 扫描手动化：新增统计菜单（扫描并统计/自动扫描开关持久化），
       扫描弹出进度对话框（可中止），完成后弹统计表格；默认打开文件夹
       不自动扫描（标签按已读图片累加、不合并大小写，仅扫描结果合并）
+更新: 2026-09-03 标注入口统一：单张标注改常驻 worker（修复局部变量被
+      回收导致的 QThread 闪退）；"标注所有图片"不再重复打开模型设置窗
+      （资源预检 + 跳过/覆盖选项 + 覆盖前清理老标注文件）；新增"标注
+      视频"（菜单+导航栏，抽帧间隔默认 10 帧）；标注统一为模态进度
+      窗口（进度条 + 日志 + 可中止），期间禁止预览与编辑
 """
 
+from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QIcon, QShortcut, QCursor
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -58,15 +66,17 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QSplitter,
+    QInputDialog,
 )
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
-from .config import SysConfig, RenderConfig
+from .config import SysConfig, RenderConfig, DEVICE
 from .core import labelme_io
-from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir
+from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir, getVideoFilesInDir
 from .utils.render_store import load_render_config, save_render_config
 from .widgets.dialogs import chooseDir, showMessageBox
+from .widgets.annotate_dialogs import AnnotateOptionsDialog, AnnotateProgressDialog
 from .widgets.left_toolbar import (
     LeftToolbar,
     TOOL_SELECT,
@@ -105,6 +115,10 @@ _TOOL_SHORTCUTS = {
 class MainWindow(QMainWindow):
     """应用主窗口 - 三栏标注编辑器 + 标准菜单栏。"""
 
+    # 模型转换结果通知（后台线程 → 主线程 UI 的安全转发）
+    # 参数：(消息文本, 毫秒)——经 QueuedConnection 在主线程显示状态栏消息
+    _convert_notify = Signal(str, int)
+
     def __init__(self):
         """初始化主窗口，构建菜单栏、三栏布局并连接信号。"""
         super().__init__()
@@ -135,16 +149,28 @@ class MainWindow(QMainWindow):
         self._render_save_timer.timeout.connect(self._save_render_config_now)
         # 标签扫描进度对话框（扫描期间存在，非模态；中止/完成后关闭并置空）
         self._scan_progress_dlg: "ScanProgressDialog | None" = None
+        # 自动标注运行状态（模态进度对话框 / 任务模式 / 最近错误 / engine 转换中）
+        self._annotate_progress_dlg: "AnnotateProgressDialog | None" = None
+        self._annotate_mode: str = ""  # single / all / video（空 = 无任务）
+        self._annotate_error: str = ""
+        self._engine_converting: bool = False
 
-        # 后台线程
+        # 后台线程（单张 worker 常驻主窗口，避免局部变量被回收导致
+        # "QThread: Destroyed while thread is still running" 闪退）
         self.annotate_worker = AnnotationWorker()
         self.convert_worker = ConvertWorker()
         self.label_scan_worker = LabelScanWorker()
+        self.single_annotate_worker = SingleAnnotateWorker()
 
         # 构建界面
         self._build_menubar()
         self._build_ui()
         self._connect_signals()
+
+        # 模型转换结果通知：后台线程经信号在主线程显示状态栏消息（线程安全）
+        self._convert_notify.connect(
+            lambda msg, msec: self.statusBar().showMessage(msg, msec)
+        )
 
         # 应用持久化的渲染配置到画布
         self.canvas.set_render_config(self._render_config)
@@ -307,13 +333,17 @@ class MainWindow(QMainWindow):
         self.act_load_model.triggered.connect(self._open_annotate_dialog)
         menu_tool.addAction(self.act_load_model)
 
-        self.act_annotate_single = QAction("自动标注单张", self)
+        self.act_annotate_single = QAction("标注当前图片", self)
         self.act_annotate_single.triggered.connect(self._on_annotate_single)
         menu_tool.addAction(self.act_annotate_single)
 
-        self.act_annotate_all = QAction("自动标注全部", self)
-        self.act_annotate_all.triggered.connect(self._open_annotate_dialog)
+        self.act_annotate_all = QAction("标注所有图片", self)
+        self.act_annotate_all.triggered.connect(self._on_annotate_all)
         menu_tool.addAction(self.act_annotate_all)
+
+        self.act_annotate_video = QAction("标注视频", self)
+        self.act_annotate_video.triggered.connect(self._on_annotate_video)
+        menu_tool.addAction(self.act_annotate_video)
 
         self.act_convert = QAction("格式转换", self)
         self.act_convert.triggered.connect(self._open_convert_dialog)
@@ -484,7 +514,8 @@ class MainWindow(QMainWindow):
         self.left_toolbar.delete_image_requested.connect(self._on_delete_image_and_annotation)
         self.left_toolbar.load_model_requested.connect(self._open_annotate_dialog)
         self.left_toolbar.annotate_single_requested.connect(self._on_annotate_single)
-        self.left_toolbar.annotate_all_requested.connect(self._open_annotate_dialog)
+        self.left_toolbar.annotate_all_requested.connect(self._on_annotate_all)
+        self.left_toolbar.annotate_video_requested.connect(self._on_annotate_video)
         self.left_toolbar.tool_selected.connect(self._on_tool_selected)
 
         # 画布
@@ -516,6 +547,19 @@ class MainWindow(QMainWindow):
         self.label_scan_worker.progress_desc.connect(
             lambda msg: self.statusBar().showMessage(msg, 3000)
         )
+
+        # 批量标注 worker（所有图片/视频）：进度/错误/完成信号
+        self.annotate_worker.progress_updated.connect(self._on_annotate_progress)
+        self.annotate_worker.progress_desc.connect(self._on_annotate_progress_desc)
+        self.annotate_worker.error_occurred.connect(self._on_annotate_error)
+        self.annotate_worker.task_finished.connect(self._on_annotate_task_finished)
+
+        # 单张标注 worker（当前画布图片）
+        self.single_annotate_worker.progress_updated.connect(self._on_annotate_progress)
+        self.single_annotate_worker.progress_desc.connect(self._on_annotate_progress_desc)
+        self.single_annotate_worker.error_occurred.connect(self._on_annotate_error)
+        self.single_annotate_worker.task_finished.connect(self._on_annotate_task_finished)
+        self.single_annotate_worker.shapes_ready.connect(self._on_single_shapes_ready)
 
     # -------------------------- 文件操作 --------------------------
     def _on_open_folder(self) -> None:
@@ -870,15 +914,19 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 自动标注 --------------------------
     def _open_annotate_dialog(self) -> None:
-        """打开自动标注设置对话框（复用 AnnotatePage + 批量 worker）。"""
+        """打开模型加载与推理参数设置对话框（精简版 AnnotatePage）。
+
+        GPU 模式下选择 .onnx 模型保存时：先弹窗确认是否转换为
+        TensorRT engine（转换耗时较长），确认后关闭本对话框再执行
+        转换（后台线程，结果写回模型路径）。
+        """
         dialog = QDialog(self)
-        dialog.setWindowTitle("自动标注 / 模型加载")
-        dialog.resize(980, 720)
+        dialog.setWindowTitle("模型加载 / 自动标注设置")
+        dialog.resize(560, 640)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
         page = AnnotatePage()
-        page.set_worker(self.annotate_worker)
         layout.addWidget(page, 1)
 
         buttons = QDialogButtonBox(
@@ -893,34 +941,332 @@ class MainWindow(QMainWindow):
         if self.annotate_config is not None:
             page.apply_config(self.annotate_config)
 
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            cfg = SysConfig()
-            try:
-                page.collect_config(cfg)
-            except Exception as e:
-                LOGGER.error(f"收集标注配置失败: {e}")
-                return
-            self.annotate_config = cfg
-            self.left_toolbar.set_annotate_enabled(bool(cfg.annotate_config.model_path))
-            LOGGER.info("已保存自动标注配置")
-
-    def _on_annotate_single(self) -> None:
-        """对当前图片执行单张自动标注（后台线程推理，结果回填画布）。"""
-        img = self._current_image_path()
-        if not img:
-            showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        cfg = SysConfig()
+        try:
+            page.collect_config(cfg)
+        except Exception as e:
+            LOGGER.error(f"收集标注配置失败: {e}")
+            return
+        self.annotate_config = cfg
+        self.left_toolbar.set_annotate_enabled(bool(cfg.annotate_config.model_path))
+        LOGGER.info("已保存自动标注配置")
+        # 对话框已关闭：GPU 模式下的 .onnx 模型按需转换 engine（用户确认后执行）
+        self._maybe_convert_onnx_to_engine(cfg)
+
+    def _maybe_convert_onnx_to_engine(self, cfg: SysConfig) -> None:
+        """GPU 模式下选择 .onnx 模型时确认并转换为 TensorRT engine。
+
+        TensorRT 仅支持 engine 推理；转换耗时较长（数分钟），故在用户
+        确认后执行。已有同名 .engine 时跳过转换直接使用。转换在后台
+        线程执行，完成后将配置的模型路径更新为 engine 文件。
+
+        Args:
+            cfg: 刚保存的标注配置。
+        """
+        from .core.annotate.vision.onnx2engine import Onnx2Engine
+
+        ac = cfg.annotate_config
+        # 仅 GPU 模式 + .onnx 模型需要转换
+        if ac.device != DEVICE.GPU or not ac.model_path:
+            return
+        model_path = Path(ac.model_path)
+        if model_path.suffix.lower() != ".onnx":
+            return
+        engine_path = model_path.with_suffix(".engine")
+        if engine_path.exists():
+            # 已有同名 engine：直接使用（无需转换）
+            ac.model_path = str(engine_path)
+            LOGGER.info(f"检测到已有 engine 文件，直接使用: {engine_path}")
+            return
+        # 用户确认转换（转换耗时较长）
+        answer = QMessageBox.question(
+            self,
+            "转换为 TensorRT engine",
+            "GPU 推理使用 TensorRT engine 模型。\n"
+            f"是否将以下 ONNX 模型转换为 engine？\n（转换耗时较长，期间请勿关闭程序）\n\n{model_path}",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            LOGGER.info("用户取消 ONNX → engine 转换（GPU 推理可能失败）")
+            return
+        # 后台线程执行转换（避免阻塞 UI）
+        import threading
+
+        self._engine_converting = True
+
+        def _convert():
+            try:
+                converter = Onnx2Engine(model_path)
+                result = converter.run()
+                # 转换成功：更新配置模型路径（线程安全：仅字符串赋值，
+                # UI 侧使用发生在下一次对话框打开/推理启动时）
+                ac.model_path = str(result)
+                LOGGER.info(f"ONNX → engine 转换完成: {result}")
+                # 状态栏消息经信号转发到主线程（跨线程禁止直接操作 UI）
+                self._convert_notify.emit(f"模型转换完成: {result}", 5000)
+            except Exception as e:
+                LOGGER.error(f"ONNX → engine 转换失败: {e}")
+                self._convert_notify.emit(f"模型转换失败: {e}", 8000)
+            finally:
+                self._engine_converting = False
+
+        threading.Thread(target=_convert, daemon=True, name="Onnx2Engine").start()
+
+    # -------------------------- 自动标注（统一入口） --------------------------
+    def _precheck_annotate(
+        self,
+        need_current: bool = False,
+        need_images: bool = False,
+        need_videos: bool = False,
+    ) -> bool:
+        """标注前资源预检（模型已加载并转换完毕 / 工作区就绪）。
+
+        Args:
+            need_current: 需要当前画布有图片（单张标注）。
+            need_images: 需要已打开包含图片的文件夹（批量标注）。
+            need_videos: 需要工作路径下存在视频文件（视频标注）。
+
+        Returns:
+            预检通过返回 True；不通过时已弹窗提示并返回 False。
+        """
+        # 模型已加载
         if self.annotate_config is None or not self.annotate_config.annotate_config.model_path:
             showMessageBox(QMessageBox.Icon.Warning, "请先加载模型（工具 → 加载模型 / 自动标注设置）")
+            return False
+        # engine 转换进行中（模型尚未就绪）
+        if self._engine_converting:
+            showMessageBox(QMessageBox.Icon.Warning, "模型正在转换为 TensorRT engine，请等待转换完成后再标注")
+            return False
+        ac = self.annotate_config.annotate_config
+        model_path = Path(ac.model_path)
+        if not model_path.exists():
+            showMessageBox(QMessageBox.Icon.Warning, f"模型文件不存在: {ac.model_path}")
+            return False
+        # GPU 模式必须使用已转换的 engine（用户取消转换时阻止标注）
+        if (
+            ac.device == DEVICE.GPU
+            and model_path.suffix.lower() == ".onnx"
+            and not model_path.with_suffix(".engine").exists()
+        ):
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                "GPU 模式需使用 TensorRT engine 模型：\n"
+                "请重新打开“加载模型 / 自动标注设置”并完成 ONNX → engine 转换",
+            )
+            return False
+        # 工作区检查
+        if need_current and not self._current_image_path():
+            showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
+            return False
+        if need_images and not self._image_files:
+            showMessageBox(QMessageBox.Icon.Warning, "请先打开包含图片的文件夹")
+            return False
+        if need_videos:
+            videos = getVideoFilesInDir(self._work_dir) if self._work_dir else []
+            if not videos:
+                showMessageBox(QMessageBox.Icon.Warning, "当前工作路径下未找到视频文件（mp4/avi/mov）")
+                return False
+        return True
+
+    def _annotate_worker_busy(self) -> bool:
+        """检查标注线程是否正在执行（执行中阻止新任务）。
+
+        Returns:
+            忙碌返回 True（已弹窗提示），空闲返回 False。
+        """
+        if self.annotate_worker.isRunning() or self.single_annotate_worker.isRunning():
+            showMessageBox(QMessageBox.Icon.Warning, "标注任务正在执行，请等待完成或先中止")
+            return True
+        return False
+
+    def _run_annotate_with_dialog(self, worker, mode: str, title: str, target: str) -> None:
+        """启动标注 worker 并弹出模态进度对话框阻塞等待结束。
+
+        模态对话框保证标注期间主窗口不可预览/编辑；worker 的进度/
+        错误/完成信号驱动对话框日志、进度条与收尾逻辑（_on_annotate_*）。
+
+        Args:
+            worker: 已配置好任务的标注线程（AnnotationWorker /
+                SingleAnnotateWorker，调用前已完成 setConfig/set_task）。
+            mode: 任务模式（single / all / video，收尾逻辑按此分派）。
+            title: 进度窗口标题。
+            target: 任务目标描述（进度窗口顶部灰字展示）。
+        """
+        dlg = AnnotateProgressDialog(title, target, self)
+        self._annotate_progress_dlg = dlg
+        self._annotate_mode = mode
+        self._annotate_error = ""
+        dlg.canceled.connect(self._on_annotate_dialog_canceled)
+        worker.start()
+        dlg.exec()
+
+    def _on_annotate_dialog_canceled(self) -> None:
+        """用户中止标注：停止对应 worker（线程内逐批检查停止标志）。"""
+        if self._annotate_mode == "single":
+            if self.single_annotate_worker.isRunning():
+                self.single_annotate_worker.stop()
+        elif self.annotate_worker.isRunning():
+            self.annotate_worker.stop()
+        self.statusBar().showMessage("正在中止标注...", 2000)
+
+    def _on_annotate_single(self) -> None:
+        """对当前画布图片执行单张自动标注（模态进度窗口，结果回填画布）。"""
+        if not self._precheck_annotate(need_current=True):
+            return
+        if self._annotate_worker_busy():
+            return
+        img = self._current_image_path()
+        self.single_annotate_worker.set_task(self.annotate_config, img)
+        self._run_annotate_with_dialog(
+            self.single_annotate_worker,
+            "single",
+            "自动标注 - 当前图片",
+            f"目标: {Path(img).name}",
+        )
+
+    def _on_annotate_all(self) -> None:
+        """标注工作路径中的全部图片（跳过/覆盖两种模式，模态进度窗口）。"""
+        if not self._precheck_annotate(need_images=True):
+            return
+        if self._annotate_worker_busy():
             return
 
-        worker = SingleAnnotateWorker()
-        worker.set_task(self.annotate_config, img)
-        worker.shapes_ready.connect(self._on_single_shapes_ready)
-        worker.error_occurred.connect(lambda msg: showMessageBox(QMessageBox.Icon.Critical, msg))
-        worker.task_finished.connect(worker.deleteLater)
-        self.left_toolbar.set_annotate_enabled(False)
-        worker.start()
+        images = list(self._image_files)
+        # 已有标注文件时由用户选择处理方式（跳过 / 覆盖）
+        annotated = [p for p in images if Path(p).with_suffix(".json").is_file()]
+        if annotated:
+            mode = AnnotateOptionsDialog.get_mode(self)
+            if mode is None:
+                return
+            if mode == "skip":
+                # 跳过模式：仅标注尚无标注文件的图片
+                images = [p for p in images if not Path(p).with_suffix(".json").is_file()]
+                if not images:
+                    showMessageBox(QMessageBox.Icon.Information, "所有图片均已标注，无需重新标注")
+                    return
+            else:
+                # 覆盖模式：先清理老标注文件（避免无检测结果时残留旧标注）
+                for p in images:
+                    Path(p).with_suffix(".json").unlink(missing_ok=True)
+
+        # 组装运行配置（深拷贝，不污染已保存的模型设置）
+        cfg = deepcopy(self.annotate_config)
+        ac = cfg.annotate_config
+        ac.image_path = self._work_dir
+        # 输出到工作目录：标注与图片同名存放于同目录，且不重复复制图片
+        ac.dataset_path = self._work_dir
+        ac.annotation_files = images
+        ac.video_files = []
+        self.annotate_worker.setConfig(cfg)
+        self._run_annotate_with_dialog(
+            self.annotate_worker,
+            "all",
+            "自动标注 - 所有图片",
+            f"共 {len(images)} 张图片 · 输出目录: {self._work_dir}",
+        )
+
+    def _on_annotate_video(self) -> None:
+        """标注工作路径下的视频文件（抽帧间隔可设，默认 10 帧）。"""
+        if not self._precheck_annotate(need_videos=True):
+            return
+        if self._annotate_worker_busy():
+            return
+
+        videos = getVideoFilesInDir(self._work_dir)
+        # 抽帧间隔参数（默认 10 帧）
+        interval, ok = QInputDialog.getInt(
+            self, "标注视频", "抽帧间隔（帧数）:", 10, 1, 10000, 1,
+        )
+        if not ok:
+            return
+
+        cfg = deepcopy(self.annotate_config)
+        ac = cfg.annotate_config
+        ac.image_path = self._work_dir
+        # 抽帧图片与标注输出到工作目录
+        ac.dataset_path = self._work_dir
+        ac.frame_interval = interval
+        ac.annotation_files = []
+        ac.video_files = videos
+        self.annotate_worker.setConfig(cfg)
+        self._run_annotate_with_dialog(
+            self.annotate_worker,
+            "video",
+            "自动标注 - 视频",
+            f"共 {len(videos)} 个视频 · 抽帧间隔 {interval} 帧 · 输出目录: {self._work_dir}",
+        )
+
+    def _on_annotate_progress(self, ratio: float) -> None:
+        """标注进度更新：刷新进度对话框进度条。"""
+        if self._annotate_progress_dlg is not None:
+            self._annotate_progress_dlg.update_progress(ratio)
+
+    def _on_annotate_progress_desc(self, msg: str) -> None:
+        """标注进度描述：追加到进度对话框日志区。"""
+        if self._annotate_progress_dlg is not None:
+            self._annotate_progress_dlg.append_log(msg)
+
+    def _on_annotate_error(self, msg: str) -> None:
+        """标注 worker 出错：记录并写入进度日志（任务结束时弹窗提示）。"""
+        self._annotate_error = msg
+        if self._annotate_progress_dlg is not None:
+            self._annotate_progress_dlg.append_log(f"[错误] {msg}")
+
+    def _on_annotate_task_finished(self) -> None:
+        """标注任务结束（完成/中止/出错统一入口）：按模式收尾后关闭对话框。"""
+        mode = self._annotate_mode
+        self._annotate_mode = ""
+        # 收尾处理（中止/出错同样执行，保证界面状态一致）
+        try:
+            if mode == "all":
+                self._after_annotate_images()
+            elif mode == "video":
+                self._after_annotate_video()
+            # single 模式结果由 shapes_ready 回填画布，无需文件收尾
+        except Exception as e:
+            LOGGER.warning(f"标注收尾处理失败: {e}")
+        self._close_annotate_dialog()
+        # 任务期间发生错误：对话框关闭后弹窗提示
+        error = self._annotate_error
+        self._annotate_error = ""
+        if error:
+            showMessageBox(QMessageBox.Icon.Critical, error)
+
+    def _close_annotate_dialog(self) -> None:
+        """关闭标注进度对话框（先断开 canceled，避免误触发中止逻辑）。"""
+        if self._annotate_progress_dlg is None:
+            return
+        dlg = self._annotate_progress_dlg
+        self._annotate_progress_dlg = None
+        try:
+            dlg.canceled.disconnect(self._on_annotate_dialog_canceled)
+        except RuntimeError:
+            pass  # 连接已断开（对话框已由用户关闭）
+        dlg.close()
+
+    def _after_annotate_images(self) -> None:
+        """批量图片标注收尾：刷新已标注复选框并重载当前图片标注。"""
+        flags = self._file_annotated_flags()
+        for i, flag in enumerate(flags):
+            self.right_panel.set_file_annotated(i, flag)
+        # 重载当前图片标注（同下标不触发自动保存，画布同步为新标注）
+        if 0 <= self._current_index < len(self._image_files):
+            self._load_image_by_index(self._current_index)
+
+    def _after_annotate_video(self) -> None:
+        """视频标注收尾：重扫工作目录图片（纳入新增抽帧图片）并保持当前图片。"""
+        current = self._current_image_path()
+        images = sorted(getImageFilesInDir(self._work_dir)) if self._work_dir else []
+        if not images:
+            return
+        self._image_files = images
+        self.right_panel.set_files(images, self._file_annotated_flags())
+        # 尽量保持当前图片不变（找不到时回到第一张）
+        idx = images.index(current) if current in images else 0
+        self._load_image_by_index(idx)
+        self._update_edit_state()
+        self._update_status()
 
     def _on_single_shapes_ready(self, shapes: list) -> None:
         """单张标注完成：结果回填画布并刷新右侧列表。"""
@@ -928,7 +1274,6 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._refresh_objects()
         self._refresh_labels()
-        self.left_toolbar.set_annotate_enabled(True)
         self._update_status()
 
     # -------------------------- 格式转换 --------------------------
@@ -1422,12 +1767,18 @@ class MainWindow(QMainWindow):
         if self._scan_progress_dlg is not None:
             self._scan_progress_dlg.close()
             self._scan_progress_dlg = None
-        for worker in (self.annotate_worker, self.convert_worker, self.label_scan_worker):
+        for worker in (
+            self.annotate_worker,
+            self.convert_worker,
+            self.label_scan_worker,
+            self.single_annotate_worker,
+        ):
             if worker.isRunning():
                 worker.stop()
         self.annotate_worker.wait(3000)
         self.convert_worker.wait(3000)
         self.label_scan_worker.wait(1500)
+        self.single_annotate_worker.wait(3000)
         event.accept()
 
     # -------------------------- 图标 --------------------------
