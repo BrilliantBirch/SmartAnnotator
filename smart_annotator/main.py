@@ -50,7 +50,7 @@ def main() -> None:
     if sys.platform == "win32":
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "BrilliantBirch.BriliantAnnotator"
+                "BrilliantBirch.BrilliantAnnotator"
             )
         except (AttributeError, OSError):
             pass  # 非 Windows 或设置失败时忽略，不影响主功能

@@ -6,6 +6,7 @@
     - 左侧：快捷操作栏（LeftToolbar）—— 文件/自动标注/标注工具
     - 中间：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑
     - 右侧：信息栏（RightPanel）—— 标签/对象/文件/关键点列表
+      （画布与右栏宽度、右栏各列表高度均可拖拽调节并持久化）
 
 标准菜单栏（文件/编辑/视图/工具/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
@@ -26,11 +27,14 @@
 更新: 2026-09-03 空 label 形状静默丢弃、标签单一数据源、Delete 焦点路由、画布完整右键菜单、移除删除标注文件与标签新增按钮
 更新: 2026-09-03 修复 Delete 焦点路由对象列表分支 selectedItems 误调 row() 导致的崩溃
 更新: 2026-09-03 新增视图菜单（渲染开关与线宽/不透明度/字号档位，配置持久化 %APPDATA%/BrilliantAnnotator）、对象列表显示组号
+更新: 2026-09-03 画布与右栏之间加水平分栏（宽度可拖拽）、右栏列表垂直分栏
+      （高度可拖拽），布局尺寸持久化到 render_config.json（防抖落盘）
+更新: 2026-09-03 列表复选框接线（对象/关键点列表可见性控制、point 形状分流关键点列表、文件列表只读已标注复选框、Delete 路由关键点分支）
 """
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup, QIcon, QShortcut, QCursor
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -47,6 +51,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QTextEdit,
     QPlainTextEdit,
+    QSplitter,
 )
 
 from . import __appname__, __version__
@@ -116,6 +121,11 @@ class MainWindow(QMainWindow):
         self._label_keypoints: list = []
         # 画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator）
         self._render_config: RenderConfig = load_render_config()
+        # 渲染配置防抖落盘定时器（分栏拖拽等高频变更合并为一次写盘）
+        self._render_save_timer = QTimer(self)
+        self._render_save_timer.setSingleShot(True)
+        self._render_save_timer.setInterval(500)
+        self._render_save_timer.timeout.connect(self._save_render_config_now)
 
         # 后台线程
         self.annotate_worker = AnnotationWorker()
@@ -341,15 +351,12 @@ class MainWindow(QMainWindow):
         """
         setattr(self._render_config, attr, value)
         self.canvas.set_render_config(self._render_config)
-        try:
-            save_render_config(self._render_config)
-        except OSError as e:
-            LOGGER.warning(f"渲染配置保存失败: {e}")
+        self._save_render_config_now()
         self.statusBar().showMessage(f"渲染设置已更新: {attr} = {value}", 1500)
 
     # -------------------------- 三栏布局 --------------------------
     def _build_ui(self) -> None:
-        """构建三栏式主体布局。"""
+        """构建三栏式主体布局（画布与右栏宽度可拖拽调节）。"""
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
@@ -360,9 +367,75 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas()
         self.right_panel = RightPanel()
 
+        # 中栏画布与右栏信息栏之间用水平分栏：拖拽分隔条调节第三栏宽度
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.addWidget(self.canvas)
+        self.main_splitter.addWidget(self.right_panel)
+        # 画布随窗口伸缩（stretch=1），右栏保持用户设定宽度（stretch=0）
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(6)
+
         root.addWidget(self.left_toolbar)
-        root.addWidget(self.canvas, 1)
-        root.addWidget(self.right_panel)
+        root.addWidget(self.main_splitter, 1)
+
+        # 应用持久化的右栏宽度与各列表高度
+        self._apply_panel_sizes()
+        # 拖拽变更 → 更新配置（防抖落盘）
+        self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+        self.right_panel.sizes_changed.connect(self._on_right_sizes_changed)
+
+    # -------------------------- 界面布局尺寸 --------------------------
+    def _apply_panel_sizes(self) -> None:
+        """应用持久化的右栏宽度与各列表高度到分栏控件。"""
+        cfg = self._render_config
+        # 右栏宽度：以当前窗口可用宽度为总量分配（画布占其余全部，
+        # 保证右栏精确命中配置宽度；窗口过窄时按比例收缩）
+        avail = max(self.width() - self.left_toolbar.width(), cfg.panel_width + 200)
+        self.main_splitter.setSizes([avail - cfg.panel_width, cfg.panel_width])
+        # 四组列表高度（关键点列表隐藏时不参与本次分配）
+        self.right_panel.set_section_heights([
+            cfg.label_list_height,
+            cfg.object_list_height,
+            cfg.file_list_height,
+            cfg.kpt_list_height,
+        ])
+
+    def _on_main_splitter_moved(self, pos: int, index: int) -> None:
+        """主分栏拖动：记录右栏宽度并防抖保存。
+
+        Args:
+            pos: 拖动位置（仅为信号签名，未使用）。
+            index: 分隔条下标（仅为信号签名，未使用）。
+        """
+        self._render_config.panel_width = self.right_panel.width()
+        self._schedule_render_save()
+
+    def _on_right_sizes_changed(self, heights: list) -> None:
+        """右栏各列表高度变化：记录并防抖保存。
+
+        Args:
+            heights: [标签, 对象, 文件, 关键点] 高度列表。
+        """
+        if len(heights) < 4:
+            return
+        self._render_config.label_list_height = heights[0]
+        self._render_config.object_list_height = heights[1]
+        self._render_config.file_list_height = heights[2]
+        self._render_config.kpt_list_height = heights[3]
+        self._schedule_render_save()
+
+    def _schedule_render_save(self) -> None:
+        """防抖调度渲染配置落盘（500ms 内的连续拖拽合并为一次写入）。"""
+        self._render_save_timer.start()
+
+    def _save_render_config_now(self) -> None:
+        """立即保存渲染配置到磁盘（防抖到期或窗口关闭时调用）。"""
+        try:
+            save_render_config(self._render_config)
+        except OSError as e:
+            LOGGER.warning(f"渲染配置保存失败: {e}")
 
     # -------------------------- 信号连接 --------------------------
     def _connect_signals(self) -> None:
@@ -390,7 +463,12 @@ class MainWindow(QMainWindow):
         self.right_panel.label_selected.connect(self._on_label_selected)
         self.right_panel.objects_selected.connect(self._on_objects_selected)
         self.right_panel.file_selected.connect(self._on_file_selected)
-        self.right_panel.keypoint_selected.connect(self._on_label_selected)
+        # 复选框可见性：隐藏/恢复对应形状的画布渲染（纯视图，不标脏）
+        self.right_panel.shape_visibility_requested.connect(self._on_shape_visibility_requested)
+        # 关键点列表（point 形状）：选中联动与右键编辑/删除（与对象列表同语义）
+        self.right_panel.keypoints_selected.connect(self._on_objects_selected)
+        self.right_panel.edit_keypoint_requested.connect(self._on_edit_object)
+        self.right_panel.delete_keypoints_requested.connect(self._on_delete_objects)
         # 对象列表（a）右键菜单：编辑属性 / 删除 / 进入编辑模式
         self.right_panel.edit_object_requested.connect(self._on_edit_object)
         self.right_panel.delete_objects_requested.connect(self._on_delete_objects)
@@ -413,7 +491,7 @@ class MainWindow(QMainWindow):
         self._work_dir = directory
         self._image_files = images
         self._current_index = -1
-        self.right_panel.set_files(images)
+        self.right_panel.set_files(images, self._file_annotated_flags())
         self._load_image_by_index(0)
         # 后台扫描目录下全部标注，汇总标签/关键点（不阻塞 UI）
         self._start_label_scan()
@@ -456,7 +534,7 @@ class MainWindow(QMainWindow):
                 self.canvas.clear_shapes()
         else:
             self.canvas.clear_shapes()
-        self.right_panel.set_files([image_path])
+        self.right_panel.set_files([image_path], self._file_annotated_flags())
         self.right_panel.select_file(0)
         self._refresh_objects()
         self._update_edit_state()
@@ -495,7 +573,7 @@ class MainWindow(QMainWindow):
         self._image_files = [image_path]
         self._current_index = 0
         self._dirty = False
-        self.right_panel.set_files([image_path])
+        self.right_panel.set_files([image_path], self._file_annotated_flags())
         self.right_panel.select_file(0)
         self._refresh_objects()
         self._update_edit_state()
@@ -542,6 +620,17 @@ class MainWindow(QMainWindow):
         if not img:
             return ""
         return str(Path(img).with_suffix(".json"))
+
+    def _file_annotated_flags(self) -> list:
+        """探测文件列表中各图片是否已有同名 labelme JSON 标注文件。
+
+        Returns:
+            与 self._image_files 等长的布尔列表（True = 已标注）。
+        """
+        return [
+            Path(img).with_suffix(".json").is_file()
+            for img in self._image_files
+        ]
 
     def _load_image_by_index(self, index: int) -> None:
         """加载指定下标的图片及其同名标注。
@@ -622,6 +711,9 @@ class MainWindow(QMainWindow):
         labelme_io.save_document(doc, json_path)
         self._dirty = False
         self._update_status()
+        # 保存到当前图片同名标注文件：文件列表复选框标记为已标注
+        if json_path == self._current_json_path() and 0 <= self._current_index < len(self._image_files):
+            self.right_panel.set_file_annotated(self._current_index, True)
         LOGGER.info(f"标注已保存: {json_path}")
 
     # -------------------------- 编辑操作 --------------------------
@@ -645,18 +737,26 @@ class MainWindow(QMainWindow):
         """Delete 快捷键：按当前焦点控件路由删除业务。
 
         路由顺序：文本输入控件不拦截 → 对象列表删选中对象 →
-        文件列表删选中图像及标注（含确认框）→ 默认删画布选中形状。
+        关键点列表删选中 point 形状 → 文件列表删选中图像及标注
+        （含确认框）→ 默认删画布选中形状。
         """
         fw = QApplication.focusWidget()
         # 焦点在文本输入控件：不拦截，保留正常文本删除行为
         if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
             return
-        # 焦点在对象列表：删除列表选中对象（与画布选中态双向同步）
+        # 焦点在对象列表：删除列表选中对象（映射下标，与画布选中态双向同步）
         obj_list = self.right_panel.object_section.list
         if fw is obj_list or (fw is not None and obj_list.isAncestorOf(fw)):
-            rows = sorted({obj_list.row(item) for item in obj_list.selectedItems()})
-            if rows:
-                self.canvas.delete_shapes_at(rows)
+            indices = self.right_panel.selected_object_indices()
+            if indices:
+                self.canvas.delete_shapes_at(indices)
+            return
+        # 焦点在关键点列表：删除列表选中 point 形状（映射下标）
+        kpt_list = self.right_panel.kpt_section.list
+        if fw is kpt_list or (fw is not None and kpt_list.isAncestorOf(fw)):
+            indices = self.right_panel.selected_kpt_indices()
+            if indices:
+                self.canvas.delete_shapes_at(indices)
             return
         # 焦点在文件列表：删除选中图像及同名标注（复用含确认框的健壮删除逻辑）
         file_list = self.right_panel.file_section.list
@@ -694,7 +794,7 @@ class MainWindow(QMainWindow):
         # 从文件列表移除当前项，避免下标越界
         if 0 <= self._current_index < len(self._image_files):
             self._image_files.pop(self._current_index)
-        self.right_panel.set_files(self._image_files)
+        self.right_panel.set_files(self._image_files, self._file_annotated_flags())
 
         if not self._image_files:
             # 无剩余图片：清空工作区状态
@@ -1028,7 +1128,10 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_canvas_selection_changed(self, shapes: list) -> None:
-        """画布选中集合变化（含多选）时联动对象列表选中态。
+        """画布选中集合变化（含多选）时联动对象/关键点列表选中态。
+
+        select_objects 已泛化：按两列表的行号 → 形状下标映射分派，
+        point 形状选中同步到关键点列表，其余同步到对象列表。
 
         Args:
             shapes: 选中形状字典列表（可为空）。
@@ -1047,6 +1150,21 @@ class MainWindow(QMainWindow):
             indices: 对象下标列表。
         """
         self.canvas.select_shapes_by_indices(indices)
+
+    def _on_shape_visibility_requested(self, index: int, visible: bool) -> None:
+        """列表复选框切换：设置对应形状的渲染可见性（纯视图状态）。
+
+        Args:
+            index: 形状在画布形状列表中的下标。
+            visible: 是否渲染。
+        """
+        shapes = self.canvas.shapes()
+        if not (0 <= index < len(shapes)):
+            return
+        self.canvas.set_shape_visible(shapes[index], visible)
+        self._status_label.setText(
+            f"{'显示' if visible else '隐藏'}: {shapes[index].get('label', '')}"
+        )
 
     def _on_label_selected(self, label: str) -> None:
         """选中/双击标签：设为当前绘制标签。"""
@@ -1098,39 +1216,51 @@ class MainWindow(QMainWindow):
         self.right_panel.set_labels(self._all_labels)
 
     def _refresh_objects(self) -> None:
-        """刷新当前图片对象列表（含类别颜色圆点与组号）。
+        """刷新对象列表（非 point）与关键点列表（point），含复选框可见性。
 
-        条目文本为 "label [G组号] (shape_type)"：有分组（group_id 为
-        非负整数）时显示组号；对象列表恒显示组号，不受画布渲染开关影响。
-        填充后按画布当前选中集合重新同步列表选中态，避免列表重建
-        （清空后重填）导致画布多选在 a 列表中的同步选中丢失。
+        条目文本为 "label [G组号]"（有非负整数 group_id 时）或 "label"，
+        不带形状类型后缀；point 形状进入关键点列表，其余进入对象列表，
+        复选框状态取自 shape 运行时键 "_visible"（缺省可见）。
+        关键点列表可见性：当前图像有 point 形状 或 扫描检测到关键点。
+        填充后按画布当前选中集合重新同步列表选中态。
         """
-        entries = []
-        for shape in self.canvas.shapes():
+        object_items = []
+        kpt_items = []
+        has_point = False
+        for idx, shape in enumerate(self.canvas.shapes()):
+            if shape.get("shape_type") == labelme_io.SHAPE_POINT:
+                has_point = True
+                target = kpt_items
+            else:
+                target = object_items
             label = shape.get("label", "")
             gid = shape.get("group_id")
-            # 有分组时在条目中显示组号（对象列表恒显示，不受画布渲染开关影响）
+            # 有分组时显示组号（对象/关键点列表恒显示，不受画布渲染开关影响）
             if isinstance(gid, int) and gid >= 0:
-                text = f"{label} [G{gid}] ({shape.get('shape_type', '')})"
+                text = f"{label} [G{gid}]"
             else:
-                text = f"{label} ({shape.get('shape_type', '')})"
-            entries.append((text, label))
-        self.right_panel.set_objects(entries)
-        # 同步画布选中集合到对象列表（select_objects 不发射信号，无回环）
+                text = label
+            target.append((idx, text, label, shape.get("_visible", True)))
+        self.right_panel.set_objects(object_items)
+        self.right_panel.set_keypoints(kpt_items)
+        # 关键点列表可见性：当前图像有 point ∪ 扫描检测到关键点（pose 任务）
+        self.right_panel.set_kpt_visible(has_point or bool(self._label_keypoints))
+        # 同步画布选中集合到两列表（select_objects 按映射分派，不发射信号）
         indices = self._selected_shape_indices()
         if indices:
             self.right_panel.select_objects(indices)
 
     def _refresh_keypoints(self) -> None:
-        """按后台扫描结果自动刷新关键点列表的可见性与内容。
+        """按"当前图像有 point 形状 ∪ 扫描检测到关键点"更新关键点列表可见性。
 
-        仅当扫描结果中包含 point 类型 shape（自动识别为 pose 任务）时显示
-        关键点列表；否则隐藏。切换文件夹后默认隐藏，待重新扫描到 point 再显示。
+        列表内容由 _refresh_objects 按当前图像 point 形状填充（对象列表语义），
+        此处仅处理扫描完成/切换文件夹后的可见性变化。
         """
-        has_points = bool(self._label_keypoints)
-        self.right_panel.set_kpt_visible(has_points)
-        if has_points:
-            self.right_panel.set_keypoints(sorted(self._label_keypoints))
+        has_point = any(
+            s.get("shape_type") == labelme_io.SHAPE_POINT
+            for s in self.canvas.shapes()
+        )
+        self.right_panel.set_kpt_visible(has_point or bool(self._label_keypoints))
 
     # -------------------------- 目录状态控制 --------------------------
     def _has_workspace(self) -> bool:
@@ -1182,7 +1312,11 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 关闭处理 --------------------------
     def closeEvent(self, event) -> None:
-        """关闭窗口时停止运行中的 worker 并等待退出。"""
+        """关闭窗口时落盘渲染配置并停止运行中的 worker。"""
+        # 防抖兜底：拖拽分栏后立即关闭窗口时确保尺寸配置落盘
+        if self._render_save_timer.isActive():
+            self._render_save_timer.stop()
+            self._save_render_config_now()
         for worker in (self.annotate_worker, self.convert_worker, self.label_scan_worker):
             if worker.isRunning():
                 worker.stop()

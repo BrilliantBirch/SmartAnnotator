@@ -16,6 +16,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-03 修复 PRODUCT_VERSION_TUPLE 为 4 元组（PyInstaller FixedFileInfo 要求，
+      3 元组导致 prodvers[3] IndexError → VSVersionInfo 反序列化失败）
 """
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +43,9 @@ class VersionManager:
 
     # 产品版本固定为 2.1.0（与 __version__ 一致）
     PRODUCT_VERSION = "2.1.0"
-    PRODUCT_VERSION_TUPLE = (2, 1, 0)
+    # VS_FIXEDFILEINFO 四段式元组（major.minor.patch.0）；PyInstaller 的
+    # FixedFileInfo 要求 filevers/prodvers 必须为 4 元组，缺段会 IndexError
+    PRODUCT_VERSION_TUPLE = (2, 1, 0, 0)
 
     def __init__(self, counter_file: str = "version_counter.txt"):
         """初始化版本管理器。
@@ -82,7 +86,8 @@ class VersionManager:
     def generate_version_info_text(self, file_version: str) -> str:
         """生成 PyInstaller Windows 版本信息文件内容。
 
-        文件版本 (filevers) 按日期+次数自动生成，产品版本 (prodvers) 固定为 1.2.0.0。
+        文件版本 (filevers) 按日期+次数自动生成，产品版本 (prodvers)
+        固定为 PRODUCT_VERSION_TUPLE（2.1.0.0）。
 
         Args:
             file_version: 文件版本号字符串，如 "26.8.10.0"。

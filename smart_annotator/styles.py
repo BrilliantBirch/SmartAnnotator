@@ -15,6 +15,7 @@
 作者: BaiBinnan
 创建日期: 2026-08-10
 更新: 2026-09-03 新增 QComboBox 下拉箭头、禁用态与 QMenu 样式（修复下拉按钮不可见、禁用无视觉反馈）
+更新: 2026-09-03 新增 QSplitter 分栏拖拽手柄样式（默认透明，悬停高亮）
 """
 
 GLOBAL_QSS = """
@@ -179,6 +180,21 @@ QListWidget::item:selected {
 /* ===== 标签（弱化文字）===== */
 QLabel {
     background-color: transparent;
+}
+
+/* ===== 分栏拖拽手柄（默认透明，悬停高亮提示可拖）===== */
+QSplitter::handle {
+    background-color: transparent;
+}
+QSplitter::handle:hover {
+    background-color: #d4d4d8;
+    border-radius: 2px;
+}
+QSplitter::handle:horizontal {
+    width: 3px;
+}
+QSplitter::handle:vertical {
+    height: 3px;
 }
 
 /* ===== 菜单（白底圆角，禁用项置灰）===== */

@@ -19,6 +19,7 @@
 更新: 2026-09-03 移除预览模式、右键菜单携带命中形状
 更新: 2026-09-03 新增 discard_shape/copy_selected/paste_clipboard/has_clipboard/can_undo/can_redo（空 label 丢弃、内部剪贴板与撤销状态查询）
 更新: 2026-09-03 端点仅选中形状显示；新增 set_render_config（线宽/不透明度/字号）与通用文本渲染（标签/组号/描述，替代 OCR 特例）
+更新: 2026-09-03 新增 set_shape_visible 形状渲染可见性（运行时键 _visible，纯视图状态不发信号；_render/_render_vertices 跳过隐藏形状）
 """
 
 import copy
@@ -312,6 +313,25 @@ class Canvas(QGraphicsView):
         """重新渲染当前形状（供外部修改形状属性后刷新显示，不清空历史）。"""
         self._render()
         self.shapes_changed.emit()
+
+    def set_shape_visible(self, shape: Dict, visible: bool) -> None:
+        """设置单个形状的渲染可见性（纯视图状态，不改变标注数据）。
+
+        以运行时键 "_visible"（"_" 前缀，序列化时由 labelme_io 剥离）记录：
+        False = 不渲染（无图形项/文本/编辑端点，不可点击命中）；True/缺省 = 渲染。
+        仅重绘不发信号、不进撤销栈、不触发未保存标记；撤销/重做的深拷贝
+        快照会保留该字段，故可见性跨撤销/重做保持。
+
+        Args:
+            shape: 形状字典。
+            visible: 是否渲染。
+        """
+        if visible:
+            # 恢复可见：删除运行时键（缺省即可见，保持字典干净）
+            shape.pop("_visible", None)
+        else:
+            shape["_visible"] = False
+        self._render()
 
     def set_current_label(self, label: str) -> None:
         """设置绘制新形状时使用的默认标签。
@@ -616,6 +636,9 @@ class Canvas(QGraphicsView):
         self._remove_hover_mask()
 
         for shape in self._shapes:
+            # 隐藏形状（复选框取消勾选）不创建图形项与文本
+            if not shape.get("_visible", True):
+                continue
             item = self._make_item(shape)
             if item is None:
                 continue
@@ -726,6 +749,9 @@ class Canvas(QGraphicsView):
             return
 
         for shape in self._shapes:
+            # 隐藏形状不渲染编辑端点
+            if not shape.get("_visible", True):
+                continue
             # 仅选中形状显示可拖动端点（未选中的形状即使在编辑模式也不显示）
             if id(shape) not in self._selected_ids:
                 continue

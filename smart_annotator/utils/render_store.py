@@ -3,10 +3,12 @@
 渲染配置持久化模块 - render_store
 
 负责 RenderConfig 在 %APPDATA%/BrilliantAnnotator/render_config.json 的
-加载与保存：目录不存在自动创建；文件缺失/损坏回退默认配置（记录警告）。
+加载与保存：目录不存在自动创建；首次运行（文件不存在）自动创建默认
+配置文件；文件损坏回退默认配置（记录警告）。
 
 作者: BaiBinnan
 创建日期: 2026-09-03
+更新: 2026-09-03 首次运行（配置文件不存在）时自动创建默认配置文件
 """
 
 import json
@@ -46,20 +48,30 @@ def config_dir() -> Path:
 
 
 def load_render_config(path: Optional[Path] = None) -> RenderConfig:
-    """加载渲染配置；文件缺失或损坏时回退默认配置。
+    """加载渲染配置；文件缺失时创建默认配置文件，损坏时回退默认配置。
+
+    首次运行（文件不存在）会立即以默认值创建配置文件，便于用户查看
+    与手工编辑；文件缺失/损坏均回退默认配置（永不抛出）。
 
     Args:
         path: 配置文件路径，缺省为 %APPDATA%/BrilliantAnnotator/render_config.json
             （测试时可传入临时路径）。
 
     Returns:
-        RenderConfig 实例（永不抛出）。
+        RenderConfig 实例。
     """
     # ===== 解析目标文件路径（未指定时用 config_dir 与文件名组合） =====
     file_path = Path(path) if path is not None else config_dir() / RENDER_CONFIG_FILENAME
-    # 文件不存在视为首次运行，静默返回默认配置
+    # 文件不存在视为首次运行：以默认值创建配置文件后返回默认配置
     if not file_path.is_file():
-        return RenderConfig()
+        default_cfg = RenderConfig()
+        try:
+            save_render_config(default_cfg, file_path)
+            LOGGER.info(f"首次运行，已创建默认渲染配置: {file_path}")
+        except OSError as ex:
+            # 创建失败（如目录只读）不影响启动，仅记录警告
+            LOGGER.warning(f"默认渲染配置文件创建失败: {ex}")
+        return default_cfg
     # ===== 读取并解析 JSON，任一环节失败均回退默认配置 =====
     try:
         data = json.loads(file_path.read_text(encoding="utf-8"))

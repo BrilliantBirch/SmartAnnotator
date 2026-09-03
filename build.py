@@ -961,7 +961,7 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         choices=["cpu", "gpu", "all", "online"],
-        default="all",
+        default="cpu",
         help="打包模式: cpu=仅CPU版, gpu=仅GPU版, all=CPU+GPU+在线安装器, online=仅在线安装器 (默认: all)",
     )
     args = parser.parse_args()

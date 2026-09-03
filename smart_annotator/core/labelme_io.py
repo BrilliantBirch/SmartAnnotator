@@ -29,6 +29,7 @@ LabelMe JSON 格式读写模块
 作者: BaiBinnan
 创建日期: 2026-09-02
 更新: 2026-09-02 新增 collect_labels_from_files 后台批量汇总标签/关键点
+更新: 2026-09-03 set_document_shapes 写入前剥离 "_" 前缀运行时字段（如 _visible），保证 JSON 与 labelme 标准格式一致
 """
 
 import json
@@ -155,13 +156,20 @@ def document_labels(doc: Dict[str, Any]) -> List[str]:
 
 
 def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> None:
-    """替换文档中的形状列表。
+    """替换文档中的形状列表（剥离运行时字段后写入）。
+
+    约定：以 "_" 为前缀的键（如画布渲染可见性 "_visible"）为运行时
+    视图状态，不属于 labelme 标准格式，写入文档前逐 shape 剥离，
+    保证 JSON 输出与 labelme 官方格式完全一致。
 
     Args:
         doc: labelme 文档字典（就地更新）。
         shapes: 新的形状字典列表。
     """
-    doc["shapes"] = shapes
+    doc["shapes"] = [
+        {k: v for k, v in shape.items() if not str(k).startswith("_")}
+        for shape in shapes
+    ]
 
 
 def collect_labels_from_files(json_paths) -> Dict[str, List[str]]:

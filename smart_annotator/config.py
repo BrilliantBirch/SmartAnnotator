@@ -7,6 +7,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-03 新增 RenderConfig 画布渲染配置 dataclass（显示开关/线宽/不透明度/
+      字号，及右栏宽度与四组列表高度的界面布局字段）
 """
 
 from dataclasses import dataclass, field
@@ -233,6 +235,11 @@ class RenderConfig:
         pen_width: 矩形/多边形描边线宽（像素，选中态为 pen_width + 2）。
         opacity: 多边形填充不透明度（0.0-1.0）。
         font_size: 渲染文本字号（磅）。
+        panel_width: 右侧信息栏宽度（像素，水平分栏拖拽调节）。
+        label_list_height: 标签列表高度（像素）。
+        object_list_height: 对象列表高度（像素）。
+        file_list_height: 文件列表高度（像素）。
+        kpt_list_height: 关键点列表高度（像素）。
     """
 
     show_label: bool = True
@@ -241,6 +248,12 @@ class RenderConfig:
     pen_width: float = 2.0
     opacity: float = 0.3
     font_size: int = 12
+    # ===== 界面布局尺寸（右栏宽度 + 四组列表高度，分栏拖拽调节）=====
+    panel_width: int = 240
+    label_list_height: int = 180
+    object_list_height: int = 180
+    file_list_height: int = 280
+    kpt_list_height: int = 140
 
     def to_dict(self) -> dict:
         """序列化为字典（JSON 持久化用）。
@@ -255,7 +268,31 @@ class RenderConfig:
             "pen_width": self.pen_width,
             "opacity": self.opacity,
             "font_size": self.font_size,
+            "panel_width": self.panel_width,
+            "label_list_height": self.label_list_height,
+            "object_list_height": self.object_list_height,
+            "file_list_height": self.file_list_height,
+            "kpt_list_height": self.kpt_list_height,
         }
+
+    @staticmethod
+    def _read_int(data: dict, key: str, default: int, lo: int, hi: int) -> int:
+        """读取整数字段（排除 bool；越界钳制；非法/缺失回退默认值）。
+
+        Args:
+            data: 字段名字典。
+            key: 字段名。
+            default: 回退默认值。
+            lo: 合法下界（含）。
+            hi: 合法上界（含）。
+
+        Returns:
+            校验后的整数值。
+        """
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return min(hi, max(lo, int(value)))
+        return default
 
     @classmethod
     def from_dict(cls, data: dict) -> "RenderConfig":
@@ -263,7 +300,7 @@ class RenderConfig:
 
         逐字段校验类型（bool/int/float；bool 为 int 子类，整型校验需排除），
         数值越界时钳制到合法区间（opacity→[0,1]、pen_width→[0.5,10]、
-        font_size→[6,72]）。
+        font_size→[6,72]、panel_width→[200,800]、列表高度→[80,2000]）。
 
         Args:
             data: 字段名字典。
@@ -297,6 +334,21 @@ class RenderConfig:
         font_size = data.get("font_size")
         if isinstance(font_size, int) and not isinstance(font_size, bool):
             cfg.font_size = min(72, max(6, int(font_size)))
+
+        # ===== 界面布局字段（右栏宽度与四组列表高度）=====
+        cfg.panel_width = cls._read_int(data, "panel_width", cfg.panel_width, 200, 800)
+        cfg.label_list_height = cls._read_int(
+            data, "label_list_height", cfg.label_list_height, 80, 2000
+        )
+        cfg.object_list_height = cls._read_int(
+            data, "object_list_height", cfg.object_list_height, 80, 2000
+        )
+        cfg.file_list_height = cls._read_int(
+            data, "file_list_height", cfg.file_list_height, 80, 2000
+        )
+        cfg.kpt_list_height = cls._read_int(
+            data, "kpt_list_height", cfg.kpt_list_height, 80, 2000
+        )
         return cfg
 
 
