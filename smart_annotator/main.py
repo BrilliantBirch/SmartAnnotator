@@ -10,6 +10,8 @@ VAI_E_SmartAnnotator - 程序入口
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-04 启动时安装 Qt 消息过滤器（抑制可编辑 QComboBox 触发的
+      QFont::setPointSize(-1) 无害警告刷屏）
 """
 import ctypes
 import sys
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import QApplication
 
 from smart_annotator.app import MainWindow
 from smart_annotator.utils.paths import resource_path
+from smart_annotator.utils.qt_logger import install_qt_message_filter
 
 
 def _resolve_icon_path() -> Path:
@@ -42,6 +45,10 @@ def _resolve_icon_path() -> Path:
 
 def main() -> None:
     """程序入口 — 创建 QApplication 并显示主窗口。"""
+    # 尽早安装 Qt 消息过滤器（抑制 QSS px 字号下可编辑 QComboBox 的
+    # QFont::setPointSize 无害警告，其余 Qt 消息保持默认输出）
+    install_qt_message_filter()
+
     app = QApplication(sys.argv)
     app.setApplicationName("BrilliantAnnotator")
     app.setOrganizationName("BrilliantBirch")

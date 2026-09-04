@@ -47,6 +47,13 @@
       Input/Output；文件列表 QTimer 分批动态遍历防大目录卡死；预览
       播放器支持播放暂停/快进后退/变速/进度拖动；抽帧文件以
       "视频名+帧Id"命名；损坏视频帧位停滞/空帧强制终止防死循环）
+更新: 2026-09-04 格式转换入口拆分为"导出标注 (JSON → YOLO)"与
+      "导入标注 (YOLO → JSON)"（ConvertPage direction 参数化）；导入
+      完成后自动打开输出路径作为工作路径（_open_workdir 复用）
+更新: 2026-09-04 扫描统计缓存（_label_stats_cache：labels/keypoints/
+      shape_counts）随四参数 labels_ready 更新、切换工作路径时清空；
+      导出对话框前置检查（工作路径/图片/JSON 标注）并传参
+      work_path + stats 复用统计预填（删除旧 input_field 预填代码）
 """
 
 from copy import deepcopy
@@ -144,6 +151,10 @@ class MainWindow(QMainWindow):
         # 后台扫描汇总的标签与关键点（关键点列表显示由扫描结果自动识别）
         self._all_labels: list = []
         self._label_keypoints: list = []
+        # 扫描统计缓存（当前工作路径的扫描结果，供导出对话框预填）：
+        # {"labels": [...], "keypoints": [...], "shape_counts": {...}}；
+        # 切换工作路径时清空，扫描完成后更新，None 表示无可用统计
+        self._label_stats_cache: "dict | None" = None
         # 画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator）
         self._render_config: RenderConfig = load_render_config()
         # 渲染配置防抖落盘定时器（分栏拖拽等高频变更合并为一次写盘）
@@ -349,9 +360,13 @@ class MainWindow(QMainWindow):
         self.act_annotate_video.triggered.connect(self._on_annotate_video)
         menu_tool.addAction(self.act_annotate_video)
 
-        self.act_convert = QAction("格式转换", self)
-        self.act_convert.triggered.connect(self._open_convert_dialog)
-        menu_tool.addAction(self.act_convert)
+        self.act_export = QAction("导出标注", self)
+        self.act_export.triggered.connect(self._open_export_dialog)
+        menu_tool.addAction(self.act_export)
+
+        self.act_import = QAction("导入标注(非json格式->json)", self)
+        self.act_import.triggered.connect(self._open_import_dialog)
+        menu_tool.addAction(self.act_import)
 
         # ===== 统计 =====
         menu_stats = menu_bar.addMenu("统计(&S)")
@@ -567,16 +582,28 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 文件操作 --------------------------
     def _on_open_folder(self) -> None:
-        """打开工作文件夹：扫描图片并加载第一张。"""
+        """打开工作文件夹：选择目录并加载。"""
         directory = chooseDir(self._work_dir)
         if not directory:
             return
+        self._open_workdir(directory)
+
+    def _open_workdir(self, directory: str) -> None:
+        """加载指定目录作为工作路径（扫描图片并显示第一张）。
+
+        供打开文件夹对话框与导入标注完成后的工作路径接管复用。
+
+        Args:
+            directory: 目标目录路径。
+        """
         images = sorted(getImageFilesInDir(directory))
         if not images:
-            showMessageBox(QMessageBox.Icon.Warning, "该目录未扫描到图片（jpg/jpeg/png/bmp）")
+            showMessageBox(QMessageBox.Icon.Warning, f"该目录未扫描到图片（jpg/jpeg/png/bmp）:\n{directory}")
             self._update_edit_state()
             return
         self._work_dir = directory
+        # 工作路径切换：清空旧路径的扫描统计缓存（新路径尚未扫描）
+        self._label_stats_cache = None
         self._image_files = images
         self._current_index = -1
         self.right_panel.set_files(images, self._file_annotated_flags())
@@ -611,6 +638,8 @@ class MainWindow(QMainWindow):
             showMessageBox(QMessageBox.Icon.Warning, f"无法加载图片: {image_path}")
             return
         self._work_dir = str(Path(image_path).parent)
+        # 工作路径切换：清空旧路径的扫描统计缓存（新路径尚未扫描）
+        self._label_stats_cache = None
         self._image_files = [image_path]
         self._current_index = 0
         self._dirty = False
@@ -663,6 +692,8 @@ class MainWindow(QMainWindow):
         self.canvas.set_shapes(labelme_io.document_shapes(doc))
         json_dir = str(Path(json_path).parent)
         self._work_dir = json_dir
+        # 工作路径切换：清空旧路径的扫描统计缓存（新路径尚未扫描）
+        self._label_stats_cache = None
         self._image_files = [image_path]
         self._current_index = 0
         self._dirty = False
@@ -1284,16 +1315,72 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     # -------------------------- 格式转换 --------------------------
-    def _open_convert_dialog(self) -> None:
-        """打开格式转换对话框（复用 ConvertPage + 批量 worker）。"""
+    def _open_export_dialog(self) -> None:
+        """打开导出标注对话框（工作路径 JSON → YOLO，源格式锁定 LabelMe）。
+
+        前置检查（任一不满足直接提示并返回，不再弹出对话框）：
+            1. 未打开工作路径（_work_dir 为空）；
+            2. 工作路径下无图片（jpg/jpeg/png/bmp）；
+            3. 工作路径下无 LabelMe JSON 标注（无标注则无从导出）。
+        通过后以 work_path + 统计缓存构造导出页（缓存为 None 时页面
+        自行处理，仅不预填类别/关键点/任务类型）。
+        """
+        # 前置检查 1：未打开工作路径
+        if not self._work_dir:
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                "未打开工作路径，请先通过 文件 → 打开文件夹 选择要导出的标注目录。",
+            )
+            return
+        # 前置检查 2：工作路径下无图片（导出需图片尺寸换算坐标）
+        if not getImageFilesInDir(self._work_dir):
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                f"当前工作路径下未找到图片文件（jpg/jpeg/png/bmp）:\n{self._work_dir}",
+            )
+            return
+        # 前置检查 3：工作路径下无 LabelMe JSON 标注（无标注无从导出）
+        if not getJsonFilesInDir(self._work_dir):
+            showMessageBox(
+                QMessageBox.Icon.Warning,
+                f"当前工作路径下未找到 LabelMe JSON 标注文件（.json）:\n{self._work_dir}",
+            )
+            return
+
         dialog = QDialog(self)
-        dialog.setWindowTitle("格式转换")
+        dialog.setWindowTitle("导出标注")
         dialog.resize(980, 720)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        page = ConvertPage()
+        # 构造导出页：工作路径 + 扫描统计缓存（预填类别/关键点/任务类型）
+        page = ConvertPage(
+            direction="export",
+            work_path=self._work_dir,
+            stats=self._label_stats_cache,
+        )
         page.set_worker(self.convert_worker)
+        layout.addWidget(page, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _open_import_dialog(self) -> None:
+        """打开导入标注对话框（YOLO → JSON，完成后自动打开输出路径为工作路径）。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("导入标注")
+        dialog.resize(980, 720)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        page = ConvertPage(direction="import")
+        page.set_worker(self.convert_worker)
+        # 导入成功后自动打开输出目录作为工作路径（对话框关闭前接管）
+        page.import_finished.connect(self._open_workdir)
         layout.addWidget(page, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -1611,19 +1698,28 @@ class MainWindow(QMainWindow):
         self._scan_progress_dlg = None
         self.statusBar().showMessage("扫描已中止", 2500)
 
-    def _on_labels_scanned(self, labels: list, keypoints: list, counts: list) -> None:
-        """后台扫描完成：同步标签/关键点缓存并弹出统计结果窗口。
+    def _on_labels_scanned(self, labels: list, keypoints: list, counts: list, shape_counts: dict) -> None:
+        """后台扫描完成：同步标签/关键点缓存、缓存统计结果并弹出统计窗口。
 
         扫描结果已合并大小写同名标签（拼写取首次出现）；中止路径不进入
-        本回调。当前画布标签与扫描结果取并集后刷新列表。
+        本回调。当前画布标签与扫描结果取并集后刷新列表。统计结果
+        （labels/keypoints/shape_counts）缓存到 _label_stats_cache，
+        供导出标注对话框预填类别/关键点/任务类型（复用扫描结论）。
 
         Args:
             labels: 标签名列表（合并大小写后）。
             keypoints: 关键点标签名列表。
             counts: [标签, 实例个数] 二元组列表（按个数降序）。
+            shape_counts: shape 分组计数字典 {"rectangle": n, "point": n, "polygon": n}。
         """
         self._all_labels = list(labels)
         self._label_keypoints = list(keypoints)
+        # 缓存统计结果（导出对话框预填用；列表/字典复制，避免与信号源共享引用）
+        self._label_stats_cache = {
+            "labels": list(labels),
+            "keypoints": list(keypoints),
+            "shape_counts": dict(shape_counts),
+        }
         self._refresh_labels()
         self._refresh_keypoints()
         # 关闭进度对话框（先断开 canceled，避免正常完成被误判为中止）

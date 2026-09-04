@@ -33,6 +33,9 @@ LabelMe JSON 格式读写模块
 更新: 2026-09-03 collect_labels_from_files 支持逐文件中断检查与进度回调，标签强制
       转字符串（兼容数字标签，修复大目录冷缓存扫描不可中断/无进度反馈问题）
 更新: 2026-09-03 collect_labels_from_files 新增实例计数 counts（不区分大小写合并，拼写取首次出现），labels/keypoints 与 counts 拼写一致
+更新: 2026-09-04 collect_labels_from_files 返回值新增 shape_counts 分组计数
+      （rectangle/point/polygon，分组规则与 dataset_analyzer 一致），
+      供主窗口导出前置统计复用（推断任务类型与预填类别）
 """
 
 import json
@@ -48,6 +51,16 @@ SHAPE_POLYGON = "polygon"
 
 # 本编辑器支持的形状类型集合
 SUPPORTED_SHAPES = (SHAPE_RECTANGLE, SHAPE_POINT, SHAPE_POLYGON)
+
+# LabelMe shape_type → shape 分组（与 dataset_analyzer 的 _SHAPE_GROUPS 规则
+# 保持一致：point/points 归为 point 组，rectangle 为 box，polygon 为多边形），
+# 供任务类型推断（point>0→POSE、polygon>0→SEGMENT、否则 DETECT）
+SHAPE_GROUPS = {
+    SHAPE_RECTANGLE: "rectangle",
+    SHAPE_POINT: "point",
+    "points": "point",
+    SHAPE_POLYGON: "polygon",
+}
 
 
 def new_shape(
@@ -176,7 +189,7 @@ def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> No
 
 
 def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) -> Dict[str, Any]:
-    """从多个 labelme JSON 文件汇总标签、关键点名称与实例计数。
+    """从多个 labelme JSON 文件汇总标签、关键点名称、实例计数与 shape 分组计数。
 
     供后台扫描线程调用（不阻塞 UI）：逐个解析 JSON，提取全部类别，
     并将 point 类型形状的标签归为关键点。无法解析的文件静默跳过。
@@ -185,6 +198,11 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
     输出键取该组首次出现的原拼写（如 "person"/"PERSON" 计入同一项，
     显示 "person"——首次出现的拼写）。labels/keypoints 输出合并后的
     拼写，与 counts 键一致。
+
+    shape 分组计数与 dataset_analyzer 的分组规则完全一致：shape_type
+    小写归一后按 SHAPE_GROUPS 映射（rectangle→rectangle、point/points
+    →point、polygon→polygon），空标签形状不计入（与分析器口径一致），
+    供导出对话框按 point>0→POSE、polygon>0→SEGMENT 推断任务类型。
 
     大目录冷缓存时逐文件读取可能耗时数十秒，故支持：
         - should_stop: 每个文件前检查的中断回调（返回 True 时提前结束），
@@ -199,8 +217,10 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
 
     Returns:
         {"labels": [标签...], "keypoints": [关键点...],
-         "counts": {标签: 实例个数}}，labels/keypoints 按字典序排序，
-        counts 键为合并大小写后的标签拼写。
+         "counts": {标签: 实例个数},
+         "shape_counts": {"rectangle": n, "point": n, "polygon": n}}，
+        labels/keypoints 按字典序排序，counts 键为合并大小写后的标签拼写，
+        shape_counts 为 shape 分组出现次数（仅含出现过的分组）。
     """
     # 合并键（小写）-> 首次出现的原拼写
     first_spelling: Dict[str, str] = {}
@@ -208,6 +228,8 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
     counts: Dict[str, int] = {}
     # 合并键（小写）-> 是否为关键点（point 形状）
     is_keypoint: Dict[str, bool] = {}
+    # shape 分组（rectangle/point/polygon）-> 出现次数
+    shape_counts: Dict[str, int] = {}
     # 物化为列表以获取总数（json_paths 可能是生成器）
     paths = list(json_paths)
     total = len(paths)
@@ -234,6 +256,10 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
                     first_spelling[key] = label
                 if shape.get("shape_type") == SHAPE_POINT:
                     is_keypoint[key] = True
+                # shape 分组计数（与分析器一致：小写归一后映射，未识别类型跳过）
+                group = SHAPE_GROUPS.get(str(shape.get("shape_type", "")).lower())
+                if group:
+                    shape_counts[group] = shape_counts.get(group, 0) + 1
         done += 1
         # 进度上报（每 500 个文件一次，避免高频回调开销）
         if on_progress is not None and done % 500 == 0:
@@ -242,4 +268,9 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
     labels = sorted(first_spelling.values())
     keypoints = sorted(first_spelling[k] for k in is_keypoint)
     merged_counts = {first_spelling[k]: n for k, n in counts.items()}
-    return {"labels": labels, "keypoints": keypoints, "counts": merged_counts}
+    return {
+        "labels": labels,
+        "keypoints": keypoints,
+        "counts": merged_counts,
+        "shape_counts": shape_counts,
+    }

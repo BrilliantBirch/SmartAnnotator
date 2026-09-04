@@ -3,7 +3,8 @@
 格式转换页 - ConvertPage
 
 按 UI 文档 §5.2 与计划 §2.6：基础卡 + 数据集分析卡 + 高级卡 + 预览卡 + 进度卡。
-源/目标格式交叉锁定（LABELME↔YOLO）。
+按方向构建两种实例：导出（JSON→YOLO，源为只读工作路径）与
+导入（YOLO→JSON，自由选择输入目录）。
 
 数据集分析（2026-09-02 新增）：
     - 一键分析输入目录：提取 LabelMe 标签、推断任务类型（shape 特征）、
@@ -21,6 +22,22 @@
       最多显示 5/4 行后滚动），替代固定 200/140px 最小高度
 更新: 2026-09-02 一键分析 LabelMe 方向 POSE 数据集时，point 类型标签
       归入关键点类别集合并自动填充关键点列表（不再混入普通类别列表）
+更新: 2026-09-04 导出/导入方向拆分支持：__init__ 新增 direction 参数
+      （"export" 锁定源格式 LabelMe / "import" 锁定 YOLO，锁定时一键分析
+      不再自动改动源格式）；新增 import_finished(str) 信号（导入方向任务
+      成功后发射输出目录）；set_worker 重复绑定时先断开旧连接（修复对话框
+      多次打开日志重复输出），qt_handler 父对象改传主窗口；任务类型下拉
+      追加禁用的 OCR 占位项；导出方向无 JSON 标注时拦截启动
+更新: 2026-09-04 按方向精简页面 UI：删除源/目标格式下拉与 _on_source_changed，
+      构造签名改为 (parent, direction, work_path, stats) 并按方向构建基础卡
+      （导出=只读工作路径，导入=输入目录）；分割比例与 YOLO 目录结构导出
+      选项仅导出方向显示，文件列表与图像预览卡仅导入方向显示；collect_config
+      写入 direction/input_dir/output_dir（导出输入取工作路径），apply_config
+      不再回填格式与路径；新增 stats 统计预填（类别/关键点/任务类型推断）
+更新: 2026-09-04 _apply_stats 参照一键分析逻辑剔除关键点标签（stats 含
+      非空 keypoints 时按小写集合过滤 labels 后再填类别列表，日志类别数
+      同步用剔除后数量）；_on_import_config docstring 更新为 from_dict
+      白名单过滤说明（废弃键/运行期字段键静默忽略，仅恢复有效字段）
 """
 
 import json
@@ -49,10 +66,10 @@ from ..widgets.cards import Card
 from ..widgets.drag_list import DragDropListWidget
 from ..widgets.fields import PathField, LabeledSpin, CustomItemWidget, apply_click_to_focus
 from ..widgets.preview import FilePreviewWidget
-from ..widgets.dialogs import chooseDir, showMessageBox
+from ..widgets.dialogs import showMessageBox
 from ..workers.analyze_worker import AnalyzeWorker
-from ..core.convert.dataset_analyzer import DatasetAnalysis
-from ..config import SysConfig, ConvertConfig, MODE, Format, RANDOM_SEED
+from ..core.convert.dataset_analyzer import DatasetAnalysis, _infer_task_from_shapes
+from ..config import SysConfig, ConvertConfig, MODE, Format
 from ..utils import LOGGER, scan_dataset_files
 from ..utils.qt_logger import add_qt_handler
 
@@ -63,18 +80,43 @@ class ConvertPage(BasePage):
     Signals:
         task_started: 任务开始（用于禁用导航）。
         task_finished: 任务结束（用于恢复导航）。
+        import_finished: 导入方向（YOLO→JSON）任务成功完成时发射（携带输出目录）。
     """
 
     task_started = Signal()
     task_finished = Signal()
+    import_finished = Signal(str)
 
-    def __init__(self, parent=None):
-        """初始化格式转换页。"""
+    def __init__(self, parent=None, direction: str = None,
+                 work_path: str = "", stats: dict | None = None):
+        """初始化格式转换页（按方向构建，构造后方向不可更改）。
+
+        Args:
+            parent: 父控件。
+            direction: 转换方向（必填）："export"=导出 JSON→YOLO /
+                "import"=导入 YOLO→JSON；非法值抛 ValueError。
+            work_path: 导出方向的只读工作路径（主窗口传入）。
+            stats: 导出方向的统计预填数据，键为 "labels"（类别名列表）、
+                "keypoints"（关键点名列表）、"shape_counts"（shape 分组
+                计数 {"rectangle": n, "polygon": n, "point": n}）；
+                为 None 或空时不预填。
+
+        Raises:
+            ValueError: direction 非 "export"/"import" 时抛出。
+        """
+        # 方向必填校验（构造即锁定，页面全生命周期不变）
+        if direction not in ("export", "import"):
+            raise ValueError(f"不支持的转换方向: {direction}")
         super().__init__(parent)
         self._worker = None
         self._analyze_worker = None  # 数据集分析线程（一次性，用后销毁）
         self._class_items = []  # 类别 CustomItemWidget 引用
         self._kpt_items = []  # 关键点 CustomItemWidget 引用
+        self._direction = direction  # 转换方向（"export" / "import"）
+        self._work_path = work_path or ""  # 导出方向的只读工作路径
+        self._task_success = False  # 本次任务是否成功（供 import_finished 判定）
+        self._bound_worker = None  # 已连接信号的 worker（防重复连接用）
+        self._log_handler = None  # 已连接 log_signal 的 qt_handler（防重复连接用）
 
         self._build_basic_card()
         self._build_analysis_card()
@@ -82,31 +124,39 @@ class ConvertPage(BasePage):
         self._build_preview_card()
         self._build_progress_card()
 
-        # 初始状态：同步目标格式、高级卡可见性与任务类型联动（关键点列表仅 POSE 显示）
-        self._on_source_changed()
+        # 按方向统一显隐（分割比例/导出选项仅导出方向，预览卡仅导入方向）
+        self._apply_direction_visibility()
+        # 初始状态：任务类型联动（关键点列表仅 POSE 显示）
         self._on_task_changed()
         # 焦点策略：所有数值控件改为点击获焦，防止悬停滚轮误改值
         apply_click_to_focus(self)
 
-    def _build_basic_card(self) -> None:
-        """构建基础卡：源/目标格式、任务类型、输入输出目录、开始/停止。"""
-        self.basic_card = Card("基础设置")
+        # 导出方向：无输入目录控件，直接扫描工作路径显示文件计数
+        if self._direction == "export" and self._work_path:
+            self._on_input_changed(self._work_path)
+        # 导出方向：复用主窗口扫描统计结果预填类别/关键点/任务类型
+        if self._direction == "export" and stats:
+            self._apply_stats(stats)
 
-        # 源格式 / 目标格式
-        fmt_row = QHBoxLayout()
-        fmt_row.addWidget(QLabel("源格式"))
-        self.source_combo = QComboBox()
-        self.source_combo.addItem("LabelMe (JSON)", Format.LABELME)
-        self.source_combo.addItem("YOLO (TXT)", Format.YOLO)
-        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        fmt_row.addWidget(self.source_combo)
-        fmt_row.addSpacing(20)
-        fmt_row.addWidget(QLabel("目标格式"))
-        self.target_combo = QComboBox()
-        self.target_combo.setEnabled(False)  # 目标格式由源格式决定
-        fmt_row.addWidget(self.target_combo)
-        fmt_row.addStretch()
-        self.basic_card.addLayout(fmt_row)
+    def _apply_direction_visibility(self) -> None:
+        """按转换方向统一设置控件显隐。
+
+        导出方向：分割比例行与"导出 YOLO 数据集目录结构"复选框可见，
+        文件列表与图像预览卡隐藏；导入方向相反。可视化复选框与
+        类别/关键点列表两方向均保留显示（关键点列表仍仅 POSE 任务显示）。
+        """
+        is_export = self._direction == "export"
+        self.ratio_container.setVisible(is_export)
+        self.chk_export.setVisible(is_export)
+        self.preview_card.setVisible(not is_export)
+
+    def _build_basic_card(self) -> None:
+        """构建基础卡：任务类型、输入/输出路径（按方向）、开始/停止。
+
+        导出方向无输入目录控件，改为只读工作路径展示（主窗口传入）；
+        导入方向保留输入目录选择控件。
+        """
+        self.basic_card = Card("基础设置")
 
         # 任务类型
         task_row = QHBoxLayout()
@@ -115,17 +165,27 @@ class ConvertPage(BasePage):
         self.task_combo.addItem("目标检测 (DETECT)", MODE.DETECT)
         self.task_combo.addItem("姿态估计 (POSE)", MODE.POSE)
         self.task_combo.addItem("实例分割 (SEGMENT)", MODE.SEGMENT)
+        # OCR 任务占位项（单项禁用不可选）：QComboBox 默认 model 即
+        # QStandardItemModel，可直接对 item 置灰实现单项禁用
+        self.task_combo.addItem("文字识别 (OCR) [暂未开放]", MODE.OCR)
+        self.task_combo.model().item(self.task_combo.count() - 1).setEnabled(False)
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
         task_row.addWidget(self.task_combo)
         task_row.addStretch()
         self.basic_card.addLayout(task_row)
 
-        # 输入目录
-        self.input_field = PathField(browse_type="dir", placeholder="选择标注/图片所在目录")
-        self.input_field.path_changed.connect(self._on_input_changed)
-        self.basic_card.addWidget(self._labeled("输入目录", self.input_field))
+        # 输入路径：导出=只读工作路径 / 导入=输入目录选择
+        if self._direction == "export":
+            self.work_label = QLabel(self._work_path or "（未设置工作路径）")
+            self.work_label.setWordWrap(True)
+            self.work_label.setStyleSheet("color: #71717a;")
+            self.basic_card.addWidget(self._labeled("工作路径", self.work_label))
+        else:
+            self.input_field = PathField(browse_type="dir", placeholder="选择标注/图片所在目录")
+            self.input_field.path_changed.connect(self._on_input_changed)
+            self.basic_card.addWidget(self._labeled("输入目录", self.input_field))
 
-        # 输出目录
+        # 输出目录（两方向均保留）
         self.output_field = PathField(browse_type="dir", placeholder="选择输出目录")
         self.basic_card.addWidget(self._labeled("输出目录", self.output_field))
 
@@ -187,10 +247,19 @@ class ConvertPage(BasePage):
 
     # -------------------------- 数据集分析 --------------------------
     def _on_analyze(self) -> None:
-        """启动数据集分析线程（后台执行，避免阻塞界面）。"""
-        path = self.input_field.path()
+        """启动数据集分析线程（后台执行，避免阻塞界面）。
+
+        输入路径按方向取值：导出=工作路径 / 导入=输入目录。
+        """
+        # 输入路径按方向取值：导出=只读工作路径 / 导入=输入目录
+        path = self._work_path if self._direction == "export" else self.input_field.path()
         if not path or not Path(path).exists():
-            showMessageBox(QMessageBox.Icon.Warning, "请先选择有效的输入目录")
+            hint = (
+                "工作路径无效，无法分析"
+                if self._direction == "export"
+                else "请先选择有效的输入目录"
+            )
+            showMessageBox(QMessageBox.Icon.Warning, hint)
             return
         # 防重复启动
         if self._analyze_worker is not None and self._analyze_worker.isRunning():
@@ -218,9 +287,11 @@ class ConvertPage(BasePage):
         showMessageBox(QMessageBox.Icon.Critical, f"数据集分析失败:\n{message}")
 
     def _on_analysis_finished(self, result: DatasetAnalysis) -> None:
-        """分析完成回调：应用转换方向、任务类型并填充类别列表。
+        """分析完成回调：应用任务类型并填充类别列表。
 
-        自动推测结果均为界面默认值，用户可手动覆盖（下拉框保持可编辑）。
+        识别出的标注格式仅用于摘要展示（页面方向由构造参数锁定，
+        任何下拉不再被自动改动）；任务类型与标签填充结果均为界面
+        默认值，用户可手动覆盖。
 
         Args:
             result: 数据集分析结果对象。
@@ -234,15 +305,11 @@ class ConvertPage(BasePage):
             self.append_log("[分析] 未检测到任何标注文件")
             return
 
-        # ===== 1. 转换方向自动识别（json→txt 或 txt→json）=====
+        # ===== 1. 标注格式识别（仅用于摘要展示，页面方向由构造参数锁定）=====
         if result.source_format == Format.LABELME:
             direction_text = "LabelMe (JSON) → YOLO (TXT)"
-            combo_idx = self.source_combo.findData(Format.LABELME)
         else:
             direction_text = "YOLO (TXT) → LabelMe (JSON)"
-            combo_idx = self.source_combo.findData(Format.YOLO)
-        if combo_idx >= 0:
-            self.source_combo.setCurrentIndex(combo_idx)  # 触发 _on_source_changed
 
         # ===== 2. 任务类型推断 =====
         task_idx = self.task_combo.findData(result.task_type)
@@ -320,7 +387,7 @@ class ConvertPage(BasePage):
             f"目录层级: {result.structure_desc}",
             f"检测到 JSON 标注 {result.json_count} 个、TXT 标注 {result.txt_count} 个、"
             f"图片 {result.image_count} 张",
-            f"转换方向（自动识别）: {direction_text}，可手动修改",
+            f"识别标注格式: {direction_text}",
             f"任务类型（自动推断）: {task_names.get(result.task_type, '未知')}"
             + (f"（标注形状: {shape_text}）" if shape_text else ""),
             labels_text,
@@ -373,9 +440,53 @@ class ConvertPage(BasePage):
             self._on_add_kpt()
             self._kpt_items[-1].edit.setText(name)
 
+    def _apply_stats(self, stats: dict) -> None:
+        """应用主窗口统计结果预填（仅导出方向调用）。
+
+        填充类别列表与关键点列表（keypoints 非空才填，且此时参照一键
+        分析逻辑剔除 labels 中的关键点标签，避免混入普通类别列表），
+        并按 shape 分组特征推断任务类型（point>0→POSE，polygon>0→
+        SEGMENT，否则 DETECT）。
+
+        Args:
+            stats: 统计数据，键为 "labels"（类别名列表，含关键点标签）、
+                "keypoints"（关键点名列表）、"shape_counts"（{"rectangle":
+                n, "polygon": n, "point": n}）。
+        """
+        labels = stats.get("labels") or []
+        keypoints = stats.get("keypoints") or []
+        shape_counts = stats.get("shape_counts") or {}
+        # 类别列表预填：keypoints 非空时按一键分析同样逻辑剔除关键点标签
+        # （大小写不敏感比较），防止关键点标签混入普通类别列表导致转换丢失
+        box_labels = labels
+        if labels:
+            if keypoints:
+                kpt_lower = {k.lower() for k in keypoints}
+                box_labels = [l for l in labels if l.lower() not in kpt_lower]
+            self._fill_class_list(box_labels)
+        # 关键点列表预填
+        if keypoints:
+            self._fill_kpt_list(keypoints)
+        # 任务类型推断：复用数据集分析的 shape 特征推断规则
+        task_type = _infer_task_from_shapes(shape_counts)
+        task_idx = self.task_combo.findData(task_type)
+        if task_idx >= 0:
+            self.task_combo.setCurrentIndex(task_idx)
+        # 索引未变化时 currentIndexChanged 不触发，显式同步关键点列表显隐
+        self._on_task_changed()
+        # 日志说明（类别数用剔除关键点标签后的数量）
+        kpt_part = f"、{len(keypoints)} 个关键点" if keypoints else ""
+        self.append_log(
+            f"[统计] 已复用主窗口扫描统计结果预填 {len(box_labels)} 个类别{kpt_part}"
+        )
+
     def _build_advanced_card(self) -> None:
-        """构建高级卡：类别/关键点编辑器、分割比例、可视化/导出、配置导入导出。"""
-        self.advanced_card = Card("高级设置（分割比例与导出选项仅目标为 YOLO 时生效）")
+        """构建高级卡：类别/关键点编辑器、分割比例、可视化/导出、配置导入导出。
+
+        分割比例行与"导出 YOLO 数据集目录结构"复选框仅导出方向显示
+        （见 _apply_direction_visibility）。
+        """
+        self.advanced_card = Card("高级设置")
 
         # 类别编辑器（支持拖拽排序：行首数字即转换后的类别索引）
         class_row = QHBoxLayout()
@@ -418,15 +529,17 @@ class ConvertPage(BasePage):
         # 初始高度（空列表最小高度）
         self._adjust_list_height()
 
-        # 分割比例
-        ratio_row = QHBoxLayout()
+        # 分割比例（包装为容器便于按方向整体显隐：仅导出方向显示）
+        self.ratio_container = QWidget()
+        ratio_layout = QHBoxLayout(self.ratio_container)
+        ratio_layout.setContentsMargins(0, 0, 0, 0)
         self.spin_train = LabeledSpin("训练集", "double", 0, 1, 0.05, 0.8)
         self.spin_val = LabeledSpin("验证集", "double", 0, 1, 0.05, 0.1)
         self.spin_test = LabeledSpin("测试集", "double", 0, 1, 0.05, 0.1)
-        ratio_row.addWidget(self.spin_train)
-        ratio_row.addWidget(self.spin_val)
-        ratio_row.addWidget(self.spin_test)
-        self.advanced_card.addLayout(ratio_row)
+        ratio_layout.addWidget(self.spin_train)
+        ratio_layout.addWidget(self.spin_val)
+        ratio_layout.addWidget(self.spin_test)
+        self.advanced_card.addWidget(self.ratio_container)
 
         # 可视化 / 导出
         opt_row = QHBoxLayout()
@@ -488,35 +601,24 @@ class ConvertPage(BasePage):
         lay.addWidget(widget)
         return container
 
-    # -------------------------- 格式联动 --------------------------
-    def _on_source_changed(self) -> None:
-        """源格式变化时同步目标格式与高级卡可见性。"""
-        source = self.source_combo.currentData()
-        target = Format.YOLO if source == Format.LABELME else Format.LABELME
-        self.target_combo.clear()
-        self.target_combo.addItem(
-            "YOLO (TXT)" if target == Format.YOLO else "LabelMe (JSON)", target
-        )
-        # 类别/关键点列表双向转换均需要（txt→json 的 class_mapping 同样来自类别列表），
-        # 高级卡保持可用；分割比例与导出选项仅目标为 YOLO 时参与转换
-        self.advanced_card.setEnabled(True)
-        self.advanced_card.setVisible(True)
-
+    # -------------------------- 任务类型与输入联动 --------------------------
     def _on_task_changed(self) -> None:
         """任务类型变化时切换关键点编辑器可见性。
 
         仅 POSE 任务显示关键点列表；DETECT/SEGMENT 等任务整体隐藏，
-        避免残留空白区域。
+        避免残留空白区域。OCR 项在下拉中已禁用不可选，无需单独分支。
         """
         mode = self.task_combo.currentData()
         is_pose = mode == MODE.POSE
         self.kpt_container.setVisible(is_pose)
 
     def _on_input_changed(self, path: str) -> None:
-        """输入目录变化时统计文件数量并填充预览列表。
+        """输入路径变化时统计文件数量并填充预览列表。
 
-        按 YOLO 数据集目录层级自动识别（label/image/dataset 层级或平铺），
-        标注与图片分别从解析出的对应目录扫描。
+        导入方向由输入目录控件信号触发；导出方向由构造函数对工作路径
+        直接调用（无输入目录控件）。按 YOLO 数据集目录层级自动识别
+        （label/image/dataset 层级或平铺），标注与图片分别从解析出的
+        对应目录扫描。
         """
         if not path or not Path(path).exists():
             self.count_label.setText("未选择目录")
@@ -524,8 +626,8 @@ class ConvertPage(BasePage):
             return
         # 目录层级识别 + 分目录扫描（label 层级自动找兄弟 images 目录等）
         scan = scan_dataset_files(path)
-        source = self.source_combo.currentData()
-        if source == Format.LABELME:
+        # 标注文件类型按方向选择（导出→JSON / 导入→TXT）
+        if self._direction == "export":
             anno_files, label = scan["json_files"], "JSON 标注"
         else:
             anno_files, label = scan["txt_files"], "TXT 标注"
@@ -619,9 +721,11 @@ class ConvertPage(BasePage):
         """
         sys_config.task_type = self.task_combo.currentData()
         cc = sys_config.convert_config
-        cc.source_format = self.source_combo.currentData()
-        cc.target_format = self.target_combo.currentData()
-        cc.input_dir = self.input_field.path()
+        cc.direction = self._direction
+        # 输入目录：导出=只读工作路径 / 导入=界面输入目录
+        cc.input_dir = (
+            self._work_path if self._direction == "export" else self.input_field.path()
+        )
         cc.output_dir = self.output_field.path()
         cc.classes = self._collect_classes()
         cc.kpt = self._collect_kpt()
@@ -647,7 +751,8 @@ class ConvertPage(BasePage):
         if not cc.input_dir or not Path(cc.input_dir).exists():
             return
         scan = scan_dataset_files(cc.input_dir)
-        if cc.source_format == Format.LABELME:
+        # 标注文件类型按方向选择（导出→JSON / 导入→TXT）
+        if cc.direction == "export":
             cc.annotation_files = scan["json_files"]
         else:
             cc.annotation_files = scan["txt_files"]
@@ -656,25 +761,19 @@ class ConvertPage(BasePage):
     def apply_config(self, sys_config: SysConfig) -> None:
         """从 sys_config 回填界面控件。
 
+        序列化配置不再包含格式与路径（方向由页面构造参数决定，输入/
+        输出目录由用户在界面上选择），仅回填任务类型、类别、关键点、
+        分割比例与选项。
+
         Args:
             sys_config: 系统配置对象。
         """
         cc = sys_config.convert_config
-        # 源格式
-        idx = self.source_combo.findData(cc.source_format)
-        if idx >= 0:
-            self.source_combo.setCurrentIndex(idx)
         # 任务类型
         tidx = self.task_combo.findData(sys_config.task_type)
         if tidx >= 0:
             self.task_combo.setCurrentIndex(tidx)
-        self._on_source_changed()
         self._on_task_changed()
-        # 路径
-        self.input_field.set_path(cc.input_dir)
-        self.output_field.set_path(cc.output_dir)
-        if cc.input_dir:
-            self._on_input_changed(cc.input_dir)
         # 类别
         self.class_list.clear()
         self._class_items.clear()
@@ -705,8 +804,11 @@ class ConvertPage(BasePage):
 
         兼容旧版配置（参考 D:\\data\\CCA\\convert_config.json）：
             - ``mode`` 键作为任务类型（旧版），``task_type`` 键（新版），两者均接受
-            - ``source_format`` 接受 "json"/"txt" 别名或 "LABELME"/"YOLO" 枚举名
-            - 旧版 camelCase 键（sourceFormat/visualized）自动迁移
+            - 旧版废弃键（``source_format``/``target_format`` 等）与运行期
+              字段键（``input_dir``/``output_dir`` 等）由
+              ConvertConfig.from_dict 按序列化字段白名单过滤静默忽略，
+              仅恢复有效字段（classes/kpt/visualize/export/比例）
+            - 旧版 camelCase 键（``visualized``）自动迁移为 ``visualize``
         """
         from PySide6.QtWidgets import QFileDialog
 
@@ -763,20 +865,48 @@ class ConvertPage(BasePage):
 
     # -------------------------- worker 集成 --------------------------
     def set_worker(self, worker) -> None:
-        """绑定转换 worker 并连接信号。
+        """绑定转换 worker 并连接信号（重复绑定时先断开旧连接）。
+
+        常驻 worker 可能随对话框多次打开被重复绑定，直接 connect 会造成
+        信号重复连接（日志重复输出）：绑定同一 worker 时先断开旧连接再重连。
+        注意 PySide6 6.11 对未连接的 disconnect 仅输出告警而不抛异常，
+        故记录上次绑定对象、仅在确有旧连接时才 disconnect。
 
         Args:
             worker: ConvertWorker 实例。
         """
         self._worker = worker
-        self._worker.progress_updated.connect(self.update_progress)
-        self._worker.progress_desc.connect(self.append_log)
-        self._worker.error_occurred.connect(self._on_error)
-        self._worker.task_finished.connect(self._on_task_finished)
-        # 接入 Qt 日志处理器，将 LOGGER 输出推送到日志面板
-        qt_handler = add_qt_handler(parent=self, max_lines=500)
+        # 同一 worker 重复绑定 → 先断开旧连接（try 兜底未连接的情况）；
+        # 首次绑定或更换 worker 时旧连接随旧 worker 失效，直接连接即可
+        if worker is not None and self._bound_worker is worker:
+            for sig, slot in (
+                (worker.progress_updated, self.update_progress),
+                (worker.progress_desc, self.append_log),
+                (worker.error_occurred, self._on_error),
+                (worker.task_finished, self._on_task_finished),
+            ):
+                try:
+                    sig.disconnect(slot)
+                except RuntimeError:
+                    pass  # 未连接，无需断开
+        worker.progress_updated.connect(self.update_progress)
+        worker.progress_desc.connect(self.append_log)
+        worker.error_occurred.connect(self._on_error)
+        worker.task_finished.connect(self._on_task_finished)
+        self._bound_worker = worker
+        # 接入 Qt 日志处理器，将 LOGGER 输出推送到日志面板；
+        # parent 传主窗口（长生命周期），避免页面随临时对话框销毁后 handler 失效
+        qt_handler = add_qt_handler(parent=self.window(), max_lines=500)
         if qt_handler is not None:
+            # 同一 handler 重复绑定 → 先断开旧连接再重连（handler 失效
+            # 重建后为新实例、无旧连接，直接连接即可）
+            if self._log_handler is qt_handler:
+                try:
+                    qt_handler.log_signal.disconnect(self.append_log)
+                except RuntimeError:
+                    pass  # 未连接，无需断开
             qt_handler.log_signal.connect(self.append_log)
+        self._log_handler = qt_handler
 
     def _on_start(self) -> None:
         """开始转换任务。"""
@@ -784,18 +914,24 @@ class ConvertPage(BasePage):
             return
         sys_config = SysConfig()
         self.collect_config(sys_config)
-        # 校验必填项
+        # 校验必填项：导入方向检查输入/输出目录，导出方向仅检查输出目录
+        # （输入由主窗口前置检查保证，且下方校验 annotation_files 非空）
         cc = sys_config.convert_config
-        if not cc.input_dir:
+        if self._direction == "import" and not cc.input_dir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择输入目录")
             return
         if not cc.output_dir:
             showMessageBox(QMessageBox.Icon.Warning, "请选择输出目录")
             return
-        # json→txt 方向必须提供类别列表（生成类别索引映射）；
-        # txt→json 方向允许为空：转换器自动以类别索引作为标签名（可在转换前于界面修改）
-        if not cc.classes and cc.source_format == Format.LABELME:
+        # 导出方向（json→txt）必须提供类别列表（生成类别索引映射）；
+        # 导入方向（txt→json）允许为空：转换器自动以类别索引作为标签名（可在转换前于界面修改）
+        if not cc.classes and self._direction == "export":
             showMessageBox(QMessageBox.Icon.Warning, "请至少添加一个类别（可使用一键分析自动填充）")
+            return
+        # 导出方向（JSON→YOLO）拦截：collect_config 内部已扫描输入目录，
+        # 扫描不到任何 JSON 标注时直接终止，避免空任务
+        if self._direction == "export" and not cc.annotation_files:
+            showMessageBox(QMessageBox.Icon.Warning, "当前工作路径下没有 JSON 格式标注")
             return
         self._worker.setConfig(sys_config)
         self.progress_bar.setValue(0)
@@ -803,6 +939,7 @@ class ConvertPage(BasePage):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.task_started.emit()
+        self._task_success = True  # 默认视为成功，出错时在 _on_error 置 False
         self._worker.start()
 
     def _on_stop(self) -> None:
@@ -831,13 +968,21 @@ class ConvertPage(BasePage):
 
     def _on_error(self, message: str) -> None:
         """处理错误信号。"""
+        self._task_success = False  # 任务出错，标记本次任务失败
         self.append_log(f"[错误] {message}")
         showMessageBox(QMessageBox.Icon.Critical, message)
 
     def _on_task_finished(self) -> None:
-        """任务结束回调。"""
+        """任务结束回调。
+
+        导入方向（YOLO→JSON）且本次任务成功时，发射 import_finished
+        信号（携带输出目录），供外部刷新标注列表等后续处理。
+        """
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        # 导入方向任务成功完成：通知外部（输出目录为界面当前输出路径）
+        if self._direction == "import" and self._task_success:
+            self.import_finished.emit(self.output_field.path())
         self.task_finished.emit()
 
     def title(self) -> str:

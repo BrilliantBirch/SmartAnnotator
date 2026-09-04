@@ -4,6 +4,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-04 源格式改由 ConvertConfig.direction 推导（新增模块级函数
+      direction_to_source_format），不再读取已删除的 source_format 字段
 """
 
 from typing import Dict, Any, Callable
@@ -43,19 +45,45 @@ _CONVERTER_MAP: Dict[Format, Dict[MODE, Any]] = {
 # endregion
 
 
+def direction_to_source_format(direction: str) -> Format:
+    """将转换方向推导为源格式。
+
+    Args:
+        direction: 转换方向（"export"=LabelMe→YOLO 导出 /
+            "import"=YOLO→LabelMe 导入）。
+
+    Returns:
+        对应的源格式枚举（export→Format.LABELME，import→Format.YOLO）。
+
+    Raises:
+        ValueError: 当方向值不受支持时抛出。
+    """
+    if direction == "export":
+        return Format.LABELME
+    if direction == "import":
+        return Format.YOLO
+    raise ValueError(f"不支持的转换方向: {direction}")
+
+
 class Converter:
-    """通用转换器，根据源格式和任务模式自动选择对应的转换器实现。"""
+    """通用转换器，根据转换方向和任务模式自动选择对应的转换器实现。"""
 
     def __init__(self, config: SysConfig):
         """初始化转换器。
+
+        源格式由 ConvertConfig.direction 推导（export=LabelMe 源，
+        import=YOLO 源），OCR 任务走 LABELME 映射（PPOCRConverter）不变。
 
         Args:
             config: 系统配置对象。
 
         Raises:
-            ValueError: 当源格式或任务模式不支持时抛出。
+            ValueError: 当转换方向或任务模式不支持时抛出。
         """
-        self.source_format = config.convert_config.source_format
+        # 由转换方向推导源格式
+        self.source_format = direction_to_source_format(
+            config.convert_config.direction
+        )
         self.mode = config.task_type
 
         # 使用策略模式：通过映射表查找对应的转换器类

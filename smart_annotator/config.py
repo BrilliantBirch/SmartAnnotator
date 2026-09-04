@@ -10,6 +10,10 @@
 更新: 2026-09-03 新增 RenderConfig 画布渲染配置 dataclass（显示开关/线宽/不透明度/
       字号，及右栏宽度与四组列表高度的界面布局字段）
 更新: 2026-09-03 RenderConfig 新增 auto_scan_labels（打开文件夹自动扫描偏好，默认关闭）
+更新: 2026-09-04 ConvertConfig 字段重构：删除序列化字段 source_format/target_format，
+      新增运行期字段 direction（"export"/"import"），input_dir/output_dir 改为
+      运行期字段不再序列化；from_dict 改为序列化字段白名单过滤（旧版废弃键
+      与运行期字段键静默忽略），并删除 _coerce_format 迁移逻辑
 """
 
 from dataclasses import dataclass, field
@@ -53,48 +57,59 @@ class Format(Enum):
 class ConvertConfig:
     """格式转换配置
 
+    转换方向由页面实例决定（direction 运行期字段），源/目标格式不再持久化。
+
     Attributes:
-        source_format: 源格式（LABELME/YOLO）。
-        target_format: 目标格式（与源格式相反）。
+        direction: 转换方向（运行期字段）："export"=LabelMe→YOLO 导出 /
+            "import"=YOLO→LabelMe 导入。
         classes: 类别名称列表。
         kpt: 关键点信息 {name: {"isChecked": bool, "bbox_size": int}}。
         visualize: 是否可视化。
         export: 是否导出 YOLO 训练集目录结构。
-        input_dir: 输入目录。
-        output_dir: 输出目录。
         train_ratio: 训练集比例。
         val_ratio: 验证集比例。
         test_ratio: 测试集比例。
+        input_dir: 输入目录（运行期，不序列化）。
+        output_dir: 输出目录（运行期，不序列化）。
         annotation_files: 运行期扫描到的标注文件（不序列化）。
         image_files: 运行期扫描到的图片文件（不序列化）。
     """
 
-    source_format: Format = Format.LABELME
-    target_format: Format = Format.YOLO
+    direction: str = None
     classes: list = field(default_factory=list)
     kpt: dict = field(default_factory=dict)
     visualize: bool = False
     export: bool = False
-    input_dir: str = ""
-    output_dir: str = ""
     train_ratio: float = 0.8
     val_ratio: float = 0.1
     test_ratio: float = 0.1
     # 运行期字段（不参与序列化）
+    input_dir: str = field(default_factory=str, repr=False)
+    output_dir: str = field(default_factory=str, repr=False)
     annotation_files: list = field(default_factory=list, repr=False)
     image_files: list = field(default_factory=list, repr=False)
 
+    # 序列化字段集合（与 to_dict 输出键一致，新增序列化字段时两处同步更新）；
+    # from_dict 仅恢复这些字段，运行期字段不从持久化数据恢复
+    _SERIALIZED_FIELDS = frozenset(
+        {
+            "classes",
+            "kpt",
+            "visualize",
+            "export",
+            "train_ratio",
+            "val_ratio",
+            "test_ratio",
+        }
+    )
+
     def to_dict(self) -> dict:
-        """序列化为可写入 JSON 的字典（枚举转名称，排除运行期字段）。"""
+        """序列化为可写入 JSON 的字典（排除运行期字段）。"""
         return {
-            "source_format": self.source_format.name,
-            "target_format": self.target_format.name,
             "classes": list(self.classes),
             "kpt": dict(self.kpt),
             "visualize": self.visualize,
             "export": self.export,
-            "input_dir": self.input_dir,
-            "output_dir": self.output_dir,
             "train_ratio": self.train_ratio,
             "val_ratio": self.val_ratio,
             "test_ratio": self.test_ratio,
@@ -102,7 +117,12 @@ class ConvertConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ConvertConfig":
-        """从字典构造配置，兼容旧版 camelCase 键。
+        """从字典构造配置，非序列化键自动忽略（兼容旧版 JSON）。
+
+        旧版 JSON 中的 source_format/target_format 等已废弃键，以及
+        input_dir/output_dir 等运行期字段键，均被序列化字段白名单过滤
+        静默忽略，不报错；序列化字段（classes/kpt/visualize/export/
+        train_ratio/val_ratio/test_ratio）正常加载。
 
         Args:
             d: 字典（可为 to_dict 产物或旧版 JSON）。
@@ -111,18 +131,15 @@ class ConvertConfig:
             ConvertConfig 实例。
         """
         legacy = {
-            "sourceFormat": "source_format",
             "visualized": "visualize",
         }
         migrated = {}
         for k, v in d.items():
             migrated[legacy.get(k, k)] = v
-        if "source_format" in migrated:
-            migrated["source_format"] = _coerce_format(migrated["source_format"])
-        if "target_format" in migrated:
-            migrated["target_format"] = _coerce_format(migrated["target_format"])
-        known = {f for f in cls.__dataclass_fields__}
-        filtered = {k: v for k, v in migrated.items() if k in known}
+        # 已知字段过滤：仅恢复序列化字段，废弃键与运行期字段键静默忽略
+        filtered = {
+            k: v for k, v in migrated.items() if k in cls._SERIALIZED_FIELDS
+        }
         return cls(**filtered)
 
 
@@ -386,33 +403,3 @@ def _coerce_device(value: Any) -> DEVICE:
     if isinstance(value, int):
         return DEVICE(value)
     raise ValueError(f"无法解析设备: {value}")
-
-
-def _coerce_format(value: Any) -> Format:
-    """将值转换为 Format 枚举（接受枚举、名称字符串、整数值、旧版别名）。
-
-    兼容旧版配置文件中的别名：
-        - "json" / "JSON" → Format.LABELME（LabelMe 标注为 .json 文件）
-        - "txt"  / "TXT"  → Format.YOLO（YOLO 标注为 .txt 文件）
-        - "labelme" / "yolo"（大小写不敏感）→ 对应枚举
-    """
-    if isinstance(value, Format):
-        return value
-    if isinstance(value, str):
-        # 旧版别名映射（参考 D:\\data\\CCA\\convert_config.json 的 source_format: "json"）
-        _ALIAS = {
-            "json": Format.LABELME,
-            "txt": Format.YOLO,
-            "labelme": Format.LABELME,
-            "yolo": Format.YOLO,
-        }
-        key = value.strip().lower()
-        if key in _ALIAS:
-            return _ALIAS[key]
-        try:
-            return Format[value]
-        except KeyError:
-            raise ValueError(f"未知格式: {value}")
-    if isinstance(value, int):
-        return Format(value)
-    raise ValueError(f"无法解析格式: {value}")

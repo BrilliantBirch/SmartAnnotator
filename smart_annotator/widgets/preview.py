@@ -13,13 +13,15 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-11
+更新: 2026-09-04 新增 A/D 快捷键切换上一张/下一张（WidgetWithChildrenShortcut
+      作用域，仅本控件及其子控件聚焦时生效，不与全局快捷键冲突）
 """
 
 import os
 from pathlib import Path
 
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -134,6 +136,16 @@ class FilePreviewWidget(QWidget):
         splitter.setStretchFactor(1, 2)
 
         main_layout.addWidget(splitter)
+
+        # ===== A/D 快捷键：上一张 / 下一张 =====
+        # 作用域限定为本控件及其子控件（WidgetWithChildrenShortcut），
+        # 仅在预览区聚焦时生效，避免抢占主窗口全局快捷键
+        self._shortcut_prev = QShortcut(QKeySequence("A"), self)
+        self._shortcut_prev.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_prev.activated.connect(self._on_prev)
+        self._shortcut_next = QShortcut(QKeySequence("D"), self)
+        self._shortcut_next.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_next.activated.connect(self._on_next)
 
         # 初始导航按钮状态
         self._update_nav_state()

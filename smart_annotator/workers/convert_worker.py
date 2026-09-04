@@ -7,12 +7,19 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-04 转换前新增格式校验阶段（无效文件剔除并汇总报告）
+更新: 2026-09-04 格式校验的源格式改由 cc.direction 推导
+      （direction_to_source_format），不再读取已删除的 source_format 字段
 """
 
 from smart_annotator.config import SysConfig
 from smart_annotator.utils import LOGGER
 from .base_worker import BaseWorker
-from smart_annotator.core.convert.converter import Converter
+from smart_annotator.core.convert.converter import (
+    Converter,
+    direction_to_source_format,
+)
+from smart_annotator.core.convert.validator import validate_annotation_files
 from PySide6.QtCore import QMutexLocker
 
 
@@ -40,6 +47,47 @@ class ConvertWorker(BaseWorker):
                 if self.config is None:
                     raise ValueError("转换配置未设置")
                 if self.stopped:
+                    return
+
+            # ===== 转换前格式校验：逐文件检查输入格式，无效文件剔除并汇总报告 =====
+            cc = self.config.convert_config
+            kpt_count = len(cc.kpt) if cc.kpt else 0
+            self.progress_desc.emit("开始格式校验...")
+            valid_files, invalid_reports = validate_annotation_files(
+                cc.annotation_files,
+                direction_to_source_format(cc.direction),
+                self.config.task_type,
+                kpt_count,
+                self.run_callback,
+            )
+
+            # 校验期间被手动停止：与转换中停止的处理保持一致，直接走终止路径
+            with QMutexLocker(self.mutex):
+                if self.stopped:
+                    self.progress_desc.emit("转换任务手动终止")
+                    self.progress_updated.emit(0.0)
+                    return
+
+            # 无效文件明细汇总（最多列 50 条，防日志爆炸）
+            total = len(cc.annotation_files)
+            if invalid_reports:
+                for report in invalid_reports[:50]:
+                    self.progress_desc.emit(f"[校验] 无效文件 {report}")
+                if len(invalid_reports) > 50:
+                    self.progress_desc.emit(
+                        f"[校验] ...另有 {len(invalid_reports) - 50} 个无效文件未列出"
+                    )
+            self.progress_desc.emit(
+                f"格式校验完成: 共 {total} 个文件, "
+                f"有效 {len(valid_files)}, 无效 {len(invalid_reports)}"
+            )
+
+            # 剔除无效文件；全部无效则中止任务
+            if valid_files:
+                cc.annotation_files = valid_files
+            else:
+                if total > 0:
+                    self.error_occurred.emit("所有输入文件均未通过格式校验，任务中止")
                     return
 
             # 初始化转换器并执行任务
