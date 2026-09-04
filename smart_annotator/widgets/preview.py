@@ -2,7 +2,8 @@
 """
 文件列表与图像预览组件 - FilePreviewWidget
 
-提供左右分栏布局：左侧文件列表（QListWidget），右侧图像预览（QLabel）。
+提供左右分栏布局：左侧文件列表（QListView + FileListModel，UI 虚拟化，
+大列表不逐项建控件），右侧图像预览（QLabel）。
 支持选择文件、上一张/下一张切换、图像自适应缩放预览。
 
 设计要点：
@@ -15,6 +16,8 @@
 创建日期: 2026-08-11
 更新: 2026-09-04 新增 A/D 快捷键切换上一张/下一张（WidgetWithChildrenShortcut
       作用域，仅本控件及其子控件聚焦时生效，不与全局快捷键冲突）
+更新: 2026-09-04 文件列表由 QListWidget 重构为 QListView + FileListModel
+      （UI 虚拟化：万级文件列表不再逐项创建 QListWidgetItem）
 """
 
 import os
@@ -26,13 +29,14 @@ from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QVBoxLayout,
-    QListWidget,
-    QListWidgetItem,
+    QListView,
     QLabel,
     QPushButton,
     QSplitter,
     QSizePolicy,
 )
+
+from .file_list_model import FileListModel
 
 # 支持预览的图片扩展名（小写）
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -53,7 +57,7 @@ def _is_image(path: str) -> bool:
 class FilePreviewWidget(QWidget):
     """文件列表 + 图像预览组合控件。
 
-    左侧 QListWidget 展示文件列表，右侧 QLabel 展示选中图片的预览。
+    左侧 QListView + FileListModel 展示文件列表，右侧 QLabel 展示选中图片的预览。
     选择文件时发射 file_selected 信号；非图片文件尝试匹配同名图片预览。
 
     Attributes:
@@ -86,10 +90,16 @@ class FilePreviewWidget(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
 
-        self.file_list = QListWidget()
+        self.file_model = FileListModel(self)
+        self.file_list = QListView()
+        self.file_list.setModel(self.file_model)
         self.file_list.setMinimumWidth(220)
-        self.file_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.file_list.currentRowChanged.connect(self._on_row_changed)
+        self.file_list.setSelectionMode(
+            QListView.SelectionMode.SingleSelection
+        )
+        self.file_list.selectionModel().currentRowChanged.connect(
+            lambda cur, _: self._on_row_changed(cur.row() if cur.isValid() else -1)
+        )
         left_layout.addWidget(self.file_list, 1)
 
         # 上一张 / 下一张导航
@@ -152,22 +162,17 @@ class FilePreviewWidget(QWidget):
 
     # -------------------------- 公共接口 --------------------------
     def set_files(self, files: list[str]) -> None:
-        """设置文件列表并填充到列表控件。
+        """设置文件列表并填充到列表模型（模型重置自动清空选中态）。
 
         Args:
             files: 文件绝对路径列表。
         """
         self._files = list(files)
-        self.file_list.clear()
+        self.file_model.set_files(files)
         self._current_pixmap = None
-        for path in self._files:
-            name = os.path.basename(path)
-            item = QListWidgetItem(name)
-            item.setToolTip(path)  # 悬停显示完整路径
-            self.file_list.addItem(item)
         # 选中第一个文件（若有）
         if self._files:
-            self.file_list.setCurrentRow(0)
+            self.file_list.setCurrentIndex(self.file_model.index(0))
         else:
             self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText("无文件")
@@ -180,7 +185,7 @@ class FilePreviewWidget(QWidget):
 
     def current_file(self) -> str:
         """返回当前选中文件路径（无选中时返回空字符串）。"""
-        row = self.file_list.currentRow()
+        row = self.file_list.currentIndex().row()
         if 0 <= row < len(self._files):
             return self._files[row]
         return ""
@@ -198,20 +203,20 @@ class FilePreviewWidget(QWidget):
 
     def _on_prev(self) -> None:
         """切换到上一张。"""
-        row = self.file_list.currentRow()
+        row = self.file_list.currentIndex().row()
         if row > 0:
-            self.file_list.setCurrentRow(row - 1)
+            self.file_list.setCurrentIndex(self.file_model.index(row - 1))
 
     def _on_next(self) -> None:
         """切换到下一张。"""
-        row = self.file_list.currentRow()
-        if 0 <= row < self.file_list.count() - 1:
-            self.file_list.setCurrentRow(row + 1)
+        row = self.file_list.currentIndex().row()
+        if 0 <= row < self.file_model.count() - 1:
+            self.file_list.setCurrentIndex(self.file_model.index(row + 1))
 
     def _update_nav_state(self) -> None:
         """根据当前选中位置更新上一张/下一张按钮可用性。"""
-        row = self.file_list.currentRow()
-        count = self.file_list.count()
+        row = self.file_list.currentIndex().row()
+        count = self.file_model.count()
         self.btn_prev.setEnabled(row > 0)
         self.btn_next.setEnabled(0 <= row < count - 1)
 

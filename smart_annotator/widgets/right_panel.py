@@ -34,12 +34,14 @@ from PySide6.QtWidgets import (
     QListWidget,
     QFrame,
     QListWidgetItem,
+    QListView,
     QMenu,
     QAbstractItemView,
     QSplitter,
 )
 
 from .canvas import color_for_label
+from .file_list_model import FileListModel
 
 
 def _color_dot_icon(color: QColor) -> QIcon:
@@ -76,22 +78,22 @@ class _Section(QFrame):
         self.setStyleSheet("QFrame { border: 1px solid #e4e4e7; border-radius: 8px; }")
         # 分栏子项的最小高度：防止拖拽时分组被压缩到不可用
         self.setMinimumHeight(80)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(8, 8, 8, 8)
+        self.lay.setSpacing(6)
 
         header = QHBoxLayout()
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("color: #71717a; font-weight: 600; border: 0;")
         header.addWidget(self.title_label)
         header.addStretch()
-        lay.addLayout(header)
+        self.lay.addLayout(header)
 
         self.list = QListWidget()
         self.list.setStyleSheet(
             "QListWidget { background-color: #fafafa; border: 0; }"
         )
-        lay.addWidget(self.list, 1)
+        self.lay.addWidget(self.list, 1)
 
 
 class RightPanel(QWidget):
@@ -181,9 +183,22 @@ class RightPanel(QWidget):
         )
         self.splitter.addWidget(self.object_section)
 
-        # ===== 文件列表 =====
+        # ===== 文件列表（QListView + 模型：UI 虚拟化，只读已标注复选框）=====
         self.file_section = _Section("文件列表")
-        self.file_section.list.currentRowChanged.connect(self.file_selected.emit)
+        # 用 QListView 替换 _Section 默认的 QListWidget（大目录不逐项建 item）
+        self.file_section.lay.removeWidget(self.file_section.list)
+        self.file_section.list.deleteLater()
+        self.file_model = FileListModel(self)
+        self.file_section.list = QListView()
+        self.file_section.list.setModel(self.file_model)
+        self.file_section.list.setStyleSheet(
+            "QListView { background-color: #fafafa; border: 0; }"
+        )
+        self.file_section.lay.addWidget(self.file_section.list, 1)
+        # currentRowChanged 等价信号：当前行变化经 selectionModel 转发
+        self.file_section.list.selectionModel().currentRowChanged.connect(
+            lambda cur, _: self.file_selected.emit(cur.row() if cur.isValid() else -1)
+        )
         self.splitter.addWidget(self.file_section)
 
         # ===== 关键点列表（默认隐藏；Pose 等任务的 point 形状对象列表）=====
@@ -436,8 +451,8 @@ class RightPanel(QWidget):
         """填充文件列表（每项带只读"已标注"复选框）。
 
         复选框仅指示该文件是否已标注（勾选状态由主窗口在保存后经
-        set_file_annotated 维护）；不设 ItemIsUserCheckable，用户不可
-        点击切换。设置复选框状态不会触发 currentRowChanged，无需屏蔽信号。
+        set_file_annotated 维护）；模型 flags 不含 ItemIsUserCheckable，
+        用户不可点击切换。模型重置会自动清空选中态，无需屏蔽信号。
 
         Args:
             files: 图片绝对路径列表（显示为文件名）。
@@ -445,17 +460,7 @@ class RightPanel(QWidget):
         """
         if annotated is None:
             annotated = [False] * len(files)
-        self.file_section.list.clear()
-        for path, done in zip(files, annotated):
-            item = QListWidgetItem(str(path.split("\\")[-1].split("/")[-1]))
-            item.setToolTip(str(path))
-            # 只读复选框：setCheckState 会自动启用 ItemIsUserCheckable
-            # （Qt 6 行为），需在其后显式移除以保证用户不可点击切换
-            item.setCheckState(
-                Qt.CheckState.Checked if done else Qt.CheckState.Unchecked
-            )
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
-            self.file_section.list.addItem(item)
+        self.file_model.set_files(files, annotated)
 
     def set_file_annotated(self, index: int, checked: bool) -> None:
         """更新指定文件的已标注勾选状态（不发射信号）。
@@ -464,13 +469,7 @@ class RightPanel(QWidget):
             index: 文件下标（越界时不操作）。
             checked: 是否已标注（True 勾选 / False 取消勾选）。
         """
-        if 0 <= index < self.file_section.list.count():
-            # 文件列表未连接 itemChanged，屏蔽信号纯为保险
-            self.file_section.list.blockSignals(True)
-            self.file_section.list.item(index).setCheckState(
-                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-            )
-            self.file_section.list.blockSignals(False)
+        self.file_model.set_row_state(index, checked)
 
     def select_file(self, index: int) -> None:
         """程序化选中指定文件（不发射信号）。
@@ -478,10 +477,11 @@ class RightPanel(QWidget):
         Args:
             index: 文件下标（越界时不操作）。
         """
-        if 0 <= index < self.file_section.list.count():
-            self.file_section.list.blockSignals(True)
-            self.file_section.list.setCurrentRow(index)
-            self.file_section.list.blockSignals(False)
+        view = self.file_section.list
+        if 0 <= index < self.file_model.count():
+            view.selectionModel().blockSignals(True)
+            view.setCurrentIndex(self.file_model.index(index))
+            view.selectionModel().blockSignals(False)
 
     # -------------------------- 关键点列表 --------------------------
     def set_keypoints(self, items) -> None:

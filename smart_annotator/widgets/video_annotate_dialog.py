@@ -5,8 +5,11 @@
 视频标注任务配置窗口（独立对话框，替代原 QInputDialog 简易弹窗）：
     1. 输入路径：视频文件所在目录（PathField 浏览选择）
     2. 输出路径：默认输入路径下的 Output 子目录（可修改）
-    3. 视频列表：动态遍历（os.scandir 迭代器 + QTimer 分批入列，
-       大目录不卡 UI），复选框勾选待标注视频（默认全选）
+    3. 视频列表：QListView + VideoListModel（QAbstractListModel）。
+       模型经 canFetchMore/fetchMore 从 os.scandir 迭代器分批并入数据
+       （QTimer 驱动自动加载 + 滚动到底部触发按需加载），视图仅渲染
+       可见行，大目录既不卡 UI 也不创建海量列表项控件；复选框勾选
+       待标注视频（默认全选）
     4. 帧间隔：抽帧间隔帧数（默认 10）
     5. 预览播放器：QTimer 驱动 cv2 逐帧播放，支持播放/暂停、
        后退/快进（±1 秒）、变速（0.25x-4x）、进度条拖动定位
@@ -15,13 +18,21 @@ video_processor.py（帧位不前进/空帧强制终止）。
 
 作者: BaiBinnan
 创建日期: 2026-09-03
+更新: 2026-09-04 视频列表由 QListWidget + QTimer 分批入列重构为
+      QListView + VideoListModel（canFetchMore/fetchMore 数据虚拟化）
 """
 
 import os
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -29,8 +40,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QListView,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -42,8 +52,184 @@ from .fields import LabeledSpin, PathField
 
 # 视频文件扩展名（与 utils/files.getVideoFilesInDir 保持一致）
 _VIDEO_EXTS = {".mp4", ".avi", ".mov"}
-# 动态遍历：每批处理的目录条目数（ QTimer 分批，避免大目录卡死 UI）
+# 增量加载：fetchMore 每批处理的目录条目数（防大目录单批过重卡 UI）
 _SCAN_BATCH = 200
+
+
+class VideoListModel(QAbstractListModel):
+    """视频列表模型 — os.scandir 迭代器 + canFetchMore/fetchMore 增量加载。
+
+    数据虚拟化：rowCount 仅暴露已并入模型的行，fetchMore 从目录迭代器
+    分批取数并经 beginInsertRows/endInsertRows 增量插入；视图（QListView）
+    只为可见行调用 data() 渲染，百万级目录内存与速度几乎不受影响。
+
+    Signals:
+        scan_finished(int): 目录遍历耗尽时发射（参数为已并入的视频总数，
+            QTimer 驱动与视图滚动驱动两条加载路径共用此收尾信号）。
+    """
+
+    scan_finished = Signal(int)
+
+    def __init__(self, parent=None):
+        """初始化空模型（无待遍历目录）。"""
+        super().__init__(parent)
+        self._videos: list[str] = []   # 已并入模型的视频路径
+        self._checked: list[bool] = []  # 与 _videos 等长的勾选状态（默认全选）
+        self._scan_iter = None         # os.scandir 迭代器（None = 无遍历）
+
+    # ---------------- QAbstractListModel 必需接口 ----------------
+    def rowCount(self, parent=QModelIndex()) -> int:
+        """返回已加载行数（视图仅感知已并入部分）。
+
+        Args:
+            parent: 父索引（列表模型无层级，有效时返回 0）。
+        """
+        return 0 if parent.isValid() else len(self._videos)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        """按角色返回行数据（文件名 / 路径 / 勾选状态）。
+
+        Args:
+            index: 行索引。
+            role: 数据角色（DisplayRole / UserRole / CheckStateRole）。
+
+        Returns:
+            对应数据；索引无效或角色不匹配返回 None。
+        """
+        if not index.isValid() or not (0 <= index.row() < len(self._videos)):
+            return None
+        row = index.row()
+        if role == Qt.ItemDataRole.DisplayRole:
+            return Path(self._videos[row]).name
+        if role == Qt.ItemDataRole.UserRole:
+            return self._videos[row]
+        if role == Qt.ItemDataRole.CheckStateRole:
+            return (
+                Qt.CheckState.Checked
+                if self._checked[row]
+                else Qt.CheckState.Unchecked
+            )
+        return None
+
+    def flags(self, index):
+        """行可选中且复选框可切换。"""
+        return super().flags(index) | Qt.ItemFlag.ItemIsUserCheckable
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole) -> bool:
+        """复选框切换（用户点击列表复选框的入口）。
+
+        Args:
+            index: 行索引。
+            value: 新勾选状态（Qt.CheckState）。
+            role: 须为 CheckStateRole，其余角色不支持。
+
+        Returns:
+            设置成功返回 True。
+        """
+        if (
+            not index.isValid()
+            or role != Qt.ItemDataRole.CheckStateRole
+            or not (0 <= index.row() < len(self._videos))
+        ):
+            return False
+        self._checked[index.row()] = value == Qt.CheckState.Checked
+        self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole])
+        return True
+
+    # ---------------- 增量加载（数据虚拟化） ----------------
+    def canFetchMore(self, parent=QModelIndex()) -> bool:
+        """是否还有未并入的视频（迭代器存活即可能有）。"""
+        return not parent.isValid() and self._scan_iter is not None
+
+    def fetchMore(self, parent=QModelIndex()) -> None:
+        """从目录迭代器取一批条目并入模型（每批 _SCAN_BATCH 条）。
+
+        QTimer 驱动的自动加载与视图滚动到底部的按需加载共用本入口；
+        迭代器耗尽时关闭并发射 scan_finished（两条路径统一收尾）。
+
+        Args:
+            parent: 父索引（列表模型仅支持无效父索引）。
+        """
+        if self._scan_iter is None or parent.isValid():
+            return
+        batch: list[str] = []
+        processed = 0
+        exhausted = True  # 循环自然结束（StopIteration/异常）即遍历耗尽
+        try:
+            for entry in self._scan_iter:
+                try:
+                    if entry.is_file() and Path(entry.name).suffix.lower() in _VIDEO_EXTS:
+                        batch.append(entry.path)
+                except OSError:
+                    continue  # 单条目读取失败跳过（权限/并发删除等）
+                processed += 1
+                if processed >= _SCAN_BATCH:
+                    exhausted = False  # 本批满额，迭代器可能还有剩余
+                    break
+        except OSError as e:
+            LOGGER.error(f"视频目录遍历中断: {e}")
+        # 增量插入本批视频行（默认勾选）
+        if batch:
+            first = len(self._videos)
+            last = first + len(batch) - 1
+            self.beginInsertRows(parent, first, last)
+            self._videos.extend(batch)
+            self._checked.extend([True] * len(batch))
+            self.endInsertRows()
+        # 遍历耗尽：关闭迭代器并通知对话框收尾
+        if exhausted:
+            self._close_iter()
+            self.scan_finished.emit(len(self._videos))
+
+    # ---------------- 对话框侧接口 ----------------
+    def begin_scan(self, iterator) -> None:
+        """重置模型并开始新目录遍历。
+
+        Args:
+            iterator: os.scandir 迭代器（由调用方创建并处理打开异常）。
+        """
+        self._close_iter()
+        self.beginResetModel()
+        self._videos = []
+        self._checked = []
+        self.endResetModel()
+        self._scan_iter = iterator
+
+    def scan_active(self) -> bool:
+        """遍历是否仍在进行（迭代器存活）。"""
+        return self._scan_iter is not None
+
+    def close_scan(self) -> None:
+        """中止/结束遍历（关闭迭代器，保留已并入的行）。"""
+        self._close_iter()
+
+    def set_all_checked(self, checked: bool) -> None:
+        """全选 / 取消全选已加载的视频行。
+
+        Args:
+            checked: True 全选，False 取消全选。
+        """
+        if not self._videos:
+            return
+        self._checked = [checked] * len(self._videos)
+        self.dataChanged.emit(
+            self.index(0),
+            self.index(len(self._videos) - 1),
+            [Qt.ItemDataRole.CheckStateRole],
+        )
+
+    def checked_paths(self) -> list:
+        """返回勾选的视频路径列表（空列表表示未勾选任何视频）。"""
+        return [p for p, c in zip(self._videos, self._checked) if c]
+
+    def _close_iter(self) -> None:
+        """关闭并丢弃目录迭代器（幂等）。"""
+        if self._scan_iter is not None:
+            try:
+                self._scan_iter.close()
+            except Exception:
+                pass
+            self._scan_iter = None
 
 
 class VideoAnnotateDialog(QDialog):
@@ -69,10 +255,12 @@ class VideoAnnotateDialog(QDialog):
         self._fps = 0.0           # 当前视频帧率
         self._total_frames = 0    # 当前视频总帧数
         self._playing = False     # 播放状态
-        self._scan_iter = None    # 动态遍历迭代器（os.scandir）
-        self._videos: list[str] = []  # 已发现的视频路径
 
-        # ===== 动态遍历定时器（分批入列）=====
+        # ===== 视频列表模型（增量加载：canFetchMore/fetchMore）=====
+        self.model = VideoListModel(self)
+        self.model.scan_finished.connect(self._on_scan_finished)
+
+        # ===== 动态遍历定时器（分批驱动模型 fetchMore）=====
         self._scan_timer = QTimer(self)
         self._scan_timer.setInterval(10)
         self._scan_timer.timeout.connect(self._scan_tick)
@@ -130,7 +318,8 @@ class VideoAnnotateDialog(QDialog):
         body = QHBoxLayout()
         body.setSpacing(10)
 
-        # 视频列表（复选框多选，默认全选）
+        # 视频列表（QListView + 增量加载模型：仅渲染可见行，
+        # 复选框多选默认全选，滚动到底部自动 fetchMore 续载）
         list_col = QVBoxLayout()
         list_header = QHBoxLayout()
         list_header.addWidget(QLabel("视频文件:"))
@@ -142,9 +331,10 @@ class VideoAnnotateDialog(QDialog):
         list_header.addWidget(self.btn_select_all)
         list_header.addWidget(self.btn_select_none)
         list_col.addLayout(list_header)
-        self.file_list = QListWidget()
+        self.file_list = QListView()
         self.file_list.setMinimumWidth(280)
-        self.file_list.itemClicked.connect(self._on_video_selected)
+        self.file_list.setModel(self.model)
+        self.file_list.clicked.connect(self._on_video_selected)
         list_col.addWidget(self.file_list, 1)
         body.addLayout(list_col, 1)
 
@@ -243,97 +433,67 @@ class VideoAnnotateDialog(QDialog):
         self._output_customized = True
 
     def _start_scan(self, path: str) -> None:
-        """启动动态遍历（os.scandir 迭代器 + QTimer 分批入列）。
+        """启动动态遍历（模型 fetchMore 增量入列，QTimer 分批驱动）。
 
         Args:
             path: 待遍历目录。
         """
         # 停止上一轮遍历
         self._scan_timer.stop()
-        if self._scan_iter is not None:
-            try:
-                self._scan_iter.close()
-            except Exception:
-                pass
-            self._scan_iter = None
-
-        self.file_list.clear()
-        self._videos = []
+        self.model.close_scan()
         if not path or not os.path.isdir(path):
             self.scan_status.setText("")
             return
 
         try:
-            self._scan_iter = os.scandir(path)
+            iterator = os.scandir(path)
         except OSError as e:
             LOGGER.error(f"视频目录遍历失败: {path} - {e}")
             self.scan_status.setText(f"目录读取失败: {e}")
             return
+        self.model.begin_scan(iterator)
         self.scan_status.setText("正在扫描视频文件...")
         self._scan_timer.start()
 
     def _scan_tick(self) -> None:
-        """定时遍历一批目录条目（每批 _SCAN_BATCH 条，防大目录卡死 UI）。"""
-        batch = 0
-        try:
-            for entry in self._scan_iter:
-                try:
-                    if not entry.is_file():
-                        continue
-                    if Path(entry.name).suffix.lower() in _VIDEO_EXTS:
-                        self._append_video(entry.path)
-                except OSError:
-                    continue  # 单条目读取失败跳过（权限/并发删除等）
-                batch += 1
-                if batch >= _SCAN_BATCH:
-                    return  # 本批结束，等下一个 tick 继续
-        except StopIteration:
-            pass
-        except OSError as e:
-            LOGGER.error(f"视频目录遍历中断: {e}")
-        # 遍历完成
-        self._scan_timer.stop()
-        if self._scan_iter is not None:
-            try:
-                self._scan_iter.close()
-            except Exception:
-                pass
-            self._scan_iter = None
-        n = len(self._videos)
-        self.scan_status.setText(f"扫描完成，共 {n} 个视频" if n else "未找到视频文件（mp4/avi/mov）")
+        """定时驱动模型增量加载一批目录条目（防大目录卡死 UI）。"""
+        if self.model.canFetchMore():
+            self.model.fetchMore()
+        # 模型已耗尽（含视图滚动触发的收尾）：停表
+        if not self.model.scan_active():
+            self._scan_timer.stop()
 
-    def _append_video(self, path: str) -> None:
-        """向列表追加一个视频项（复选框默认勾选）。
+    def _on_scan_finished(self, total: int) -> None:
+        """模型遍历耗尽：停表并更新扫描状态（两条加载路径统一收尾）。
 
         Args:
-            path: 视频文件路径。
+            total: 已并入模型的视频总数。
         """
-        self._videos.append(path)
-        item = QListWidgetItem(Path(path).name)
-        item.setData(Qt.ItemDataRole.UserRole, path)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(Qt.CheckState.Checked)
-        self.file_list.addItem(item)
+        self._scan_timer.stop()
+        self.scan_status.setText(
+            f"扫描完成，共 {total} 个视频"
+            if total
+            else "未找到视频文件（mp4/avi/mov）"
+        )
 
     def _select_all(self) -> None:
         """全选视频复选框。"""
-        for i in range(self.file_list.count()):
-            self.file_list.item(i).setCheckState(Qt.CheckState.Checked)
+        self.model.set_all_checked(True)
 
     def _select_none(self) -> None:
         """取消全选视频复选框。"""
-        for i in range(self.file_list.count()):
-            self.file_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self.model.set_all_checked(False)
 
     # -------------------------- 预览播放器 --------------------------
-    def _on_video_selected(self, item: QListWidgetItem) -> None:
+    def _on_video_selected(self, index) -> None:
         """列表选中视频：加载到播放器并显示首帧。
 
         Args:
-            item: 被点击的列表项。
+            index: 被点击的模型索引（UserRole 携带完整路径）。
         """
-        path = item.data(Qt.ItemDataRole.UserRole)
-        self._load_video(path)
+        path = index.data(Qt.ItemDataRole.UserRole)
+        if path:
+            self._load_video(path)
 
     def _load_video(self, path: str) -> None:
         """加载视频到播放器（读取信息 + 显示首帧）。
@@ -554,14 +714,9 @@ class VideoAnnotateDialog(QDialog):
 
     # -------------------------- 资源清理 --------------------------
     def closeEvent(self, event) -> None:
-        """关闭窗口：停止定时器并释放视频句柄。"""
+        """关闭窗口：停止定时器、中止模型遍历并释放视频句柄。"""
         self._scan_timer.stop()
-        if self._scan_iter is not None:
-            try:
-                self._scan_iter.close()
-            except Exception:
-                pass
-            self._scan_iter = None
+        self.model.close_scan()
         self._pause()
         if self._cap is not None:
             self._cap.release()

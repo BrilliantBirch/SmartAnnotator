@@ -54,6 +54,8 @@
       shape_counts）随四参数 labels_ready 更新、切换工作路径时清空；
       导出对话框前置检查（工作路径/图片/JSON 标注）并传参
       work_path + stats 复用统计预填（删除旧 input_field 预填代码）
+更新: 2026-09-04 右栏文件列表 QListView 化（RightPanel 内嵌 FileListModel，
+      UI 虚拟化大目录不卡顿）；Delete 路由文件列表分支改用 currentIndex
 """
 
 from copy import deepcopy
@@ -899,7 +901,8 @@ class MainWindow(QMainWindow):
         # 焦点在文件列表：删除选中图像及同名标注（复用含确认框的健壮删除逻辑）
         file_list = self.right_panel.file_section.list
         if fw is file_list or (fw is not None and file_list.isAncestorOf(fw)):
-            if self._has_workspace() and file_list.currentRow() >= 0:
+            cur = file_list.currentIndex()
+            if self._has_workspace() and cur.isValid() and cur.row() >= 0:
                 self._on_delete_image_and_annotation()
             return
         # 默认（画布或其他控件）：删除画布选中形状（无选中则无操作）
