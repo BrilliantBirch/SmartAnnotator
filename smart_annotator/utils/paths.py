@@ -37,7 +37,7 @@ def resource_path(relative_path: str) -> str:
     打包模式（PyInstaller onefile/dir）：基于 sys._MEIPASS 解析。
 
     Args:
-        relative_path: 资源相对路径（如 "resources/images/welcome.ico"）。
+        relative_path: 资源相对路径（如 "app.ico"）。
 
     Returns:
         资源绝对路径字符串。
