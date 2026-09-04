@@ -21,7 +21,9 @@
       set_section_heights 接口），宽度界限交由主窗口水平分栏控制
 更新: 2026-09-03 对象/关键点列表加复选框（可见性控制）与行-形状下标映射，关键点列表重构为 point 形状对象列表（交互与对象列表一致），文件列表加只读已标注复选框；移除 keypoint_selected 标签名交互
 更新: 2026-09-04 select_file 滚动到选中行（QListView 重构后快捷键切换
-      图片时列表不跟随滚动，补 scrollTo PositionAtCenter）
+      图片时列表不跟随滚动，补 scrollTo PositionAtCenter）；移除
+      selectionModel 信号屏蔽（屏蔽抑制视图重绘导致选中高亮视觉上
+      不跟随，回馈由主窗口 _current_index 守卫阻断）
 """
 
 from typing import List
@@ -474,21 +476,25 @@ class RightPanel(QWidget):
         self.file_model.set_row_state(index, checked)
 
     def select_file(self, index: int) -> None:
-        """程序化选中指定文件并滚动到可视区（不发射信号）。
+        """程序化选中指定文件并滚动到可视区。
 
-        快捷键切换图片时同步文件列表选中行；EnsureVisible 标志确保
-        选中行滚入可视区（否则 QListView 保持滚动位置不跟随）。
+        快捷键切换图片时同步文件列表选中行。不得屏蔽 selectionModel
+        信号：视图依赖其 selectionChanged/currentRowChanged 驱动选中行
+        重绘，屏蔽后选中状态虽正确但视觉不刷新（旧高亮残留，直至滚动
+        触发整体重绘才"追上"）。回馈环路由主窗口 _on_file_selected 的
+        index != _current_index 守卫阻断（_current_index 在本调用前已赋值）。
 
         Args:
             index: 文件下标（越界时不操作）。
         """
         view = self.file_section.list
         if 0 <= index < self.file_model.count():
-            view.selectionModel().blockSignals(True)
             view.setCurrentIndex(self.file_model.index(index))
-            view.selectionModel().blockSignals(False)
             # 滚动到选中行（PositionAtCenter 保持行在视野中央附近）
-            view.scrollTo(view.file_model.index(index), QAbstractItemView.ScrollHint.PositionAtCenter)
+            view.scrollTo(
+                self.file_model.index(index),
+                QAbstractItemView.ScrollHint.PositionAtCenter,
+            )
 
     # -------------------------- 关键点列表 --------------------------
     def set_keypoints(self, items) -> None:
