@@ -25,7 +25,7 @@ from typing import Optional
 import shiboken6
 from PySide6.QtCore import QObject, Signal, QtMsgType, qInstallMessageHandler
 
-from .logger import _MillisecondFormatter, LOGGING_NAME
+from . import _MillisecondFormatter, LOGGING_NAME
 
 # 需要静默的 Qt 内部警告前缀（均为已知无害、Qt 自行回退的场景）：
 # - QFont::setPointSize：全局 QSS 以 px 定义字号时控件字体为 pixelSize 模式

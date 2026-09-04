@@ -11,6 +11,8 @@ txt 文件转到 labelme json 格式的标签
       宽高传参顺序颠倒问题
 更新: 2026-09-02 修复 YoloSeg2JsonConverter 行校验条件（合法行为奇数字段数
       且 >= 7，原条件误拒 7 字段合法行、误放行偶数字段数行）
+更新: 2026-09-04 复制图片/背景图前校验源与目标是否同一文件（输出目录与
+      输入目录一致时 shutil.copy 抛 SameFileError 导致任务中断）
 """
 
 from smart_annotator.config import LABELME_VERSION, ConvertConfig, MODE
@@ -20,6 +22,21 @@ import shutil
 import os
 import cv2
 import numpy as np
+
+
+def _safe_copy(src: Path, dst: Path) -> None:
+    """复制文件，源与目标为同一文件时跳过（输出目录=输入目录场景）。
+
+    Args:
+        src: 源文件路径。
+        dst: 目标文件路径。
+    """
+    try:
+        if src.resolve() == dst.resolve():
+            return  # 同一文件（用户输出路径与输入路径一致），无需复制
+    except OSError:
+        pass  # 路径解析失败（如网络盘/已删除文件）交由 copy 抛错统一记录
+    shutil.copy(src, dst)
 
 
 # region YOLO系列转换Labelme json
@@ -102,7 +119,7 @@ class JsonBaseConverter:
                         image_height,
                         self.output / (file.stem + ".json"),
                     )
-                    shutil.copy(imagePath, self.output / imagePath.name)
+                    _safe_copy(imagePath, self.output / imagePath.name)
                 else:
                     LOGGER.warning(f"当前标签{file.name}无图片")
             if self.imageFiles or empty_files:
@@ -116,7 +133,7 @@ class JsonBaseConverter:
                 for id, imageFile in enumerate(background_imgFiles):
                     if not callback("背景图片转换中", (id + 1) / background_total):
                         return False
-                    shutil.copy(imageFile, backgroundFolder_img / imageFile.name)
+                    _safe_copy(imageFile, backgroundFolder_img / imageFile.name)
             return True
         except Exception as ex:
             LOGGER.error(f"标签转换失败：{str(ex)}")

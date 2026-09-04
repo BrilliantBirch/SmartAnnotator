@@ -212,43 +212,12 @@ def move_files(filelist, splitname, output):
             raise RuntimeError(f"移动文件{file_name}时失败：{str(ex)}")
 
 
-def _parse_engine_metadata(engine_path) -> dict:
-    """从 engine 文件头部的自定义 metadata 段解析元数据字典。
-
-    engine 文件格式（见 onnx2engine.Onnx2Engine.run 写入逻辑）：
-        [4 字节小端有符号整数: metadata JSON 字节长度][metadata JSON][engine 序列化数据]
-
-    其中 "names" 字段为 JSON 字典字符串（键为字符串形式的类别 id）。
-
-    Args:
-        engine_path: .engine 文件路径。
-
-    Returns:
-        元数据字典；无 metadata 段或解析失败时返回空字典。
-    """
-    import json
-
-    try:
-        raw = Path(engine_path).read_bytes()
-        if len(raw) < 4:
-            return {}
-        meta_len = int.from_bytes(raw[:4], byteorder="little", signed=True)
-        # 长度合理性校验：负数或超出文件范围说明该 engine 未写入 metadata
-        if meta_len <= 0 or meta_len > len(raw) - 4:
-            return {}
-        return json.loads(raw[4 : 4 + meta_len].decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError, OSError):
-        return {}
-
-
 def _normalize_names(mapping) -> dict:
     """将类别映射统一为 {int: str} 格式。
 
     Args:
-        mapping: 类别映射。onnx 路径传入 ast.literal_eval 的产物（dict）；
-            engine 路径传入 JSON 字符串（onnx2engine 写入时对 "names" 值
-            做过一次 json.dumps，形成 '{"0": "person", ...}' 字符串），
-            本函数内部先解开该层字符串。
+        mapping: 类别映射（onnx metadata 传入 ast.literal_eval 的产物，
+            或模型元数据中的字符串字面量 '{"0": "person", ...}'）。
 
     Returns:
         {class_id: name} 字典；格式非法时返回空字典。
@@ -256,7 +225,7 @@ def _normalize_names(mapping) -> dict:
     import ast
     import json
 
-    # engine 路径：names 为 JSON 字符串，先解开一层
+    # 字符串形式：先按 JSON 解开，失败再退回 Python 字面量解析
     if isinstance(mapping, str):
         try:
             mapping = json.loads(mapping)
@@ -275,16 +244,13 @@ def _normalize_names(mapping) -> dict:
 
 
 def getModelClasses(model_path) -> dict:
-    """从模型文件元数据中读取类别映射（不加载推理会话，轻量解析）。
+    """从 ONNX 模型元数据中读取类别映射（不加载推理会话，轻量解析）。
 
-    解析逻辑：
-        - .onnx: 读取 metadata_props 中的 "names" 字段（YOLO 导出格式，
-          形如 "{0: 'person', 1: 'car', ...}" 的字符串字面量）
-        - .engine: 读取文件头部自定义 metadata 段（onnx2engine 转换时写入）
-    .engine 解析失败时回退到同名 .onnx 文件（兼容旧版无 metadata 的 engine）。
+    读取 metadata_props 中的 "names" 字段（YOLO 导出格式，
+    形如 "{0: 'person', 1: 'car', ...}" 的字符串字面量）。
 
     Args:
-        model_path: 模型文件路径（.onnx 或 .engine）。
+        model_path: 模型文件路径（.onnx）。
 
     Returns:
         类别映射 {class_id: name}；无法读取时返回空字典。
@@ -295,23 +261,7 @@ def getModelClasses(model_path) -> dict:
     if path is None or not path.exists():
         return {}
 
-    suffix = path.suffix.lower()
-
-    # ===== engine：直接解析内嵌 metadata，失败回退同名 .onnx =====
-    if suffix == ".engine":
-        metadata = _parse_engine_metadata(path)
-        names = _normalize_names(metadata.get("names"))
-        if names:
-            return names
-        # 回退：旧版 engine 未写入 metadata，尝试同名 .onnx
-        onnx_path = path.with_suffix(".onnx")
-        if onnx_path.exists():
-            path = onnx_path
-            suffix = ".onnx"
-        else:
-            return {}
-
-    if suffix != ".onnx":
+    if path.suffix.lower() != ".onnx":
         return {}
 
     try:
@@ -336,11 +286,10 @@ def getModelTaskType(model_path):
         2. metadata 含 "kpt_shape" → POSE（YOLO pose 导出约定）
         3. 图输出张量数量 >= 2 → SEGMENT（分割模型输出 predictions + proto）
         4. 其余（单输出、含 names 类别）→ DETECT
-    .engine 经内嵌 metadata 判定（kpt_shape/task），不含时回退同名 .onnx
-    判定输出结构；两者均不可用时返回 None（无法推导，交由用户选择）。
+    无法推导时返回 None（交由用户选择）。
 
     Args:
-        model_path: 模型文件路径（.onnx 或 .engine）。
+        model_path: 模型文件路径（.onnx）。
 
     Returns:
         任务类型名称字符串 "DETECT" / "POSE" / "SEGMENT"；无法推导返回 None。
@@ -349,21 +298,7 @@ def getModelTaskType(model_path):
     if path is None or not path.exists():
         return None
 
-    suffix = path.suffix.lower()
-    # ===== engine：内嵌 metadata 判定，缺关键键时回退同名 .onnx =====
-    if suffix == ".engine":
-        metadata = _parse_engine_metadata(path)
-        task = _task_from_metadata(metadata)
-        if task is not None:
-            return task
-        onnx_path = path.with_suffix(".onnx")
-        if onnx_path.exists():
-            path = onnx_path
-            suffix = ".onnx"
-        else:
-            return None
-
-    if suffix != ".onnx":
+    if path.suffix.lower() != ".onnx":
         return None
 
     try:

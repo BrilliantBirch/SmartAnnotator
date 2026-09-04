@@ -12,10 +12,13 @@ labelme 文件转到 txt 格式的标签
 创建日期: 2026-08-10
 更新: 2026-09-02 run() 图片匹配改为按文件名主干索引（兼容 label/image/
       dataset 目录层级，原实现要求 JSON 与图片同目录同名）
+更新: 2026-09-04 复制图片前校验源与目标是否同一文件（输出目录与输入目录
+      一致时 shutil.copy 抛 SameFileError 导致任务中断），复用 _safe_copy
 """
 
 from smart_annotator.config import RANDOM_SEED, ConvertConfig, MODE
 from smart_annotator.utils import LOGGER, COLORS, is_point_in_box, export
+from smart_annotator.core.convert.json_converter import _safe_copy
 
 
 from typing import List, Tuple, Set
@@ -120,7 +123,7 @@ class TxtConverter:
                     # 复制图片
                     destination = convertImgFolder / img_path.name
                     try:
-                        shutil.copy(img_path, destination)
+                        _safe_copy(img_path, destination)
                     except Exception as e:
                         LOGGER.error(f"复制 {img_path} 时出错: {e}")
                     txt_path = convertLabelFolder / f"{json_path.stem}.txt"
@@ -152,7 +155,7 @@ class TxtConverter:
                         "背景图片转换中", (id + 1) / background_total
                     ):
                         return False
-                    shutil.copy(imageFile, backgroundFolder_img / imageFile.name)
+                    _safe_copy(imageFile, backgroundFolder_img / imageFile.name)
                     # 生成空的txt文件
                     with open(
                         backgroundFolder_label / f"{imageFile.stem}.txt", "w"
@@ -164,8 +167,8 @@ class TxtConverter:
                 failedFolder = self.output / "failed"
                 failedFolder.mkdir(parents=True, exist_ok=True)
                 for json_path, img_path, infos in failed_files:
-                    shutil.copy(json_path, failedFolder / json_path.name)
-                    shutil.copy(img_path, failedFolder / img_path.name)
+                    _safe_copy(json_path, failedFolder / json_path.name)
+                    _safe_copy(img_path, failedFolder / img_path.name)
                     self.visualize(
                         str(img_path),
                         str(failedFolder / img_path.stem) + "_failed.jpg",

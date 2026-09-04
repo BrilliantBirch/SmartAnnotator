@@ -4,8 +4,7 @@
 
 模型加载窗口职责收敛：
     1. 运行设备：CPU/GPU 单选（默认 GPU 若 CUDA 可用，否则 CPU 并禁用 GPU）
-    2. 模型路径：.onnx / .engine（GPU 下选择 .onnx 时的 engine 转换由主窗口
-       在用户确认后关闭对话框执行，见 app._open_annotate_dialog）
+    2. 模型路径：.onnx（GPU 模式经 onnxruntime CUDAExecutionProvider 推理）
     3. 任务类型：模型加载后自动读取元数据推导（task 键 / kpt_shape / 输出
        结构），无法推导时允许用户手动选择
     4. 检测类别：模型元数据解析，复选列表 + 全选/取消全选
@@ -45,41 +44,28 @@ from ..utils import LOGGER, getModelClasses, getModelTaskType
 def _cuda_available() -> bool:
     """检测当前环境是否存在可用的 CUDA 推理后端。
 
-    GPU 模式依赖两个组件：
-        1. tensorrt（GPU 模式实际使用 TensorRT engine 推理）
-        2. cuda-python（cuda.bindings.cydriver / cyruntime，TensorRT 后端 CUDA 内存操作）
-
-    onnxruntime 仅用于 CPU 模式推理（CPUExecutionProvider），
-    不依赖 onnxruntime CUDA EP，只需确认可导入即可。
-    任一组件缺失则返回 False，并在日志中记录缺失项。
+    GPU 模式使用 onnxruntime CUDAExecutionProvider 推理：
+    onnxruntime-gpu 安装后 CUDA EP 会出现在 get_available_providers()
+    列表中；若运行机器无 NVIDIA 驱动，会话创建时自动回退 CPU（见
+    onnxbackend.ONNXInfer，不崩溃仅降速）。
 
     Returns:
-        True 表示 TensorRT + cuda-python 均可用，否则 False。
+        True 表示 onnxruntime 提供 CUDAExecutionProvider，否则 False。
     """
-    # 检查 onnxruntime 可导入（CPU 模式推理 / GPU 模式回退使用）
     try:
-        import onnxruntime as ort  # noqa: F401
+        import onnxruntime as ort
     except Exception as e:
         LOGGER.warning(f"CUDA 检测: onnxruntime 导入失败: {e}")
         return False
 
-    # 检查 TensorRT（GPU 模式推理引擎）
-    try:
-        import tensorrt  # noqa: F401
-    except Exception as e:
-        LOGGER.warning(f"CUDA 检测: tensorrt 导入失败: {e}，GPU 模式不可用")
-        return False
-
-    # 检查 cuda-python（TensorRT 后端依赖 from cuda import cuda, cudart）
-    try:
-        from cuda import cuda, cudart  # noqa: F401
-    except Exception as e:
+    providers = ort.get_available_providers()
+    if "CUDAExecutionProvider" not in providers:
         LOGGER.warning(
-            f"CUDA 检测: cuda-python 导入失败: {e}，"
-            f"GPU 模式不可用（缺少 cuda.bindings.cydriver）"
+            f"CUDA 检测: onnxruntime 未提供 CUDAExecutionProvider（当前 "
+            f"providers: {providers}），GPU 模式不可用。"
+            f"如需 GPU 推理请安装 onnxruntime-gpu。"
         )
         return False
-
     return True
 
 
@@ -87,8 +73,7 @@ class AnnotatePage(BasePage):
     """自动标注页 - 模型加载与推理参数设置（精简版）。
 
     Signals:
-        model_loaded(str): 模型路径确认加载（供主窗口在对话框关闭后
-            执行 onnx→engine 转换等后续动作）。
+        model_loaded(str): 模型路径确认加载（供主窗口复用模型路径）。
     """
 
     model_loaded = Signal(str)
@@ -138,8 +123,8 @@ class AnnotatePage(BasePage):
         self.model_card = Card("模型")
         self.model_field = PathField(
             browse_type="file",
-            file_filter="模型文件 (*.onnx *.engine)",
-            placeholder="选择 ONNX 或 TensorRT engine 模型",
+            file_filter="模型文件 (*.onnx)",
+            placeholder="选择 ONNX 模型",
         )
         # 模型路径变化时自动读取类别并推导任务类型
         self.model_field.path_changed.connect(self._on_model_changed)

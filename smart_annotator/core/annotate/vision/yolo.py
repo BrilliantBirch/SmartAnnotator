@@ -5,6 +5,9 @@ YOLO 预测器
 作者: BaiBinnan
 创建日期: 2026-08-10
 更新: 2026-06-25 兼容 YOLOv26 端到端推理，自动检测模型版本并路由
+更新: 2026-09-04 GPU 推理由 TensorRT engine 切换为 onnxruntime CUDA EP：
+      删除 engine 加载与 onnx→engine 隐式转换逻辑（转换持 GIL 导致 UI
+      卡死），后处理移除 .engine 输出顺序分支
 """
 
 import numpy as np
@@ -197,45 +200,22 @@ class DetectionPredictor(BasePredictor):
                 return False
 
         elif self.device == DEVICE.GPU:
-            from .tensorrtbackend import TensorRTInfer
-
             if get_gpu_info() == -1:
                 LOGGER.warning("找不到显卡信息,请检查是否安装了显卡驱动")
                 return False
 
+            # GPU 推理统一走 onnxruntime CUDA EP（无需 TensorRT engine 转换）
             if self.model_path.suffix == ".onnx":
-                LOGGER.warning("GPU使用tensorrt推理,尝试寻找engine模型")
-                engine_path = self.model_path.with_suffix(".engine")
-                if engine_path.exists():
-                    try:
-                        self.model = TensorRTInfer(engine_path)
-                        self.model_path = engine_path
-                    except Exception as ex:
-                        LOGGER.error(f"engine模型加载失败{str(ex)}")
-                        return False
-                else:
-                    LOGGER.warning("未找到engine模型,尝试转换")
-                    try:
-                        from .onnx2engine import Onnx2Engine
-
-                        LOGGER.info(
-                            f"开始转换{self.model_path},请耐心等待，根据模型大小需要10-30mins,请勿关闭程序"
-                        )
-                        onnx2engine = Onnx2Engine(onnxfile=self.model_path)
-                        engine_path = onnx2engine.run()
-                        self.model_path = engine_path
-                        self.model = TensorRTInfer(engine_path)
-                        LOGGER.info(f"转换完成,模型已保存到{engine_path}")
-                    except Exception as ex:
-                        LOGGER.error(f"模型转换失败{str(ex)}")
-                        return False
-
-            elif self.model_path.suffix == ".engine":
                 try:
-                    self.model = TensorRTInfer(self.model_path)
+                    self.model = ONNXInfer(self.model_path, device=self.device)
                 except Exception as ex:
-                    LOGGER.error(f"engine模型加载失败{str(ex)}")
+                    LOGGER.error(f"onnx模型加载失败{str(ex)}")
                     return False
+            else:
+                LOGGER.error(
+                    f"模型文件类型错误{self.model_path},仅支持onnx模型推理,请检查"
+                )
+                return False
 
         # 尝试从模型元数据中获取
         if self.model and self.model.metadata:
@@ -451,9 +431,6 @@ class SegmentationPredictor(DetectionPredictor):
         if self.model_path.suffix == ".onnx":
             assert isinstance(predictions, (list, tuple))
             proto, outputs = predictions[1], predictions[0]
-        elif self.model_path.suffix == ".engine":
-            assert isinstance(predictions, (list, tuple))
-            proto, outputs = predictions[0], predictions[1]
         else:
             LOGGER.error(f"不支持的模型格式: {self.model_path.suffix}")
             return []
@@ -520,10 +497,7 @@ class SegmentationPredictor(DetectionPredictor):
         """端到端分割后处理（v26），输出已包含筛选结果，无需 NMS。"""
         if isinstance(predictions, (list, tuple)) and len(predictions) == 2:
             # 端到端分割通常有两个输出: (detections, proto)
-            if self.model_path.suffix == ".onnx":
-                outputs, proto = predictions[0], predictions[1]
-            else:
-                proto, outputs = predictions[0], predictions[1]
+            outputs, proto = predictions[0], predictions[1]
         else:
             LOGGER.error("端到端分割模型预期两个输出，实际不匹配")
             return []

@@ -20,6 +20,8 @@
 更新: 2026-09-03 列表高度改为垂直分栏可拖拽调节（sizes_changed 信号 +
       set_section_heights 接口），宽度界限交由主窗口水平分栏控制
 更新: 2026-09-03 对象/关键点列表加复选框（可见性控制）与行-形状下标映射，关键点列表重构为 point 形状对象列表（交互与对象列表一致），文件列表加只读已标注复选框；移除 keypoint_selected 标签名交互
+更新: 2026-09-04 select_file 滚动到选中行（QListView 重构后快捷键切换
+      图片时列表不跟随滚动，补 scrollTo PositionAtCenter）
 """
 
 from typing import List
@@ -472,7 +474,10 @@ class RightPanel(QWidget):
         self.file_model.set_row_state(index, checked)
 
     def select_file(self, index: int) -> None:
-        """程序化选中指定文件（不发射信号）。
+        """程序化选中指定文件并滚动到可视区（不发射信号）。
+
+        快捷键切换图片时同步文件列表选中行；EnsureVisible 标志确保
+        选中行滚入可视区（否则 QListView 保持滚动位置不跟随）。
 
         Args:
             index: 文件下标（越界时不操作）。
@@ -482,6 +487,8 @@ class RightPanel(QWidget):
             view.selectionModel().blockSignals(True)
             view.setCurrentIndex(self.file_model.index(index))
             view.selectionModel().blockSignals(False)
+            # 滚动到选中行（PositionAtCenter 保持行在视野中央附近）
+            view.scrollTo(view.file_model.index(index), QAbstractItemView.ScrollHint.PositionAtCenter)
 
     # -------------------------- 关键点列表 --------------------------
     def set_keypoints(self, items) -> None:

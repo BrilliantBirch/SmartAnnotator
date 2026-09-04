@@ -148,8 +148,8 @@ class AnnotateConfig:
     """自动标注配置
 
     Attributes:
-        device: 推理设备（CPU/GPU）。
-        model_path: 模型文件路径（.onnx/.engine）。
+        device: 推理设备（CPU/GPU，GPU 走 onnxruntime CUDA EP）。
+        model_path: 模型文件路径（.onnx）。
         image_path: 输入图片/视频目录。
         dataset_path: 标注输出目录。
         conf: BBox 置信度阈值（0-1）。

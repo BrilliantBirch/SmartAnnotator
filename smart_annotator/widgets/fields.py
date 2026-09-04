@@ -111,7 +111,7 @@ class PathField(QWidget):
 
         Args:
             browse_type: "dir" 选择目录，"file" 选择文件。
-            file_filter: 文件过滤器（browse_type="file" 时生效），如 "模型 (*.onnx *.engine)"。
+            file_filter: 文件过滤器（browse_type="file" 时生效），如 "模型 (*.onnx)"。
             placeholder: 占位提示文本。
             parent: 父控件。
         """

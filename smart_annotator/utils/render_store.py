@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import RenderConfig
-from .logger import LOGGER
+from . import LOGGER
 
 # 配置目录名（与应用名一致，见 main.py setApplicationName）
 _APP_DIR_NAME = "BrilliantAnnotator"

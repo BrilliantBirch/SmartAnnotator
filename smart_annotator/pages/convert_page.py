@@ -38,6 +38,7 @@
       非空 keypoints 时按小写集合过滤 labels 后再填类别列表，日志类别数
       同步用剔除后数量）；_on_import_config docstring 更新为 from_dict
       白名单过滤说明（废弃键/运行期字段键静默忽略，仅恢复有效字段）
+更新: 2026-09-04 预览列表仅显示图片文件（不再混入标注文件，标注无预览价值）
 """
 
 import json
@@ -636,9 +637,8 @@ class ConvertPage(BasePage):
             f"[{scan['structure']}] 已扫描到 {len(anno_files)} 个 {label}，"
             f"{len(image_files)} 张图片"
         )
-        # 合并标注与图片文件（去重后按名称排序），填充预览列表
-        all_files = sorted(set(anno_files + image_files))
-        self.preview_widget.set_files(all_files)
+        # 预览列表仅显示图片（标注文件无预览价值，不再混入）
+        self.preview_widget.set_files(sorted(set(image_files)))
 
     # -------------------------- 类别/关键点编辑器 --------------------------
     def _adjust_list_height(self, *args) -> None:

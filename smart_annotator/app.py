@@ -29,6 +29,11 @@
 更新: 2026-09-03 新增视图菜单（渲染开关与线宽/不透明度/字号档位，配置持久化 %APPDATA%/BrilliantAnnotator）、对象列表显示组号
 更新: 2026-09-03 画布与右栏之间加水平分栏（宽度可拖拽）、右栏列表垂直分栏
       （高度可拖拽），布局尺寸持久化到 render_config.json（防抖落盘）
+更新: 2026-09-04 ONNX → engine 转换结果由状态栏消息改为弹窗提醒（成功/
+      失败），转换进行中重复保存配置时弹窗拦截避免并发转换
+更新: 2026-09-04 GPU 推理切换为 onnxruntime CUDA EP：移除 TensorRT
+      转换链路（_maybe_convert_onnx_to_engine/_convert_notify/
+      _engine_converting 及预检 engine 检查），模型格式预检改为仅 .onnx
 更新: 2026-09-03 修复初次打开大目录标签列表长时间为空：_start_label_scan
       清空后立即按当前画布重建标签列表；扫描支持逐文件中断与进度提示
       （状态栏），停止后不再发射过期结果；标签强制转字符串防混合类型崩溃
@@ -129,10 +134,6 @@ _TOOL_SHORTCUTS = {
 class MainWindow(QMainWindow):
     """应用主窗口 - 三栏标注编辑器 + 标准菜单栏。"""
 
-    # 模型转换结果通知（后台线程 → 主线程 UI 的安全转发）
-    # 参数：(消息文本, 毫秒)——经 QueuedConnection 在主线程显示状态栏消息
-    _convert_notify = Signal(str, int)
-
     def __init__(self):
         """初始化主窗口，构建菜单栏、三栏布局并连接信号。"""
         super().__init__()
@@ -169,11 +170,10 @@ class MainWindow(QMainWindow):
         self._scan_progress_dlg: "ScanProgressDialog | None" = None
         # 使用说明书阅读窗（非模态；已打开时重复触发置前而非重复创建）
         self._manual_dlg: "ManualDialog | None" = None
-        # 自动标注运行状态（模态进度对话框 / 任务模式 / 最近错误 / engine 转换中）
+        # 自动标注运行状态（模态进度对话框 / 任务模式 / 最近错误）
         self._annotate_progress_dlg: "AnnotateProgressDialog | None" = None
         self._annotate_mode: str = ""  # single / all / video（空 = 无任务）
         self._annotate_error: str = ""
-        self._engine_converting: bool = False
 
         # 后台线程（单张 worker 常驻主窗口，避免局部变量被回收导致
         # "QThread: Destroyed while thread is still running" 闪退）
@@ -186,11 +186,6 @@ class MainWindow(QMainWindow):
         self._build_menubar()
         self._build_ui()
         self._connect_signals()
-
-        # 模型转换结果通知：后台线程经信号在主线程显示状态栏消息（线程安全）
-        self._convert_notify.connect(
-            lambda msg, msec: self.statusBar().showMessage(msg, msec)
-        )
 
         # 应用持久化的渲染配置到画布
         self.canvas.set_render_config(self._render_config)
@@ -854,7 +849,6 @@ class MainWindow(QMainWindow):
         # 保存到当前图片同名标注文件：文件列表复选框标记为已标注
         if json_path == self._current_json_path() and 0 <= self._current_index < len(self._image_files):
             self.right_panel.set_file_annotated(self._current_index, True)
-        LOGGER.info(f"标注已保存: {json_path}")
 
     # -------------------------- 编辑操作 --------------------------
     def _on_undo(self) -> None:
@@ -960,12 +954,7 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 自动标注 --------------------------
     def _open_annotate_dialog(self) -> None:
-        """打开模型加载与推理参数设置对话框（精简版 AnnotatePage）。
-
-        GPU 模式下选择 .onnx 模型保存时：先弹窗确认是否转换为
-        TensorRT engine（转换耗时较长），确认后关闭本对话框再执行
-        转换（后台线程，结果写回模型路径）。
-        """
+        """打开模型加载与推理参数设置对话框（精简版 AnnotatePage）。"""
         dialog = QDialog(self)
         dialog.setWindowTitle("模型加载 / 自动标注设置")
         dialog.resize(560, 640)
@@ -998,66 +987,6 @@ class MainWindow(QMainWindow):
         self.annotate_config = cfg
         self.left_toolbar.set_annotate_enabled(bool(cfg.annotate_config.model_path))
         LOGGER.info("已保存自动标注配置")
-        # 对话框已关闭：GPU 模式下的 .onnx 模型按需转换 engine（用户确认后执行）
-        self._maybe_convert_onnx_to_engine(cfg)
-
-    def _maybe_convert_onnx_to_engine(self, cfg: SysConfig) -> None:
-        """GPU 模式下选择 .onnx 模型时确认并转换为 TensorRT engine。
-
-        TensorRT 仅支持 engine 推理；转换耗时较长（数分钟），故在用户
-        确认后执行。已有同名 .engine 时跳过转换直接使用。转换在后台
-        线程执行，完成后将配置的模型路径更新为 engine 文件。
-
-        Args:
-            cfg: 刚保存的标注配置。
-        """
-        from .core.annotate.vision.onnx2engine import Onnx2Engine
-
-        ac = cfg.annotate_config
-        # 仅 GPU 模式 + .onnx 模型需要转换
-        if ac.device != DEVICE.GPU or not ac.model_path:
-            return
-        model_path = Path(ac.model_path)
-        if model_path.suffix.lower() != ".onnx":
-            return
-        engine_path = model_path.with_suffix(".engine")
-        if engine_path.exists():
-            # 已有同名 engine：直接使用（无需转换）
-            ac.model_path = str(engine_path)
-            LOGGER.info(f"检测到已有 engine 文件，直接使用: {engine_path}")
-            return
-        # 用户确认转换（转换耗时较长）
-        answer = QMessageBox.question(
-            self,
-            "转换为 TensorRT engine",
-            "GPU 推理使用 TensorRT engine 模型。\n"
-            f"是否将以下 ONNX 模型转换为 engine？\n（转换耗时较长，期间请勿关闭程序）\n\n{model_path}",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            LOGGER.info("用户取消 ONNX → engine 转换（GPU 推理可能失败）")
-            return
-        # 后台线程执行转换（避免阻塞 UI）
-        import threading
-
-        self._engine_converting = True
-
-        def _convert():
-            try:
-                converter = Onnx2Engine(model_path)
-                result = converter.run()
-                # 转换成功：更新配置模型路径（线程安全：仅字符串赋值，
-                # UI 侧使用发生在下一次对话框打开/推理启动时）
-                ac.model_path = str(result)
-                LOGGER.info(f"ONNX → engine 转换完成: {result}")
-                # 状态栏消息经信号转发到主线程（跨线程禁止直接操作 UI）
-                self._convert_notify.emit(f"模型转换完成: {result}", 5000)
-            except Exception as e:
-                LOGGER.error(f"ONNX → engine 转换失败: {e}")
-                self._convert_notify.emit(f"模型转换失败: {e}", 8000)
-            finally:
-                self._engine_converting = False
-
-        threading.Thread(target=_convert, daemon=True, name="Onnx2Engine").start()
 
     # -------------------------- 自动标注（统一入口） --------------------------
     def _precheck_annotate(
@@ -1066,7 +995,7 @@ class MainWindow(QMainWindow):
         need_images: bool = False,
         need_videos: bool = False,
     ) -> bool:
-        """标注前资源预检（模型已加载并转换完毕 / 工作区就绪）。
+        """标注前资源预检（模型已加载 / 工作区就绪）。
 
         Args:
             need_current: 需要当前画布有图片（单张标注）。
@@ -1080,25 +1009,16 @@ class MainWindow(QMainWindow):
         if self.annotate_config is None or not self.annotate_config.annotate_config.model_path:
             showMessageBox(QMessageBox.Icon.Warning, "请先加载模型（工具 → 加载模型 / 自动标注设置）")
             return False
-        # engine 转换进行中（模型尚未就绪）
-        if self._engine_converting:
-            showMessageBox(QMessageBox.Icon.Warning, "模型正在转换为 TensorRT engine，请等待转换完成后再标注")
-            return False
         ac = self.annotate_config.annotate_config
         model_path = Path(ac.model_path)
         if not model_path.exists():
             showMessageBox(QMessageBox.Icon.Warning, f"模型文件不存在: {ac.model_path}")
             return False
-        # GPU 模式必须使用已转换的 engine（用户取消转换时阻止标注）
-        if (
-            ac.device == DEVICE.GPU
-            and model_path.suffix.lower() == ".onnx"
-            and not model_path.with_suffix(".engine").exists()
-        ):
+        # 模型格式检查（CPU/GPU 均使用 onnxruntime，仅支持 .onnx）
+        if model_path.suffix.lower() != ".onnx":
             showMessageBox(
                 QMessageBox.Icon.Warning,
-                "GPU 模式需使用 TensorRT engine 模型：\n"
-                "请重新打开“加载模型 / 自动标注设置”并完成 ONNX → engine 转换",
+                f"仅支持 onnx 模型推理，当前模型格式为 {model_path.suffix}，请重新选择",
             )
             return False
         # 工作区检查

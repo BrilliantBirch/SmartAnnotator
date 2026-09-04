@@ -65,7 +65,7 @@ def chooseFile(suffix: str, dir: str = "") -> str:
     """选择文件。
 
     Args:
-        suffix: 文件过滤器，如 "模型 (*.onnx *.engine)"。
+        suffix: 文件过滤器，如 "模型 (*.onnx)"。
         dir: 默认起始目录。
 
     Returns:
