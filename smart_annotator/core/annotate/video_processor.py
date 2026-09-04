@@ -5,12 +5,18 @@
 作者: BaiBinnan
 创建日期: 2026-07-07
 移植日期: 2026-08-10
+更新: 2026-09-03 抽帧文件命名改为"视频名+帧Id"（帧在视频中的原始序号，
+      同一视频不同间隔重跑不冲突）；增加损坏视频防护（ret 恒为 True
+      但帧位不前进/空帧时强制终止，避免死循环）
 """
 
 import cv2
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Optional, Generator
+
+# 损坏视频判定：连续读取 N 帧位不前进即视为损坏（防死循环）
+_STUCK_POS_LIMIT = 5
 
 
 class VideoProcessor:
@@ -64,13 +70,29 @@ class VideoProcessor:
         self.skipped_count = 0
         prev_frame_gray = None
         frame_index = 0
-        output_index = 0
+        # 损坏视频防护状态：上次帧位 + 连续不前进计数
+        last_pos = -1
+        stuck_count = 0
 
         try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
+
+                # 损坏视频防护 1：ret 为 True 但帧数据为空 → 强制终止
+                if frame is None or frame.size == 0:
+                    break
+
+                # 损坏视频防护 2：帧位不前进（恒读同一帧）→ 连续超限即终止
+                pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                if pos == last_pos:
+                    stuck_count += 1
+                    if stuck_count >= _STUCK_POS_LIMIT:
+                        break
+                else:
+                    stuck_count = 0
+                    last_pos = pos
 
                 if frame_index % self.frame_interval == 0:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -83,11 +105,11 @@ class VideoProcessor:
                             frame_index += 1
                             continue
 
-                    frame_filename = f"{video_name}_{output_index:03d}.jpg"
+                    # 命名规则：视频名 + 帧Id（帧在视频中的原始序号）
+                    frame_filename = f"{video_name}_frame{frame_index:06d}.jpg"
                     frame_path = output_dir / frame_filename
                     cv2.imwrite(str(frame_path), frame)
                     prev_frame_gray = gray
-                    output_index += 1
                     self.extracted_count += 1
 
                     yield str(frame_path)

@@ -43,6 +43,10 @@
       （资源预检 + 跳过/覆盖选项 + 覆盖前清理老标注文件）；新增"标注
       视频"（菜单+导航栏，抽帧间隔默认 10 帧）；标注统一为模态进度
       窗口（进度条 + 日志 + 可中止），期间禁止预览与编辑
+更新: 2026-09-03 视频标注升级为独立窗口（输入路径/帧间隔/输出默认
+      Input/Output；文件列表 QTimer 分批动态遍历防大目录卡死；预览
+      播放器支持播放暂停/快进后退/变速/进度拖动；抽帧文件以
+      "视频名+帧Id"命名；损坏视频帧位停滞/空帧强制终止防死循环）
 """
 
 from copy import deepcopy
@@ -66,7 +70,6 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QSplitter,
-    QInputDialog,
 )
 
 from . import __appname__, __version__
@@ -77,6 +80,7 @@ from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir, getVideoFilesI
 from .utils.render_store import load_render_config, save_render_config
 from .widgets.dialogs import chooseDir, showMessageBox
 from .widgets.annotate_dialogs import AnnotateOptionsDialog, AnnotateProgressDialog
+from .widgets.video_annotate_dialog import VideoAnnotateDialog
 from .widgets.left_toolbar import (
     LeftToolbar,
     TOOL_SELECT,
@@ -1167,25 +1171,28 @@ class MainWindow(QMainWindow):
         )
 
     def _on_annotate_video(self) -> None:
-        """标注工作路径下的视频文件（抽帧间隔可设，默认 10 帧）。"""
-        if not self._precheck_annotate(need_videos=True):
+        """标注视频：打开视频标注窗口（输入路径/帧间隔/文件列表/预览播放器）。"""
+        if not self._precheck_annotate():
             return
         if self._annotate_worker_busy():
             return
 
-        videos = getVideoFilesInDir(self._work_dir)
-        # 抽帧间隔参数（默认 10 帧）
-        interval, ok = QInputDialog.getInt(
-            self, "标注视频", "抽帧间隔（帧数）:", 10, 1, 10000, 1,
+        # 视频标注窗口（默认输入路径 = 当前工作目录；输出默认 Input/Output）
+        config = VideoAnnotateDialog.get_config(
+            default_input=self._work_dir or "", parent=self
         )
-        if not ok:
+        if config is None:
             return
+
+        videos = config["videos"]
+        output_dir = config["output_dir"]
+        interval = config["frame_interval"]
 
         cfg = deepcopy(self.annotate_config)
         ac = cfg.annotate_config
-        ac.image_path = self._work_dir
-        # 抽帧图片与标注输出到工作目录
-        ac.dataset_path = self._work_dir
+        ac.image_path = config["input_dir"]
+        # 抽帧图片与标注输出到用户设定的输出目录（默认输入路径/Output）
+        ac.dataset_path = output_dir
         ac.frame_interval = interval
         ac.annotation_files = []
         ac.video_files = videos
@@ -1194,7 +1201,7 @@ class MainWindow(QMainWindow):
             self.annotate_worker,
             "video",
             "自动标注 - 视频",
-            f"共 {len(videos)} 个视频 · 抽帧间隔 {interval} 帧 · 输出目录: {self._work_dir}",
+            f"共 {len(videos)} 个视频 · 抽帧间隔 {interval} 帧 · 输出目录: {output_dir}",
         )
 
     def _on_annotate_progress(self, ratio: float) -> None:
