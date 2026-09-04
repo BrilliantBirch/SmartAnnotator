@@ -853,6 +853,13 @@ def _build_package(
     else:
         print(f"  [警告] 图标文件不存在: {icon_path}")
 
+    # 添加用户手册（帮助菜单内置阅读窗 resource_path 解析 docs/manual.md）
+    manual_path = PROJECT_ROOT / "docs" / "manual.md"
+    if manual_path.exists():
+        pyinstaller_cmd.extend(["--add-data", f"{manual_path};docs"])
+    else:
+        print(f"  [警告] 用户手册文件不存在: {manual_path}")
+
     # 添加排除模块
     for mod in excluded:
         pyinstaller_cmd.extend(["--exclude-module", mod])

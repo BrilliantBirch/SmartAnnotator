@@ -99,6 +99,7 @@ from .widgets.right_panel import RightPanel
 from .widgets.canvas import Canvas
 from .widgets.shape_dialog import ShapeDialog
 from .widgets.scan_stats_dialog import ScanProgressDialog, ScanStatsDialog
+from .widgets.manual_dialog import ManualDialog
 from .pages.annotate_page import AnnotatePage
 from .pages.convert_page import ConvertPage
 from .workers.annotate_worker import AnnotationWorker
@@ -164,6 +165,8 @@ class MainWindow(QMainWindow):
         self._render_save_timer.timeout.connect(self._save_render_config_now)
         # 标签扫描进度对话框（扫描期间存在，非模态；中止/完成后关闭并置空）
         self._scan_progress_dlg: "ScanProgressDialog | None" = None
+        # 使用说明书阅读窗（非模态；已打开时重复触发置前而非重复创建）
+        self._manual_dlg: "ManualDialog | None" = None
         # 自动标注运行状态（模态进度对话框 / 任务模式 / 最近错误 / engine 转换中）
         self._annotate_progress_dlg: "AnnotateProgressDialog | None" = None
         self._annotate_mode: str = ""  # single / all / video（空 = 无任务）
@@ -385,6 +388,11 @@ class MainWindow(QMainWindow):
 
         # ===== 帮助 =====
         menu_help = menu_bar.addMenu("帮助(&H)")
+        self.act_manual = QAction("使用说明书", self)
+        self.act_manual.triggered.connect(self._on_manual)
+        menu_help.addAction(self.act_manual)
+
+        menu_help.addSeparator()
         self.act_about = QAction("关于", self)
         self.act_about.triggered.connect(self._on_about)
         menu_help.addAction(self.act_about)
@@ -1846,6 +1854,16 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"{self._current_index + 1}/{total}  {name}{dirty}")
 
     # -------------------------- 帮助 --------------------------
+    def _on_manual(self) -> None:
+        """打开内置使用说明书阅读窗（非模态；已打开时置前激活）。"""
+        if self._manual_dlg is not None and self._manual_dlg.isVisible():
+            self._manual_dlg.raise_()
+            self._manual_dlg.activateWindow()
+            return
+        dlg = ManualDialog(self)
+        dlg.show()
+        self._manual_dlg = dlg
+
     def _on_about(self) -> None:
         """显示关于对话框。"""
         showMessageBox(
