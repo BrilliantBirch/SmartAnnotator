@@ -18,6 +18,10 @@
 更新: 2026-09-03 精简为模型加载 + 推理参数设置窗口：移除图片/输出目录、
       导入导出配置、文件预览、进度日志等控件（后端逻辑保留供复用）；
       任务类型改为模型元数据自动推导（无法推导时允许手动选择）
+更新: 2026-09-04 GPU 推理切换为 onnxruntime CUDA EP：CUDA 检测改为
+      get_available_providers 判定，模型选择移除 .engine 支持
+更新: 2026-09-07 CPU 构建版本跳过 CUDA 检测并禁用 GPU 选项（读
+      build_mode.txt 构建标志，不受运行机 CUDA 环境干扰）
 """
 
 from pathlib import Path
@@ -39,12 +43,17 @@ from ..widgets.class_selector import ClassSelectorWidget
 from ..widgets.fields import PathField, LabeledSpin, apply_click_to_focus
 from ..config import SysConfig, AnnotateConfig, MODE, DEVICE
 from ..utils import LOGGER, getModelClasses, getModelTaskType
+from ..utils.paths import get_build_mode
 
 
 def _cuda_available() -> bool:
     """检测当前环境是否存在可用的 CUDA 推理后端。
 
-    GPU 模式使用 onnxruntime CUDAExecutionProvider 推理：
+    CPU 构建版本（build.py 写入 build_mode.txt = "cpu"）直接返回 False
+    且不做任何检测：CPU 产物不含任何 CUDA 组件（构建期已隔离并清理），
+    即使运行在带 NVIDIA 显卡的机器上 GPU 也必然不可用，不提示"推荐 GPU"。
+
+    GPU 构建版本 / 开发模式使用 onnxruntime CUDAExecutionProvider 推理：
     onnxruntime-gpu 安装后 CUDA EP 会出现在 get_available_providers()
     列表中；若运行机器无 NVIDIA 驱动，会话创建时自动回退 CPU（见
     onnxbackend.ONNXInfer，不崩溃仅降速）。
@@ -52,6 +61,11 @@ def _cuda_available() -> bool:
     Returns:
         True 表示 onnxruntime 提供 CUDAExecutionProvider，否则 False。
     """
+    # CPU 构建版本：跳过 CUDA 检测（产物无 CUDA 组件，检测无意义）
+    if get_build_mode() == "cpu":
+        LOGGER.info("CPU 构建版本：跳过 CUDA 检测，仅支持 CPU 推理")
+        return False
+
     try:
         import onnxruntime as ort
     except Exception as e:
@@ -186,6 +200,12 @@ class AnnotatePage(BasePage):
     # -------------------------- 状态联动 --------------------------
     def _sync_device_state(self) -> None:
         """根据 CUDA 可用性同步 GPU 选项可用性与提示文本。"""
+        # CPU 构建版本：GPU 选项禁用并明确提示（与 CUDA 环境无关）
+        if get_build_mode() == "cpu":
+            self.rb_gpu.setEnabled(False)
+            self.device_hint.setText("CPU 版本：仅支持 CPU 推理")
+            self.rb_cpu.setChecked(True)
+            return
         if self._cuda_ok:
             self.rb_gpu.setEnabled(True)
             self.device_hint.setText("已检测到 CUDA，推荐使用 GPU")

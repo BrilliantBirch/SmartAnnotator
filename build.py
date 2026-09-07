@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-打包构建脚本 - 使用 PyInstaller 非 onefile 模式打包 VAI_E_SmartAnnotator
+打包构建脚本 - 使用 PyInstaller 非 onefile 模式打包 BrilliantAnnotator  
 
 位于项目根目录，构建产物输出到 build/ 子目录（已 gitignore）。
 支持 CPU/GPU 分包打包，生成离线安装器与在线安装器。
@@ -37,6 +37,10 @@
       GPU 清理反转（保留 onnxruntime_providers_cuda/cudnn/cublas/cufft，
       删除 nvinfer 系 DLL）；新增 cuDNN DLL 复制步骤（_copy_cudnn_dlls，
       依赖 pip 包 nvidia-cudnn-cu12）
+更新: 2026-09-07 CPU 构建不受本机 CUDA 环境干扰：_build_isolated_env
+      隔离 PyInstaller 子进程 PATH/CUDA 环境变量（从源头避免 CUDA DLL
+      混入），CPU 清理模式补 nvidia/nvml DLL 前缀兜底；产物写入
+      build_mode.txt 构建标志（运行时 CPU 版跳过 CUDA 检测并禁用 GPU 选项）
 """
 import argparse
 import configparser
@@ -60,6 +64,12 @@ from smart_annotator.version_manager import VersionManager
 
 # ===== 依赖包目录命名（与 VAI_MemGenerator 的 VAI_PY_Packages 区分）=====
 PACKAGES_DIR_NAME = "VAI_E_SmartAnnotator"
+
+# ===== 构建模式标志文件名（写入 exe 目录，运行时据此锁定推理设备选项）=====
+# CPU 版本：标志值为 "cpu"，运行时禁用 GPU 选项、跳过 CUDA 检测；
+# GPU 版本：标志值为 "gpu"，运行时按 CUDA 可用性正常联动。
+# 开发模式（无标志文件）按 CUDA 可用性正常联动。
+BUILD_MODE_FLAG_FILENAME = "build_mode.txt"
 
 # ===== 需要排除的模块（减小打包体积）=====
 # 注意：不排除 numpy/opencv/onnx/onnxruntime/PIL/yaml/psutil（运行时必需）
@@ -217,7 +227,74 @@ CPU_REDUNDANT_DLL_PATTERNS = GPU_REDUNDANT_DLL_PATTERNS + [
     "nvrtc",
     "nvjit",
     "nvvm",
+    # CUDA EP 的传递依赖 DLL（nvidia-*-cu12 pip 包 / CUDA Toolkit，构建机
+    # 环境混入时一并清除，确保 CPU 产物零 CUDA 组件）
+    "nvidia",
+    "nvml",
 ]
+
+# ===== 构建期 CUDA 环境隔离 =====
+# CPU 构建模式下从 PyInstaller 子进程环境中剔除的变量：这些变量会让
+# PyInstaller 的 DLL 依赖分析找到 CUDA Toolkit / nvidia pip 包中的 CUDA
+# 运行库并收集进产物（即使产物清理能兜底，从源头剔除可确保体积可控
+# 且不依赖清理规则的完备性）。GPU 模式不剔除（CUDA EP 运行库需复制）。
+CUDA_ENV_VARS_TO_REMOVE = [
+    "CUDA_PATH",
+    "CUDA_HOME",
+    "CUDA_ROOT",
+    "NVCUDASAMPLES_ROOT",
+    "NVIDIA_GPU_TIMING",
+]
+
+# CUDA Toolkit / nvidia 运行库的 PATH 目录关键词（CPU 模式从 PATH 剔除）
+CUDA_PATH_KEYWORDS = ["CUDA", "nvidia"]
+
+
+def _build_isolated_env(mode: str) -> dict:
+    """构建 PyInstaller 子进程的隔离环境变量（按构建模式裁剪 CUDA 痕迹）。
+
+    CPU 模式：剔除 CUDA 环境变量与 PATH 中的 CUDA Toolkit / nvidia 目录，
+    使 PyInstaller 的 DLL 依赖分析无法发现本机 CUDA 组件，从源头避免
+    CUDA DLL 混入 CPU 产物（不再依赖事后清理的完备性）。
+    GPU 模式：继承当前环境不裁剪（CUDA EP 运行库需保留以供复制）。
+
+    Args:
+        mode: 构建模式（"cpu" / "gpu"）。
+
+    Returns:
+        裁剪后的环境变量字典（用于 subprocess.run 的 env 参数）。
+    """
+    env = os.environ.copy()
+    if mode != "cpu":
+        return env
+
+    # 1) 剔除 CUDA 相关环境变量
+    removed_vars = [k for k in CUDA_ENV_VARS_TO_REMOVE if k in env]
+    for k in removed_vars:
+        env.pop(k, None)
+
+    # 2) 从 PATH 剔除 CUDA Toolkit / nvidia 运行库目录
+    parts = env.get("PATH", "").split(os.pathsep)
+    kept = []
+    removed_paths = []
+    for p in parts:
+        if not p:
+            continue
+        if any(kw.lower() in p.lower() for kw in CUDA_PATH_KEYWORDS):
+            removed_paths.append(p)
+        else:
+            kept.append(p)
+    env["PATH"] = os.pathsep.join(kept)
+
+    if removed_vars or removed_paths:
+        print(f"  [CPU] 已隔离构建环境 CUDA 痕迹（不受本机 CUDA 安装干扰）：")
+        for k in removed_vars:
+            print(f"    - 环境变量: {k}")
+        for p in removed_paths:
+            print(f"    - PATH: {p}")
+    else:
+        print("  [CPU] 构建环境无 CUDA 痕迹（PATH/环境变量干净）")
+    return env
 
 
 def _cleanup_unused_qt_dlls(pyside_dir: Path) -> int:
@@ -348,9 +425,9 @@ def _cleanup_gpu_dlls(packages_dir: Path) -> int:
 
     注意：DLL 文件分布在依赖目录的多个子目录中（如 onnxruntime/capi/），
     必须递归遍历整个依赖目录才能全部匹配。
-
+    # 更新依赖包目录路径注释中的项目名称为 BrilliantAnnotator
     Args:
-        packages_dir: 依赖包目录路径（VAI_E_SmartAnnotator 子目录）。
+        packages_dir: 依赖包目录路径（BrilliantAnnotator 子目录）。
 
     Returns:
         已删除文件的总字节数。
@@ -405,9 +482,9 @@ def _cleanup_gpu_redundant_dlls(exe_dir: Path) -> int:
 
     注意：DLL 分布在打包目录的多个位置（exe 根目录、依赖子目录等），
     必须对整个 exe 目录递归遍历。
-
+    # 更新打包输出目录路径注释中的项目名称
     Args:
-        exe_dir: 打包输出目录路径（dist_{mode}/VAI_E_SmartAnnotator）。
+        exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
 
     Returns:
         已删除文件的总字节数。
@@ -426,7 +503,7 @@ def _copy_cudnn_dlls(exe_dir: Path) -> int:
     运行期由 onnxbackend._ensure_cuda_dlls 注册 exe 目录完成加载。
 
     Args:
-        exe_dir: 打包输出目录路径（dist_{mode}/VAI_E_SmartAnnotator）。
+        exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
 
     Returns:
         复制的文件总字节数；未找到 nvidia 包时返回 0 并打印告警。
@@ -458,7 +535,7 @@ def _cleanup_cpu_redundant_dlls(exe_dir: Path) -> int:
     将这些 DLL 收集到 exe 根目录（实测混入约 1 GB），必须整体清理。
 
     Args:
-        exe_dir: 打包输出目录路径（dist_{mode}/VAI_E_SmartAnnotator）。
+        exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
 
     Returns:
         已删除文件的总字节数。
@@ -838,7 +915,7 @@ def _build_package(
 
     print(f"  排除模块数: {len(excluded)}")
     print(f"  隐藏导入数: {len(hidden)}")
-    result = subprocess.run(pyinstaller_cmd, cwd=str(PROJECT_ROOT))
+    result = subprocess.run(pyinstaller_cmd, cwd=str(PROJECT_ROOT), env=build_env)
 
     if result.returncode != 0:
         print(f"\n  {mode_upper} 打包失败! 请检查 PyInstaller 输出。")
@@ -850,6 +927,13 @@ def _build_package(
     pyside_dir = exe_dir / PACKAGES_DIR_NAME / "PySide6"
     removed_qt = _cleanup_unused_qt_dlls(pyside_dir)
     print(f"  已清理 Qt DLL，释放 {removed_qt / 1024 / 1024:.1f} MB")
+
+    # ===== 写入构建模式标志（运行时据此禁用/启用 GPU 选项）=====
+    # CPU 版本即使运行在带 NVIDIA 显卡的机器上，也不做 CUDA 检测、
+    # 不显示 GPU 选项（产物不含任何 CUDA 组件，GPU 选项必然不可用）
+    mode_flag_path = exe_dir / BUILD_MODE_FLAG_FILENAME
+    mode_flag_path.write_text(mode, encoding="utf-8")
+    print(f"  已写入构建模式标志: {mode_flag_path.name} = {mode}")
 
     # ===== CPU 模式额外清理 GPU 推理相关 DLL =====
     if mode == "cpu":
@@ -921,7 +1005,7 @@ def main() -> None:
         --mode online:  仅编译在线安装器（上传 zip 到 Gitee Release 后使用）
     """
     parser = argparse.ArgumentParser(
-        description="VAI_E_SmartAnnotator 打包构建脚本"
+        description="BrilliantAnnotator 打包构建脚本"
     )
     parser.add_argument(
         "--mode",
@@ -932,7 +1016,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  VAI_E_SmartAnnotator 打包构建")
+    print("  BrilliantAnnotator 打包构建")
     print(f"  模式: {args.mode}")
     print("=" * 60)
 
@@ -973,7 +1057,7 @@ def main() -> None:
             dist_rel = exe_dir.relative_to(PROJECT_ROOT)
             setup = _compile_installer(
                 iss_name="installer.iss",
-                output_name=f"VAI_E_SmartAnnotator_Setup_{mode_upper}.exe",
+                output_name=f"BrilliantAnnotator_Setup_{mode_upper}.exe",
                 defines={
                     "MyDistDir": str(dist_rel).replace("\\", "/"),
                     "OutputSuffix": f"_{mode_upper}",

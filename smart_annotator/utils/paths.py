@@ -47,3 +47,25 @@ def resource_path(relative_path: str) -> str:
         return os.path.join(base_path, relative_path)
     # 开发模式：资源位于项目根目录下
     return os.path.join(ROOT, relative_path)
+
+
+# ===== 构建模式标志（build.py 打包时写入 exe 目录的 build_mode.txt）=====
+BUILD_MODE_FLAG_FILENAME = "build_mode.txt"
+
+
+def get_build_mode() -> str:
+    """读取构建模式标志。
+
+    CPU 版本产物中标志文件内容为 "cpu"（运行时据此禁用 GPU 选项、
+    跳过 CUDA 检测——CPU 产物不含任何 CUDA 组件，GPU 必然不可用）；
+    GPU 版本为 "gpu"；开发模式无标志文件返回空字符串（按 CUDA 可用性
+    正常联动）。
+
+    Returns:
+        "cpu" / "gpu"；开发模式返回 ""。
+    """
+    flag_path = Path(ROOT) / BUILD_MODE_FLAG_FILENAME
+    try:
+        return flag_path.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""

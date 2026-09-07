@@ -154,6 +154,19 @@ python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gite
 
 安装程序输出到 `build/installer_output/`，zip 分发包输出到 `build/packages/`。
 
+### CPU / GPU 构建模式与环境隔离（2026-09-07 起）
+
+构建系统按 `--mode` 参数严格区分 CPU/GPU 配置，**不受构建机本机 CUDA 安装状态干扰**：
+
+| 模式 | 环境隔离 | 产物内容 | 运行时行为 |
+| --- | --- | --- | --- |
+| `--mode cpu` | 剔除 PyInstaller 子进程的 `CUDA_PATH` 等环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`），从源头阻止 CUDA DLL 混入 | 零 CUDA 组件（清理模式含 `nvidia/nvml` 前缀兜底），exe 目录写入 `build_mode.txt = cpu` 标志 | 启动时读取标志，**跳过 CUDA 检测并禁用 GPU 选项**（提示"CPU 版本：仅支持 CPU 推理"），即使运行在带 NVIDIA 显卡的机器上也不会推荐 GPU |
+| `--mode gpu` | 继承构建环境不裁剪 | 保留 CUDA EP 运行库（cuDNN/cuBLAS/cuFFT/cudart 复制到 exe 目录），清理 TensorRT 残留（nvinfer/nvonnxparser），写入 `build_mode.txt = gpu` | 按 CUDA 可用性正常联动（无 N 卡自动回退 CPU 推理） |
+| 开发模式（`python -m smart_annotator`） | — | — | 无标志文件，按 CUDA 可用性正常联动 |
+
+因此：在已安装 CUDA 的机器上构建 CPU 版本，产物同样纯净（仅 CPU 组件、体积最小）；
+CPU 版本分发到任何机器都不会出现"检测到 CUDA，推荐使用 GPU"的误导提示。
+
 GPU 模式构建说明（2026-09-04 起）：
 - GPU 推理走 onnxruntime CUDA Execution Provider（TensorRT / cuda-python 链路已移除）
 - 构建时自动将 pip 包 `nvidia-*-cu12` 的运行库 DLL 复制到 exe 目录（cuDNN/cuBLAS/cuFFT/cudart）
