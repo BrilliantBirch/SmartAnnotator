@@ -77,6 +77,8 @@
       JSON 的标签集合填充文件列表模型（每批 150 个，列表重建时终止旧
       批次再重启防串目录）；保存标注后同步当前文件标签集合；批量标注
       收尾重启填充（纳入新写入的标签）
+更新: 2026-09-07 修复 saveState 警告：右栏 QDockWidget 补设
+      objectName（rightPanelDock），确保布局状态可序列化与恢复
 """
 
 import json
@@ -520,6 +522,8 @@ class MainWindow(QMainWindow):
         # 右侧对象面板：QDockWidget 承载（可移动/浮动/关闭，默认停靠右侧）
         self.right_panel = RightPanel()
         self.right_dock = QDockWidget("对象面板", self)
+        # objectName 为 saveState/restoreState 序列化布局的唯一标识（缺失会告警且无法恢复）
+        self.right_dock.setObjectName("rightPanelDock")
         self.right_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable

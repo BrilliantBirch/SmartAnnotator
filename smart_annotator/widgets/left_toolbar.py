@@ -35,6 +35,8 @@
       三态配色 Normal 灰 / Active 深 / On 反白，与 QSS checked 深底一致），
       全部按钮以图标替代文字（语义保留在 tooltip 与 accessibleName），
       按钮改为紧凑方形，工具栏高度与溢出折叠行为不变
+更新: 2026-09-07 补设 objectName（leftToolBar）：修复 QMainWindow.saveState
+      因工具栏缺少 objectName 而告警且布局无法恢复的问题
 """
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -407,6 +409,8 @@ class LeftToolbar(QToolBar):
     def __init__(self, parent=None):
         """初始化水平工具栏布局与按钮。"""
         super().__init__(parent)
+        # objectName 为 QMainWindow.saveState/restoreState 序列化布局的唯一标识
+        self.setObjectName("leftToolBar")
         # ===== 工具栏形态：不可拖动/浮动，固定高度、宽度随内容自适应 =====
         self.setMovable(False)
         self.setFloatable(False)
