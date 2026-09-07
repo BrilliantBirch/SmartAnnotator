@@ -3,7 +3,8 @@
 快捷操作工具栏组件 - LeftToolbar
 
 菜单栏下方的水平工具栏（QToolBar），两个分组从左到右排列，
-分组之间以竖分隔线区隔：
+分组之间以竖分隔线区隔，全部按钮为图标按钮（QPainter 程序化矢量图标，
+语义保留在 tooltip 与 accessibleName）：
     - 文件操作：打开文件夹、打开文件、保存、另存为、删除选中、删除图片文件
     - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形（互斥可选，含快捷键提示）
 
@@ -30,9 +31,14 @@
       btn_annotate_single/btn_annotate_all/btn_annotate_video 四个按钮、
       对应 4 个信号与 set_annotate_enabled 方法），自动标注入口统一收敛
       到主窗口"工具"菜单
+更新: 2026-09-07 按钮图标化：新增 QPainter 程序化矢量图标（_build_icon，
+      三态配色 Normal 灰 / Active 深 / On 反白，与 QSS checked 深底一致），
+      全部按钮以图标替代文字（语义保留在 tooltip 与 accessibleName），
+      按钮改为紧凑方形，工具栏高度与溢出折叠行为不变
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QWidget,
     QToolBar,
@@ -56,31 +62,311 @@ _TOOL_SHORTCUT_HINTS = {
     TOOL_POLYGON: "G",
 }
 
+# ===== 程序化矢量图标（QPainter 绘制，与全局 QSS 扁平风格同源配色）=====
+# 逻辑画布 24x24，2x 超采样输出 48x48（setDevicePixelRatio 保证高清渲染）
+_ICON_SIZE = 24
+_ICON_SCALE = 2
+# 图标配色（与 _ToolBarButton 的 QSS 状态色一致）：
+#   Normal(Off) 普通态中性灰；Active(hover) 深墨；On(checked) 反白（深底按钮上可见）
+_ICON_COLOR_NORMAL = QColor("#3f3f46")
+_ICON_COLOR_ACTIVE = QColor("#18181b")
+_ICON_COLOR_ON = QColor("#fafafa")
+
+
+def _pen(color: QColor, width: float = 2.0) -> QPen:
+    """构造统一风格的图标描边画笔（圆头/圆角连接，扁平线性风格）。
+
+    Args:
+        color: 描边颜色。
+        width: 线宽（逻辑像素）。
+
+    Returns:
+        配置好的 QPen。
+    """
+    pen = QPen(color, width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    return pen
+
+
+def _paint_folder(p: QPainter, color: QColor) -> None:
+    """绘制"打开文件夹"图标：文件夹主体 + 后置翻盖。"""
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # 后置翻盖（左上斜折）
+    p.drawPolyline([QPointF(3, 15), QPointF(3, 6), QPointF(9, 6), QPointF(11, 9)])
+    # 主体（带前开口折边）
+    p.drawPolygon(
+        [
+            QPointF(3, 15),
+            QPointF(11, 9),
+            QPointF(21, 9),
+            QPointF(21, 19),
+            QPointF(3, 19),
+        ]
+    )
+
+
+def _paint_file(p: QPainter, color: QColor) -> None:
+    """绘制"打开文件"图标：页面 + 右上折角 + 内容行。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolygon(
+        [
+            QPointF(6, 3),
+            QPointF(15, 3),
+            QPointF(19, 7),
+            QPointF(19, 21),
+            QPointF(6, 21),
+        ]
+    )
+    p.drawPolyline([QPointF(15, 3), QPointF(15, 7), QPointF(19, 7)])
+    p.drawPolyline([QPointF(9, 12), QPointF(16, 12)])
+    p.drawPolyline([QPointF(9, 16), QPointF(14, 16)])
+
+
+def _paint_save(p: QPainter, color: QColor) -> None:
+    """绘制"保存"图标：软盘（外壳 + 快门 + 标签框）。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolygon(
+        [
+            QPointF(4, 4),
+            QPointF(17, 4),
+            QPointF(20, 7),
+            QPointF(20, 20),
+            QPointF(4, 20),
+        ]
+    )
+    p.drawPolyline([QPointF(9, 4), QPointF(9, 9), QPointF(15, 9), QPointF(15, 4)])
+    p.drawPolyline(
+        [QPointF(8, 20), QPointF(8, 14), QPointF(16, 14), QPointF(16, 20)]
+    )
+
+
+def _paint_save_as(p: QPainter, color: QColor) -> None:
+    """绘制"另存为"图标：软盘 + 右上加号（与"保存"区分）。"""
+
+    p.setPen(_pen(color, 1.8))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolygon(
+        [
+            QPointF(3, 6),
+            QPointF(14, 6),
+            QPointF(17, 9),
+            QPointF(17, 18),
+            QPointF(3, 18),
+        ]
+    )
+    p.drawPolyline([QPointF(8, 6), QPointF(8, 10), QPointF(13, 10), QPointF(13, 6)])
+    p.drawPolyline([QPointF(7, 18), QPointF(7, 13), QPointF(13, 13), QPointF(13, 18)])
+    # 右上加号
+    p.setPen(_pen(color, 2.2))
+    p.drawPolyline([QPointF(19.5, 11), QPointF(19.5, 19)])
+    p.drawPolyline([QPointF(15.5, 15), QPointF(23.5, 15)])
+
+
+def _paint_erase(p: QPainter, color: QColor) -> None:
+    """绘制"删除选中"图标：斜置橡皮擦（擦除选中标注）。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # 橡皮擦主体（斜 45° 圆角矩形，分两段色块由分割线表达）
+    p.drawPolygon(
+        [
+            QPointF(4, 15),
+            QPointF(12, 5),
+            QPointF(19, 10),
+            QPointF(11, 20),
+            QPointF(6, 20),
+        ]
+    )
+    # 分割线（擦除面/持握面）
+    p.drawPolyline([QPointF(10, 8), QPointF(16, 13)])
+    # 底部残留线
+    p.drawPolyline([QPointF(3, 21), QPointF(21, 21)])
+
+
+def _paint_trash(p: QPainter, color: QColor) -> None:
+    """绘制"删除图片文件"图标：垃圾桶（盖 + 提手 + 桶身 + 竖纹）。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolyline([QPointF(5, 7), QPointF(19, 7)])
+    p.drawPolyline([QPointF(10, 7), QPointF(10, 4), QPointF(14, 4), QPointF(14, 7)])
+    p.drawPolygon([QPointF(6.5, 7), QPointF(17.5, 7), QPointF(16, 20), QPointF(8, 20)])
+    p.drawPolyline([QPointF(10, 11), QPointF(10.5, 16.5)])
+    p.drawPolyline([QPointF(14, 11), QPointF(13.5, 16.5)])
+
+
+def _paint_cursor(p: QPainter, color: QColor) -> None:
+    """绘制"编辑"图标：经典选择光标箭头（填充三角簇）。"""
+
+    p.setPen(QPen(color, 1.2))
+    p.setBrush(color)
+    p.drawPolygon(
+        QPolygonF(
+            [
+                QPointF(6, 3),
+                QPointF(6, 18),
+                QPointF(10.2, 14.2),
+                QPointF(12.6, 19.8),
+                QPointF(15.2, 18.6),
+                QPointF(12.8, 13.2),
+                QPointF(17.5, 13),
+            ]
+        )
+    )
+
+
+def _paint_rectangle(p: QPainter, color: QColor) -> None:
+    """绘制"矩形"图标：圆角矩形描边。"""
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(4, 6, 16, 12), 2.0, 2.0)
+
+
+def _paint_point(p: QPainter, color: QColor) -> None:
+    """绘制"点"图标：外圈 + 实心圆点。"""
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(4, 4, 16, 16))
+    p.setBrush(color)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(QRectF(9, 9, 6, 6))
+
+
+def _paint_polygon(p: QPainter, color: QColor) -> None:
+    """绘制"多边形"图标：五边形描边。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPolygon(
+        [
+            QPointF(12, 3),
+            QPointF(20.5, 9.5),
+            QPointF(17.2, 19.5),
+            QPointF(6.8, 19.5),
+            QPointF(3.5, 9.5),
+        ]
+    )
+
+
+# 图标名 -> 绘制函数（按钮构造处按名取用）
+_ICON_PAINTERS = {
+    "folder": _paint_folder,
+    "file": _paint_file,
+    "save": _paint_save,
+    "save_as": _paint_save_as,
+    "erase": _paint_erase,
+    "trash": _paint_trash,
+    "cursor": _paint_cursor,
+    "rectangle": _paint_rectangle,
+    "point": _paint_point,
+    "polygon": _paint_polygon,
+}
+
+
+def _render_icon_pixmap(painter_fn, color: QColor) -> QPixmap:
+    """以指定颜色渲染单个图标位图（2x 超采样，透明底）。
+
+    Args:
+        painter_fn: 图标绘制函数（接收 QPainter 与颜色）。
+        color: 图标颜色。
+
+    Returns:
+        48x48 像素、devicePixelRatio=2 的透明底位图。
+    """
+    pm = QPixmap(_ICON_SIZE * _ICON_SCALE, _ICON_SIZE * _ICON_SCALE)
+    pm.fill(Qt.GlobalColor.transparent)
+    pm.setDevicePixelRatio(float(_ICON_SCALE))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter_fn(p, color)
+    p.end()
+    return pm
+
+
+def _build_icon(name: str) -> QIcon:
+    """按名称构建三态图标（普通/悬停/选中，与按钮 QSS 状态色联动）。
+
+    Args:
+        name: 图标名（见 _ICON_PAINTERS）。
+
+    Returns:
+        配置好各状态位图的 QIcon。
+    """
+    painter_fn = _ICON_PAINTERS.get(name)
+    icon = QIcon()
+    if painter_fn is None:
+        return icon
+    normal = _render_icon_pixmap(painter_fn, _ICON_COLOR_NORMAL)
+    icon.addPixmap(normal, QIcon.Mode.Normal, QIcon.State.Off)
+    # 悬停态：深墨色（对应按钮 hover 时文字加深）
+    icon.addPixmap(
+        _render_icon_pixmap(painter_fn, _ICON_COLOR_ACTIVE),
+        QIcon.Mode.Active,
+        QIcon.State.Off,
+    )
+    # 选中态（工具互斥按钮 checked）：反白，对应 QSS 深底
+    icon.addPixmap(
+        _render_icon_pixmap(painter_fn, _ICON_COLOR_ON),
+        QIcon.Mode.Normal,
+        QIcon.State.On,
+    )
+    icon.addPixmap(
+        _render_icon_pixmap(painter_fn, _ICON_COLOR_ON),
+        QIcon.Mode.Active,
+        QIcon.State.On,
+    )
+    return icon
+
 
 class _ToolBarButton(QPushButton):
-    """工具栏按钮 - 统一紧凑样式（黑白灰、左对齐）。"""
+    """工具栏按钮 - 图标化紧凑样式（黑白灰扁平风，语义由 tooltip 承载）。
 
-    def __init__(self, text: str, shortcut: str = "", parent=None):
+    图标由 _build_icon 程序化绘制（三态配色与 QSS 状态联动：
+    普通灰 / 悬停深 / 选中反白），文字不再显示。
+    """
+
+    def __init__(
+        self,
+        text: str,
+        shortcut: str = "",
+        icon_name: str = "",
+        parent=None,
+    ):
         """初始化工具栏按钮。
 
         Args:
-            text: 按钮文字（含快捷键提示后缀）。
+            text: 按钮语义文本（作为 tooltip 主体与无障碍名称，不显示）。
             shortcut: 快捷键说明（显示在 tooltip 中）。
+            icon_name: 图标名（见 _ICON_PAINTERS；空则退化为纯文字按钮）。
             parent: 父控件。
         """
-        super().__init__(text, parent)
+        super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(text)
         if shortcut:
             self.setToolTip(f"{text}（{shortcut}）")
+        else:
+            self.setToolTip(text)
+        if icon_name:
+            # 图标替代文字：语义保留在 tooltip / accessibleName
+            self.setIcon(_build_icon(icon_name))
+            self.setIconSize(QSize(24, 24))
+            self.setText("")
+        else:
+            self.setText(text)
         self.setStyleSheet(
             """
             QPushButton {
                 background-color: transparent;
                 border: 0;
                 border-radius: 8px;
-                padding: 10px 14px;
-                text-align: left;
-                font-weight: 500;
+                padding: 6px 10px;
                 color: #3f3f46;
             }
             QPushButton:hover { background-color: #f4f4f5; color: #18181b; }
@@ -125,6 +411,7 @@ class LeftToolbar(QToolBar):
         self.setMovable(False)
         self.setFloatable(False)
         self.setFixedHeight(52)
+        self.setIconSize(QSize(24, 24))  # 图标按钮统一 24px（位图 2x 超采样）
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         # 扁平外观 + 紧凑间距（不绘制原生工具栏边框/渐变，与原透明 QWidget 底色一致）
         self.setStyleSheet(
@@ -133,17 +420,17 @@ class LeftToolbar(QToolBar):
         )
 
         # ===== 文件操作 =====
-        self.btn_open = _ToolBarButton("打开文件夹", "Ctrl+O")
+        self.btn_open = _ToolBarButton("打开文件夹", "Ctrl+O", "folder")
         self.btn_open.clicked.connect(self.open_requested.emit)
-        self.btn_open_file = _ToolBarButton("打开文件", "Ctrl+Shift+O")
+        self.btn_open_file = _ToolBarButton("打开文件", "Ctrl+Shift+O", "file")
         self.btn_open_file.clicked.connect(self.open_file_requested.emit)
-        self.btn_save = _ToolBarButton("保存", "Ctrl+S")
+        self.btn_save = _ToolBarButton("保存", "Ctrl+S", "save")
         self.btn_save.clicked.connect(self.save_requested.emit)
-        self.btn_save_as = _ToolBarButton("另存为", "Ctrl+Shift+S")
+        self.btn_save_as = _ToolBarButton("另存为", "Ctrl+Shift+S", "save_as")
         self.btn_save_as.clicked.connect(self.save_as_requested.emit)
-        self.btn_delete = _ToolBarButton("删除选中")
+        self.btn_delete = _ToolBarButton("删除选中", icon_name="erase")
         self.btn_delete.clicked.connect(self.delete_requested.emit)
-        self.btn_delete_image = _ToolBarButton("删除图片文件", "Shift+Delete")
+        self.btn_delete_image = _ToolBarButton("删除图片文件", "Shift+Delete", "trash")
         self.btn_delete_image.clicked.connect(self.delete_image_requested.emit)
 
         # ===== 标注工具（互斥可选）=====
@@ -166,13 +453,21 @@ class LeftToolbar(QToolBar):
         self.addWidget(self._separator("文件操作 | 标注工具"))
 
         # ===== 横向加入工具栏：标注工具分组 =====
+        tool_icons = {
+            TOOL_SELECT: "cursor",
+            TOOL_RECTANGLE: "rectangle",
+            TOOL_POINT: "point",
+            TOOL_POLYGON: "polygon",
+        }
         for tool, text in (
             (TOOL_SELECT, "编辑"),
             (TOOL_RECTANGLE, "矩形"),
             (TOOL_POINT, "点"),
             (TOOL_POLYGON, "多边形"),
         ):
-            btn = _ToolBarButton(text, _TOOL_SHORTCUT_HINTS.get(tool, ""))
+            btn = _ToolBarButton(
+                text, _TOOL_SHORTCUT_HINTS.get(tool, ""), tool_icons[tool]
+            )
             btn.setCheckable(True)
             self._tool_group.addButton(btn)
             self._tool_buttons[tool] = btn
