@@ -50,9 +50,9 @@ PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
-; 输出配置（安装程序输出到 build/installer_output/）
+; 输出配置（安装程序输出到 build/installer_output/，build.py 依赖此位置）
+OutputDir=build\installer_output
 OutputBaseFilename=BrilliantAnnotator_Setup{#OutputSuffix}
-OutputBaseFilename= {#OutputSuffix}
 SetupIconFile=app.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
