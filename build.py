@@ -867,6 +867,10 @@ def _build_package(
     if mode == "gpu":
         hidden.extend(GPU_EXTRA_HIDDEN_IMPORTS)
 
+    # CPU 模式隔离构建环境（剔除 PATH/环境变量中的 CUDA 痕迹，
+    # 确保不受本机 CUDA 安装状态干扰）
+    build_env = _build_isolated_env(mode)
+
     # 构建 PyInstaller 命令
     pyinstaller_cmd = [
         sys.executable, "-m", "PyInstaller",
