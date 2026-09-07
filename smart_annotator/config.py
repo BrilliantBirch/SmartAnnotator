@@ -14,6 +14,10 @@
       新增运行期字段 direction（"export"/"import"），input_dir/output_dir 改为
       运行期字段不再序列化；from_dict 改为序列化字段白名单过滤（旧版废弃键
       与运行期字段键静默忽略），并删除 _coerce_format 迁移逻辑
+更新: 2026-09-07 RenderConfig 尺寸持久化字段清理：删除随分栏布局废弃的
+      panel_width 与 kpt_list_height（旧 JSON 键由 from_dict 静默忽略），
+      新增 dock_state（QMainWindow 布局状态 base64，持久化工具栏与
+      对象面板 Dock 的位置/尺寸）
 """
 
 from dataclasses import dataclass, field
@@ -253,11 +257,11 @@ class RenderConfig:
         pen_width: 矩形/多边形描边线宽（像素，选中态为 pen_width + 2）。
         opacity: 多边形填充不透明度（0.0-1.0）。
         font_size: 渲染文本字号（磅）。
-        panel_width: 右侧信息栏宽度（像素，水平分栏拖拽调节）。
         label_list_height: 标签列表高度（像素）。
         object_list_height: 对象列表高度（像素）。
         file_list_height: 文件列表高度（像素）。
-        kpt_list_height: 关键点列表高度（像素）。
+        dock_state: QMainWindow 布局状态（saveState 产物的 base64 字符串，
+            持久化顶部工具栏与对象面板 Dock 的位置/尺寸；空串 = 默认布局）。
         auto_scan_labels: 是否打开文件夹后自动启动标签扫描统计。
     """
 
@@ -267,12 +271,12 @@ class RenderConfig:
     pen_width: float = 2.0
     opacity: float = 0.3
     font_size: int = 12
-    # ===== 界面布局尺寸（右栏宽度 + 四组列表高度，分栏拖拽调节）=====
-    panel_width: int = 240
+    # ===== 界面布局尺寸（三组列表高度，右栏内部分栏拖拽调节）=====
     label_list_height: int = 180
     object_list_height: int = 180
     file_list_height: int = 280
-    kpt_list_height: int = 140
+    # ===== 窗口布局状态（工具栏/对象面板 Dock 的位置与尺寸，base64）=====
+    dock_state: str = ""
     # ===== 行为偏好（统计菜单"自动扫描"开关，打开文件夹即自动扫描）=====
     auto_scan_labels: bool = False
 
@@ -289,11 +293,10 @@ class RenderConfig:
             "pen_width": self.pen_width,
             "opacity": self.opacity,
             "font_size": self.font_size,
-            "panel_width": self.panel_width,
             "label_list_height": self.label_list_height,
             "object_list_height": self.object_list_height,
             "file_list_height": self.file_list_height,
-            "kpt_list_height": self.kpt_list_height,
+            "dock_state": self.dock_state,
             "auto_scan_labels": self.auto_scan_labels,
         }
 
@@ -320,9 +323,10 @@ class RenderConfig:
     def from_dict(cls, data: dict) -> "RenderConfig":
         """从字典构造（缺失/非法字段回退默认值）。
 
-        逐字段校验类型（bool/int/float；bool 为 int 子类，整型校验需排除），
+        逐字段校验类型（bool/int/float/str；bool 为 int 子类，整型校验需排除），
         数值越界时钳制到合法区间（opacity→[0,1]、pen_width→[0.5,10]、
-        font_size→[6,72]、panel_width→[200,800]、列表高度→[80,2000]）。
+        font_size→[6,72]、列表高度→[80,2000]）。旧版 JSON 中的
+        panel_width/kpt_list_height 等已废弃键被静默忽略，不报错。
 
         Args:
             data: 字段名字典。
@@ -359,8 +363,11 @@ class RenderConfig:
         if isinstance(font_size, int) and not isinstance(font_size, bool):
             cfg.font_size = min(72, max(6, int(font_size)))
 
-        # ===== 界面布局字段（右栏宽度与四组列表高度）=====
-        cfg.panel_width = cls._read_int(data, "panel_width", cfg.panel_width, 200, 800)
+        # ===== 字符串字段校验（窗口布局状态 base64，非法类型回退空串） =====
+        if isinstance(data.get("dock_state"), str):
+            cfg.dock_state = data["dock_state"]
+
+        # ===== 界面布局字段（三组列表高度）=====
         cfg.label_list_height = cls._read_int(
             data, "label_list_height", cfg.label_list_height, 80, 2000
         )
@@ -369,9 +376,6 @@ class RenderConfig:
         )
         cfg.file_list_height = cls._read_int(
             data, "file_list_height", cfg.file_list_height, 80, 2000
-        )
-        cfg.kpt_list_height = cls._read_int(
-            data, "kpt_list_height", cfg.kpt_list_height, 80, 2000
         )
         return cfg
 

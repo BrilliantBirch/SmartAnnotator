@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-左侧快捷操作栏组件 - LeftToolbar
+快捷操作工具栏组件 - LeftToolbar
 
-经典三栏布局的左栏（参考 labelme / X-Anylabel 风格），纵向排列功能按钮：
-    - 文件操作：打开文件夹、打开文件、保存、另存为、删除图片文件
-    - 编辑操作：删除选中
-    - 自动标注：加载模型、自动标注单张、自动标注全部
+菜单栏下方的水平工具栏（QToolBar），两个分组从左到右排列，
+分组之间以竖分隔线区隔：
+    - 文件操作：打开文件夹、打开文件、保存、另存为、删除选中、删除图片文件
     - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形（互斥可选，含快捷键提示）
+
+自动标注入口（加载模型/标注当前图片/标注所有图片/标注视频）统一收敛到
+主窗口"工具"菜单，不再提供工具栏按钮（入口唯一）。
+
+容器为 QToolBar（不可拖动/浮动）：高度固定、宽度随按钮内容自适应，
+窗口过窄时自带"»"溢出折叠（放不下的按钮收进弹出菜单，文字不丢失）。
 
 按钮点击通过信号对外发射，由主窗口统一处理业务逻辑，
 保证工具栏与菜单栏动作共享同一套处理函数。
@@ -18,12 +23,19 @@
 更新: 2026-09-03 按钮禁用态增强（灰字 + 浅灰底，明确视觉反馈）
 更新: 2026-09-03 标注按钮重命名（标注当前图片/标注所有图片）并新增
       "标注视频"按钮（annotate_video_requested 信号）
+更新: 2026-09-07 布局水平化：基类 QWidget→QToolBar（关闭拖动/浮动），固定宽 150
+      改为固定高 52px、宽度自适应；分组标题改为竖分隔线（含工具提示/无障碍名称），
+      按钮横向排列并以末端弹性占位收尾，利用 QToolBar 自带"»"溢出折叠；对外信号与方法不变
+更新: 2026-09-07 入口唯一化：移除"自动标注"分组（btn_load_model/
+      btn_annotate_single/btn_annotate_all/btn_annotate_video 四个按钮、
+      对应 4 个信号与 set_annotate_enabled 方法），自动标注入口统一收敛
+      到主窗口"工具"菜单
 """
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
-    QVBoxLayout,
+    QToolBar,
     QPushButton,
     QButtonGroup,
     QFrame,
@@ -85,8 +97,8 @@ class _ToolBarButton(QPushButton):
         )
 
 
-class LeftToolbar(QWidget):
-    """左侧快捷操作栏。
+class LeftToolbar(QToolBar):
+    """快捷操作工具栏（水平排列，供主窗口放置于菜单栏下方）。
 
     Signals:
         open_requested: 请求打开文件夹。
@@ -95,10 +107,6 @@ class LeftToolbar(QWidget):
         save_as_requested: 请求另存为标注。
         delete_requested: 请求删除选中标注（形状）。
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
-        load_model_requested: 请求加载推理模型。
-        annotate_single_requested: 请求标注当前画布图片。
-        annotate_all_requested: 请求标注工作路径中的全部图片。
-        annotate_video_requested: 请求标注工作路径下的视频文件。
         tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
     """
 
@@ -108,20 +116,21 @@ class LeftToolbar(QWidget):
     save_as_requested = Signal()
     delete_requested = Signal()
     delete_image_requested = Signal()
-    load_model_requested = Signal()
-    annotate_single_requested = Signal()
-    annotate_all_requested = Signal()
-    annotate_video_requested = Signal()
     tool_selected = Signal(str)
 
     def __init__(self, parent=None):
-        """初始化工具栏布局与按钮。"""
+        """初始化水平工具栏布局与按钮。"""
         super().__init__(parent)
-        self.setFixedWidth(150)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 12, 8, 12)
-        root.setSpacing(4)
+        # ===== 工具栏形态：不可拖动/浮动，固定高度、宽度随内容自适应 =====
+        self.setMovable(False)
+        self.setFloatable(False)
+        self.setFixedHeight(52)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        # 扁平外观 + 紧凑间距（不绘制原生工具栏边框/渐变，与原透明 QWidget 底色一致）
+        self.setStyleSheet(
+            "QToolBar { spacing: 2px; padding: 4px 8px; "
+            "background: transparent; border: 0; }"
+        )
 
         # ===== 文件操作 =====
         self.btn_open = _ToolBarButton("打开文件夹", "Ctrl+O")
@@ -137,34 +146,26 @@ class LeftToolbar(QWidget):
         self.btn_delete_image = _ToolBarButton("删除图片文件", "Shift+Delete")
         self.btn_delete_image.clicked.connect(self.delete_image_requested.emit)
 
-        # ===== 自动标注 =====
-        self.btn_load_model = _ToolBarButton("加载模型")
-        self.btn_load_model.clicked.connect(self.load_model_requested.emit)
-        self.btn_annotate_single = _ToolBarButton("标注当前图片")
-        self.btn_annotate_single.clicked.connect(self.annotate_single_requested.emit)
-        self.btn_annotate_all = _ToolBarButton("标注所有图片")
-        self.btn_annotate_all.clicked.connect(self.annotate_all_requested.emit)
-        self.btn_annotate_video = _ToolBarButton("标注视频")
-        self.btn_annotate_video.clicked.connect(self.annotate_video_requested.emit)
-
         # ===== 标注工具（互斥可选）=====
         self._tool_buttons = {}
         self._tool_group = QButtonGroup(self)
         self._tool_group.setExclusive(True)
 
-        root.addWidget(self.btn_open)
-        root.addWidget(self.btn_open_file)
-        root.addWidget(self.btn_save)
-        root.addWidget(self.btn_save_as)
-        root.addWidget(self.btn_delete)
-        root.addWidget(self.btn_delete_image)
-        root.addWidget(self._separator())
-        root.addWidget(self.btn_load_model)
-        root.addWidget(self.btn_annotate_single)
-        root.addWidget(self.btn_annotate_all)
-        root.addWidget(self.btn_annotate_video)
-        root.addWidget(self._separator())
+        # ===== 横向加入工具栏：文件操作分组 =====
+        for btn in (
+            self.btn_open,
+            self.btn_open_file,
+            self.btn_save,
+            self.btn_save_as,
+            self.btn_delete,
+            self.btn_delete_image,
+        ):
+            self.addWidget(btn)
 
+        # 分组分隔：文件操作 | 标注工具
+        self.addWidget(self._separator("文件操作 | 标注工具"))
+
+        # ===== 横向加入工具栏：标注工具分组 =====
         for tool, text in (
             (TOOL_SELECT, "编辑"),
             (TOOL_RECTANGLE, "矩形"),
@@ -176,22 +177,35 @@ class LeftToolbar(QWidget):
             self._tool_group.addButton(btn)
             self._tool_buttons[tool] = btn
             btn.clicked.connect(lambda checked=False, t=tool: self.tool_selected.emit(t))
-            root.addWidget(btn)
+            self.addWidget(btn)
 
         # 默认选中"编辑"工具（编辑模式：拖拽/端点缩放/多选）
         self._tool_buttons[TOOL_SELECT].setChecked(True)
 
-        root.addStretch()
+        # ===== 末端水平弹性留白：按钮整体靠左，多余空间由占位控件吸收 =====
+        # （窗口过窄时占位先收缩为 0，仍不足则触发 QToolBar 自带"»"溢出折叠）
+        self._tail_stretch = QWidget()
+        self._tail_stretch.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self.addWidget(self._tail_stretch)
 
-    def _separator(self) -> QFrame:
-        """构造一条分组分隔线。
+    def _separator(self, group_tip: str = "") -> QFrame:
+        """构造一条分组竖分隔线（横向排列时替代原纵向分组标题/横线）。
+
+        Args:
+            group_tip: 相邻分组说明，作为分隔线的工具提示与无障碍名称。
 
         Returns:
-            水平分隔线控件。
+            竖直分隔线控件。
         """
         line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShape(QFrame.Shape.VLine)
         line.setStyleSheet("QFrame { color: #e4e4e7; }")
+        line.setFixedSize(2, 26)
+        if group_tip:
+            line.setToolTip(group_tip)
+            line.setAccessibleName(f"分组分隔线：{group_tip}")
         return line
 
     def current_tool(self) -> str:
@@ -210,16 +224,6 @@ class LeftToolbar(QWidget):
         btn = self._tool_buttons.get(tool)
         if btn is not None:
             btn.setChecked(True)
-
-    def set_annotate_enabled(self, enabled: bool) -> None:
-        """启用/禁用自动标注相关按钮（无模型时禁用）。
-
-        Args:
-            enabled: 是否可用。
-        """
-        self.btn_annotate_single.setEnabled(enabled)
-        self.btn_annotate_all.setEnabled(enabled)
-        self.btn_annotate_video.setEnabled(enabled)
 
     def set_edit_enabled(self, enabled: bool) -> None:
         """统一启用/禁用所有编辑功能（保存/删除/标注工具）。

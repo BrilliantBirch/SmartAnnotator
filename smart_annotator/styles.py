@@ -16,6 +16,9 @@
 创建日期: 2026-08-10
 更新: 2026-09-03 新增 QComboBox 下拉箭头、禁用态与 QMenu 样式（修复下拉按钮不可见、禁用无视觉反馈）
 更新: 2026-09-03 新增 QSplitter 分栏拖拽手柄样式（默认透明，悬停高亮）
+更新: 2026-09-07 新增主窗口分隔样式（顶部工具栏与画布贴合无空隙；右侧
+      Dock 分隔条 6px 透明可拖拽、悬停高亮）；新增右栏（#rightPanel）
+      列表字号 11px 规则（不影响全局 13px）
 """
 
 GLOBAL_QSS = """
@@ -197,6 +200,20 @@ QSplitter::handle:vertical {
     height: 3px;
 }
 
+/* ===== 主窗口分隔条 ===== */
+/* 顶部工具栏（不可拖动）与中央画布之间不留空隙 */
+QMainWindow::separator:vertical {
+    height: 0;
+}
+/* 右侧对象面板（Dock）与画布之间的分隔条：透明可拖拽，悬停高亮 */
+QMainWindow::separator:horizontal {
+    width: 6px;
+    background-color: transparent;
+}
+QMainWindow::separator:horizontal:hover {
+    background-color: #d4d4d8;
+}
+
 /* ===== 菜单（白底圆角，禁用项置灰）===== */
 QMenu {
     background-color: #ffffff;
@@ -228,5 +245,20 @@ QToolTip {
     border: 0;
     border-radius: 6px;
     padding: 4px 8px;
+}
+
+/* ===== 右栏（对象面板）列表字号 ===== */
+/* 右栏三组列表使用更紧凑的 11px 字号（不影响全局 13px） */
+#rightPanel QListWidget, #rightPanel QListView {
+    font-size: 11px;
+}
+
+/* ===== 右栏文件检索框 ===== */
+/* 与右栏列表协调的紧凑样式（11px 字号、收窄内边距与高度）；
+   边框/聚焦态沿用全局 QLineEdit 规则 */
+#fileSearchEdit {
+    min-height: 24px;
+    padding: 2px 8px;
+    font-size: 11px;
 }
 """

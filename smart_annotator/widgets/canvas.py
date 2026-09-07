@@ -4,12 +4,12 @@
 
 图像显示 + 标注对象的绘制与编辑：
     - 背景图像：QPixmap 1:1 绘制在场景原点，场景坐标即图像像素坐标
-    - 标注工具：矩形（rectangle）、点（point）、多边形（polygon）
+    - 标注工具：矩形（rectangle，两点式：两次左键点击定对角）、点（point）、多边形（polygon）
     - 绘制辅助：十字虚线引导线（延伸至图像四边界）+ 已放置顶点显示
     - 编辑模式（工具为"编辑"）：多选（Shift+点击 / Ctrl+框选）、
-      批量拖拽移动、端点拖动缩放、hover 半透明掩码、
-      可编辑端点仅选中形状显示
-    - 滚轮缩放 + Esc 取消当前绘制
+      批量拖拽移动（边界钳制 + 阻力反馈）、端点拖动缩放（边界钳制）、
+      hover 半透明掩码、可编辑端点仅选中形状显示
+    - 滚轮缩放（光标锚定，手动调整滚动条）+ Esc 取消当前绘制
 
 形状以 labelme 标准字典为唯一数据源（见 core/labelme_io.py），
 绘制结果对外发射 shapes_changed / selection_changed 信号供右侧栏联动。
@@ -20,12 +20,18 @@
 更新: 2026-09-03 新增 discard_shape/copy_selected/paste_clipboard/has_clipboard/can_undo/can_redo（空 label 丢弃、内部剪贴板与撤销状态查询）
 更新: 2026-09-03 端点仅选中形状显示；新增 set_render_config（线宽/不透明度/字号）与通用文本渲染（标签/组号/描述，替代 OCR 特例）
 更新: 2026-09-03 新增 set_shape_visible 形状渲染可见性（运行时键 _visible，纯视图状态不发信号；_render/_render_vertices 跳过隐藏形状）
+更新: 2026-09-07 滚轮缩放改为手动锚定缩放（_apply_zoom 统一入口 + 倍率钳制 0.05–40.0）；
+      矩形绘制改两点式（两次左键点击定对角，无按键移动实时预览）；形状拖拽/端点
+      编辑钳制在图片边界内并新增边界阻力高亮；新增 color_for_group 组关联配色
+      （有合法组号优先组色，无组保持标签色）
+    更新: 2026-09-07 新建标注坐标钳制：绘制类创建（矩形/点/多边形）的点击与
+      预览坐标统一钳制在图片显示区内（_clamp_to_image），禁止在图片外创建标注
 """
 
 import copy
 from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF, QPoint, QTimer
 from PySide6.QtGui import (
     QColor,
     QPen,
@@ -63,6 +69,10 @@ _GUIDE_PEN = QPen(QColor("#52525b"), 1, Qt.PenStyle.DashLine)
 _RUBBER_PEN = QPen(QColor("#2563eb"), 1, Qt.PenStyle.DashLine)
 # 编辑模式 hover 掩码透明度
 _MASK_ALPHA = 90
+# 边界阻力触发距离（形状包围盒边缘距图片边界小于该值时位移按剩余空间比例衰减）
+_EDGE_RESIST_PX = 10.0
+# 边界阻力高亮条厚度（场景像素）
+_EDGE_HINT_THICKNESS = 3.0
 
 # 每个标签的固定调色板（循环使用，10 色高区分度）
 _PALETTE = [
@@ -101,6 +111,35 @@ def color_for_label(label: str) -> QColor:
     return _LABEL_COLOR_CACHE[label]
 
 
+# 每个组号的固定调色板（独立于标签调色板，10 色循环，用于组关联配色）
+_GROUP_PALETTE = [
+    "#0ea5e9", "#d946ef", "#eab308", "#10b981", "#6366f1",
+    "#f43f5e", "#06b6d4", "#a855f7", "#e11d48", "#65a30d",
+]
+
+# 组号 -> 颜色 的确定性缓存：同一组号全程保持唯一且一致的颜色
+_GROUP_COLOR_CACHE: Dict[int, QColor] = {}
+
+
+def color_for_group(gid) -> Optional[QColor]:
+    """按组号稳定返回组关联颜色（独立 10 色调色板按 gid 取模循环）。
+
+    与 color_for_label 相互独立：同一组号的全部形状共用组色，
+    供画布描边/文本与右侧对象列表圆点对齐展示。
+
+    Args:
+        gid: 组号；非 int 或负数视为非法。
+
+    Returns:
+        对应组颜色；gid 非法时返回 None（调用方回退标签色）。
+    """
+    if not isinstance(gid, int) or gid < 0:
+        return None
+    if gid not in _GROUP_COLOR_CACHE:
+        _GROUP_COLOR_CACHE[gid] = QColor(_GROUP_PALETTE[gid % len(_GROUP_PALETTE)])
+    return _GROUP_COLOR_CACHE[gid]
+
+
 class Canvas(QGraphicsView):
     """标注画布 - 图像显示 + 标注绘制/编辑。
 
@@ -120,6 +159,12 @@ class Canvas(QGraphicsView):
     # 空闲状态右键（无绘制草稿）：参数为命中形状字典或 None（空白处）
     context_menu_requested = Signal(object)
 
+    # 缩放步进倍率（滚轮/放大/缩小共用）
+    _ZOOM_FACTOR = 1.12
+    # 缩放倍率钳制区间（以 transform().m11() 判断当前缩放水平）
+    _ZOOM_MIN = 0.05
+    _ZOOM_MAX = 40.0
+
     def __init__(self, parent=None):
         """初始化画布：建立场景、图像项与交互状态。"""
         super().__init__(parent)
@@ -127,7 +172,9 @@ class Canvas(QGraphicsView):
         self.setScene(self._scene)
         # 渲染质量（抗锯齿 + 平滑缩放）
         self._set_qhints()
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        # 缩放锚定由 _apply_zoom 手动控制（滚轮锚定光标、按钮锚定视图中心），
+        # 变换锚点固定为视图中心，不再依赖 AnchorUnderMouse 隐式行为
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setMouseTracking(True)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
@@ -196,6 +243,13 @@ class Canvas(QGraphicsView):
         # 画布渲染配置（线宽/不透明度/字号/文本开关，由主窗口视图菜单设置）
         self._render_config: RenderConfig = RenderConfig()
 
+        # 边界阻力高亮提示项与自动清除定时器（拖动贴边时短暂显示）
+        self._edge_hint_items: List[QGraphicsItem] = []
+        self._edge_hint_timer = QTimer(self)
+        self._edge_hint_timer.setSingleShot(True)
+        self._edge_hint_timer.setInterval(400)
+        self._edge_hint_timer.timeout.connect(self._clear_edge_hints)
+
     # -------------------------- 几何换算助手 --------------------------
     def _set_qhints(self) -> None:
         """设置抗锯齿与平滑缩放渲染提示。"""
@@ -253,6 +307,8 @@ class Canvas(QGraphicsView):
         self._rubber_start = None
         self._guide_items = []
         self._draft_vertex_items = []
+        self._edge_hint_items = []
+        self._edge_hint_timer.stop()
         self._clear_draft()
 
         self._fit_to_window()
@@ -574,14 +630,64 @@ class Canvas(QGraphicsView):
 
     # -------------------------- 缩放 --------------------------
     def zoom_in(self) -> None:
-        """放大。"""
-        self.scale(1.2, 1.2)
+        """放大（以视图中心对应场景点为锚点）。"""
+        self._apply_zoom(self._ZOOM_FACTOR)
 
     def zoom_out(self) -> None:
-        """缩小。"""
-        self.scale(1 / 1.2, 1 / 1.2)
+        """缩小（以视图中心对应场景点为锚点）。"""
+        self._apply_zoom(1 / self._ZOOM_FACTOR)
+
+    def _apply_zoom(self, factor: float, anchor_scene_pos: Optional[QPointF] = None) -> None:
+        """按倍率缩放并保持锚点场景点在视口中的位置不变（手动锚定缩放）。
+
+        缩放倍率以 transform().m11() 判断当前水平，钳制在
+        [_ZOOM_MIN, _ZOOM_MAX] 区间：越界方向按剩余余量收缩步长，
+        已达边界则不再缩放。anchor_scene_pos 为空时以视图中心对应
+        场景点为锚点（zoom_in/zoom_out 的既有行为）。
+
+        Args:
+            factor: 缩放倍率（>1 放大，<1 缩小）。
+            anchor_scene_pos: 锚点场景坐标；None 时取视图中心。
+        """
+        # 倍率钳制：目标水平越界时收缩 factor 至恰好到达边界
+        current = self.transform().m11()
+        target = current * factor
+        if target > self._ZOOM_MAX:
+            factor = self._ZOOM_MAX / current
+        elif target < self._ZOOM_MIN:
+            factor = self._ZOOM_MIN / current
+        if abs(factor - 1.0) < 1e-9:
+            return
+        # 锚点缺省为视图中心对应场景点
+        if anchor_scene_pos is None:
+            anchor_scene_pos = self.mapToScene(self.viewport().rect().center())
+        # 记录锚点当前视口位置，缩放后调整滚动条使其回到原位
+        anchor_view_pos = self.mapFromScene(anchor_scene_pos)
+        self.scale(factor, factor)
+        delta = self.mapFromScene(anchor_scene_pos) - anchor_view_pos
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() + delta.x()
+        )
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() + delta.y()
+        )
 
     # -------------------------- 渲染逻辑 --------------------------
+    @staticmethod
+    def _shape_color(shape: Dict) -> QColor:
+        """解析形状显示颜色：有合法 group_id 用组色，否则回退标签色。
+
+        Args:
+            shape: 形状字典。
+
+        Returns:
+            显示颜色。
+        """
+        color = color_for_group(shape.get("group_id"))
+        if color is None:
+            color = color_for_label(str(shape.get("label", "") or ""))
+        return color
+
     def _make_item(self, shape: Dict) -> Optional[QGraphicsItem]:
         """根据形状字典创建对应的 QGraphicsItem。
 
@@ -591,7 +697,8 @@ class Canvas(QGraphicsView):
         Returns:
             图形项；不支持的形状类型返回 None。
         """
-        color = color_for_label(shape.get("label", ""))
+        # 描边颜色：有合法组号用组色，否则用标签色
+        color = self._shape_color(shape)
         pen = QPen(color, self._render_config.pen_width)
         pen.setCosmetic(True)
         shape_type = shape.get("shape_type", "")
@@ -659,7 +766,8 @@ class Canvas(QGraphicsView):
         - 标签：show_label 开且 label 非空；label 为 "text"（OCR 形状）时跳过
         - 组号：show_group 开且 group_id 非 None，显示 "G{group_id}"
         - 描述：show_description 开且非空，超过 _OCR_TRUNCATE 字符截断加 ".."
-        - 全部关闭或无内容时不渲染；文本颜色与类别色一致，字号取配置。
+        - 全部关闭或无内容时不渲染；文本颜色与组色/标签色一致（有合法组号
+          用组色），字号取配置。
         - 纯显示效果：不改变标注数据。
 
         Args:
@@ -686,14 +794,14 @@ class Canvas(QGraphicsView):
         points = shape.get("points") or []
         if not points:
             return
-        # 多行文本（HTML 换行），颜色与类别色一致
+        # 多行文本（HTML 换行），颜色与组色/标签色一致
         html = "<br>".join(p.replace("<", "&lt;").replace(">", "&gt;") for p in parts)
         text_item = QGraphicsTextItem()
         font = QFont()
         font.setPointSizeF(float(cfg.font_size))
         text_item.setFont(font)
         text_item.setHtml(
-            f'<span style="color:{color_for_label(label).name()};">{html}</span>'
+            f'<span style="color:{self._shape_color(shape).name()};">{html}</span>'
         )
         text_item.setPos(
             float(points[0][0]),
@@ -710,7 +818,7 @@ class Canvas(QGraphicsView):
             color = None
             for s in self._shapes:
                 if id(s) == shape_id:
-                    color = color_for_label(s.get("label", ""))
+                    color = self._shape_color(s)
                     break
             if color is None:
                 continue
@@ -955,7 +1063,7 @@ class Canvas(QGraphicsView):
         self.selection_changed.emit(self.selected_shapes())
 
     def _move_vertex(self, scene: QPointF) -> None:
-        """端点拖动中：更新对应形状顶点坐标（缩放形状）。
+        """端点拖动中：更新对应形状顶点坐标（缩放形状，钳制在图片边界内）。
 
         Args:
             scene: 当前鼠标场景坐标。
@@ -966,11 +1074,21 @@ class Canvas(QGraphicsView):
         shape = self._find_shape_by_id(shape_id)
         if shape is None or point_idx >= len(shape.get("points", [])):
             return
+        # 顶点坐标钳制在图片区（sceneRect）内
+        x, y = scene.x(), scene.y()
+        rect = self._scene.sceneRect()
+        if rect.width() > 0 and rect.height() > 0:
+            x = min(max(x, rect.left()), rect.right())
+            y = min(max(y, rect.top()), rect.bottom())
+        new_pt = [x, y]
+        # 钳制后与原坐标一致（无实际移动）：不记撤销快照
+        if new_pt == shape["points"][point_idx]:
+            return
         # 首次实际移动前记录撤销快照
         if not self._vertex_moved:
             self._push_undo()
             self._vertex_moved = True
-        shape["points"][point_idx] = [scene.x(), scene.y()]
+        shape["points"][point_idx] = new_pt
         self._render()
 
     # -------------------------- 绘制状态清理 --------------------------
@@ -986,7 +1104,11 @@ class Canvas(QGraphicsView):
 
     # -------------------------- 鼠标交互 --------------------------
     def mousePressEvent(self, event) -> None:
-        """鼠标按下：按当前工具与修饰键分发到绘制/框选/多选/拖拽逻辑。"""
+        """鼠标按下：按当前工具与修饰键分发到绘制/框选/多选/拖拽逻辑。
+
+        矩形工具为两点式：首次左键点击落起点建虚线草稿，第二次左键
+        点击完成创建（创建不由按住拖拽/释放触发）。
+        """
         pos = event.position().toPoint()
         scene = self._scene_pos(pos)
 
@@ -999,7 +1121,7 @@ class Canvas(QGraphicsView):
                 else:
                     self._clear_draft()
             elif self._draft_item is not None or self._press_scene is not None:
-                # 矩形拖拽中：取消当前绘制
+                # 矩形两点式绘制中：取消当前草稿
                 self._clear_draft()
             else:
                 # 空白或对象上右键（绘制工具空闲或编辑模式）：请求上下文菜单
@@ -1008,13 +1130,22 @@ class Canvas(QGraphicsView):
             return
 
         # ===== 绘制工具激活 =====
+        # 绘制类创建的坐标统一钳制在图片显示区内（禁止在图片外创建标注）
+        scene = self._clamp_to_image(scene)
         if self._tool == labelme_io.SHAPE_POINT:
             self._add_point_shape(scene)
             return
 
         if self._tool == labelme_io.SHAPE_RECTANGLE:
-            self._press_scene = scene
-            self._start_rect_draft(scene)
+            # 两点式绘制：首次点击记录起点并建虚线草稿，第二次点击完成创建
+            if self._draft_item is None:
+                self._press_scene = scene
+                self._start_rect_draft(scene)
+            else:
+                # 第二次点击：先把草稿对角更新为钳制后的点击点再完成，
+                # 保证快速连点（中间无移动事件）时矩形同样不越界
+                self._update_rect_draft(scene)
+                self._finalize_rect()
             return
 
         if self._tool == labelme_io.SHAPE_POLYGON:
@@ -1067,12 +1198,16 @@ class Canvas(QGraphicsView):
         """鼠标移动：更新引导线/绘制/框选/端点拖动/批量移动/hover 掩码。"""
         scene = self._scene_pos(event.position().toPoint())
 
+        # 绘制模式：预览/引导线坐标钳制在图片区内（创建不越界的视觉联动）
+        if self._tool is not None:
+            scene = self._clamp_to_image(scene)
+
         # 绘制模式：更新十字引导线与已放置顶点
         if self._tool is not None:
             self._update_guides(scene)
 
-        # 矩形绘制拉伸
-        if self._tool == labelme_io.SHAPE_RECTANGLE and self._press_scene is not None:
+        # 矩形两点式：草稿存在时无按键按下也跟随光标更新预览
+        if self._tool == labelme_io.SHAPE_RECTANGLE and self._draft_item is not None:
             self._update_rect_draft(scene)
             return
 
@@ -1101,12 +1236,13 @@ class Canvas(QGraphicsView):
             self._update_hover_mask(scene)
 
     def mouseReleaseEvent(self, event) -> None:
-        """鼠标释放：结束矩形绘制/框选/端点拖动/拖拽移动。"""
-        # 矩形绘制结束
-        if self._tool == labelme_io.SHAPE_RECTANGLE and self._press_scene is not None:
-            scene = self._scene_pos(event.position().toPoint())
-            self._update_rect_draft(scene)
-            self._finalize_rect()
+        """鼠标释放：结束框选/端点拖动/拖拽移动。
+
+        矩形为两点式：按下/释放不改变草稿状态（草稿预览由无按键移动
+        驱动），创建仅由第二次左键点击触发，故矩形工具下直接返回。
+        """
+        # 矩形两点式：无按住拖拽状态，释放无需清理
+        if self._tool == labelme_io.SHAPE_RECTANGLE:
             return
 
         # Ctrl 框选结束：批量选中相交形状
@@ -1129,6 +1265,8 @@ class Canvas(QGraphicsView):
             self._dragging = False
             self._drag_last = None
             self._drag_moved = False
+            # 拖动结束清除边界阻力高亮
+            self._clear_edge_hints()
             if moved:
                 self.shapes_changed.emit()
             return
@@ -1160,11 +1298,14 @@ class Canvas(QGraphicsView):
         super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:
-        """滚轮缩放。"""
-        if event.angleDelta().y() > 0:
-            self.zoom_in()
-        else:
-            self.zoom_out()
+        """滚轮缩放：以光标下场景点为锚点进行手动锚定缩放。"""
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        # 光标位置的场景坐标作为缩放锚点（缩放后仍保持在光标下方）
+        anchor = self._scene_pos(event.position().toPoint())
+        factor = self._ZOOM_FACTOR if delta > 0 else 1 / self._ZOOM_FACTOR
+        self._apply_zoom(factor, anchor)
 
     # -------------------------- 选中与移动 --------------------------
     def _find_shape_by_id(self, shape_id: int) -> Optional[Dict]:
@@ -1181,8 +1322,164 @@ class Canvas(QGraphicsView):
                 return s
         return None
 
+    @staticmethod
+    def _points_bbox(points: List) -> Optional[QRectF]:
+        """遍历形状顶点计算包围盒（x/y 的最小/最大值）。
+
+        Args:
+            points: 形状顶点列表（[[x, y], ...]）。
+
+        Returns:
+            顶点包围盒；顶点为空返回 None。
+        """
+        if not points:
+            return None
+        xs = [float(p[0]) for p in points]
+        ys = [float(p[1]) for p in points]
+        return QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    def _selected_bbox(self) -> Optional[QRectF]:
+        """计算全部选中形状顶点的联合包围盒。
+
+        Returns:
+            联合包围盒；无选中形状或均无顶点时返回 None。
+        """
+        selected = set(self._selected_ids)
+        bbox: Optional[QRectF] = None
+        for shape in self._shapes:
+            if id(shape) not in selected:
+                continue
+            sb = self._points_bbox(shape.get("points", []))
+            if sb is None:
+                continue
+            bbox = sb if bbox is None else bbox.united(sb)
+        return bbox
+
+    def _clamp_to_image(self, scene: QPointF) -> QPointF:
+        """将场景坐标钳制在图片显示区（sceneRect）内，用于绘制类创建交互。
+
+        新建标注（矩形/点/多边形）的点击与预览坐标必须落在图片内，
+        防止在图片外创建标注；未加载图片（sceneRect 为空）时原样返回。
+
+        Args:
+            scene: 原始场景坐标。
+
+        Returns:
+            钳制后的场景坐标（含图片边界）。
+        """
+        rect = self._scene.sceneRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return scene
+        return QPointF(
+            min(max(scene.x(), rect.left()), rect.right()),
+            min(max(scene.y(), rect.top()), rect.bottom()),
+        )
+
+    def _clamp_move_delta(self, dx: float, dy: float) -> Tuple[float, float]:
+        """按选中形状包围盒与图片边界钳制位移，并对贴边方向施加阻力衰减。
+
+        包围盒任何部分不得越出图片区（越界方向位移归零）；包围盒边缘
+        距边界小于 _EDGE_RESIST_PX 时，该方向位移按剩余空间/10px 比例
+        衰减，并短暂高亮对应边界（阻力反馈）。
+
+        Args:
+            dx: 原始 X 方向位移。
+            dy: 原始 Y 方向位移。
+
+        Returns:
+            (钳制后的 dx, 钳制后的 dy)。
+        """
+        rect = self._scene.sceneRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return dx, dy
+        bbox = self._selected_bbox()
+        if bbox is None:
+            return dx, dy
+        edges = set()
+        # X 方向：先阻力衰减（距边界不足 _EDGE_RESIST_PX 按剩余空间比例），再钳制不越界
+        if dx > 0:
+            gap = rect.right() - bbox.right()
+            if gap < _EDGE_RESIST_PX:
+                edges.add("right")
+                dx *= max(gap, 0.0) / _EDGE_RESIST_PX
+            dx = min(dx, max(gap, 0.0))
+        elif dx < 0:
+            gap = bbox.left() - rect.left()
+            if gap < _EDGE_RESIST_PX:
+                edges.add("left")
+                dx *= max(gap, 0.0) / _EDGE_RESIST_PX
+            dx = max(dx, -max(gap, 0.0))
+        # Y 方向同上
+        if dy > 0:
+            gap = rect.bottom() - bbox.bottom()
+            if gap < _EDGE_RESIST_PX:
+                edges.add("bottom")
+                dy *= max(gap, 0.0) / _EDGE_RESIST_PX
+            dy = min(dy, max(gap, 0.0))
+        elif dy < 0:
+            gap = bbox.top() - rect.top()
+            if gap < _EDGE_RESIST_PX:
+                edges.add("top")
+                dy *= max(gap, 0.0) / _EDGE_RESIST_PX
+            dy = max(dy, -max(gap, 0.0))
+        # 阻力触发：短暂高亮对应边界
+        if edges:
+            self._show_edge_hints(edges)
+        return dx, dy
+
+    def _show_edge_hints(self, edges: set) -> None:
+        """沿图片边界显示半透明高亮条（边界阻力反馈，定时器自动清除）。
+
+        Args:
+            edges: 需要高亮的边界名集合（left/right/top/bottom）。
+        """
+        self._clear_edge_hints()
+        rect = self._scene.sceneRect()
+        # 沿四边界构造高亮条
+        bands = {
+            "left": QRectF(
+                rect.left(), rect.top(), _EDGE_HINT_THICKNESS, rect.height()
+            ),
+            "right": QRectF(
+                rect.right() - _EDGE_HINT_THICKNESS,
+                rect.top(),
+                _EDGE_HINT_THICKNESS,
+                rect.height(),
+            ),
+            "top": QRectF(
+                rect.left(), rect.top(), rect.width(), _EDGE_HINT_THICKNESS
+            ),
+            "bottom": QRectF(
+                rect.left(),
+                rect.bottom() - _EDGE_HINT_THICKNESS,
+                rect.width(),
+                _EDGE_HINT_THICKNESS,
+            ),
+        }
+        for name in edges:
+            band = bands.get(name)
+            if band is None:
+                continue
+            item = QGraphicsRectItem(band)
+            item.setPen(QPen(Qt.PenStyle.NoPen))
+            item.setBrush(QBrush(QColor(37, 99, 235, 120)))
+            item.setZValue(11)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self._scene.addItem(item)
+            self._edge_hint_items.append(item)
+        # 单发定时器自动清除（拖动中持续触发则反复重启）
+        self._edge_hint_timer.start()
+
+    def _clear_edge_hints(self) -> None:
+        """清除边界阻力高亮提示项。"""
+        self._edge_hint_timer.stop()
+        for item in self._edge_hint_items:
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._edge_hint_items = []
+
     def _move_selected(self, scene: QPointF) -> None:
-        """拖拽移动全部选中形状的顶点（批量移动）。
+        """拖拽移动全部选中形状的顶点（批量移动，钳制在图片边界内）。
 
         Args:
             scene: 当前场景坐标点。
@@ -1193,6 +1490,10 @@ class Canvas(QGraphicsView):
         dx = scene.x() - self._drag_last.x()
         dy = scene.y() - self._drag_last.y()
         self._drag_last = scene
+        if dx == 0 and dy == 0:
+            return
+        # 边界钳制 + 阻力衰减（钳制后位移为零不视为实际移动，不记撤销）
+        dx, dy = self._clamp_move_delta(dx, dy)
         if dx == 0 and dy == 0:
             return
         # 首次实际移动前记录撤销快照
@@ -1227,7 +1528,11 @@ class Canvas(QGraphicsView):
         self.shape_created.emit(shape)
 
     def _start_rect_draft(self, scene: QPointF) -> None:
-        """开始矩形绘制：记录起点并创建临时图形。"""
+        """开始矩形绘制：以起点创建临时虚线草稿（两点式首次点击调用）。
+
+        Args:
+            scene: 起点场景坐标。
+        """
         rect = QRectF(scene, scene)
         item = QGraphicsRectItem(rect)
         item.setPen(_DRAFT_PEN)
@@ -1235,10 +1540,10 @@ class Canvas(QGraphicsView):
         self._draft_item = item
 
     def _update_rect_draft(self, scene: QPointF) -> None:
-        """更新矩形临时图形大小。
+        """更新矩形临时图形大小（两点式：无按键移动时跟随光标预览）。
 
         Args:
-            scene: 当前场景坐标点。
+            scene: 当前场景坐标点（对角点）。
         """
         if self._draft_item is None or self._press_scene is None:
             return
@@ -1246,7 +1551,10 @@ class Canvas(QGraphicsView):
         self._draft_item.setRect(rect)
 
     def _finalize_rect(self) -> None:
-        """结束矩形绘制：写入形状字典。"""
+        """第二次点击完成矩形绘制：写入形状字典（两点式创建入口）。
+
+        零面积矩形（宽与高均不足 1 像素）静默丢弃，不进入撤销栈。
+        """
         if self._draft_item is None or self._press_scene is None:
             self._clear_draft()
             return
