@@ -63,7 +63,7 @@ from smart_annotator.version_manager import VersionManager
 
 
 # ===== 依赖包目录命名（与 VAI_MemGenerator 的 VAI_PY_Packages 区分）=====
-PACKAGES_DIR_NAME = "VAI_E_SmartAnnotator"
+PACKAGES_DIR_NAME = "BrilliantAnnotator"
 
 # ===== 构建模式标志文件名（写入 exe 目录，运行时据此锁定推理设备选项）=====
 # CPU 版本：标志值为 "cpu"，运行时禁用 GPU 选项、跳过 CUDA 检测；
@@ -184,7 +184,7 @@ HIDDEN_IMPORTS = [
     "concurrent.futures",
     "ctypes",
     "psutil",
-    # SmartAnnotator 自身模块（确保算法层被收集）
+    # smart_annotator 自身模块（确保算法层被收集）
     "smart_annotator.core.annotate.vision.yolo",
     "smart_annotator.core.annotate.vision.onnxbackend",
     "smart_annotator.core.annotate.formatters.factory",
@@ -837,7 +837,7 @@ def _build_package(
         version_info_path: version_info.txt 文件路径。
 
     Returns:
-        打包输出目录路径（BUILD_DIR/dist_{mode}/VAI_E_SmartAnnotator）。
+        打包输出目录路径（BUILD_DIR/dist_{mode}/BrilliantAnnotator）。
     """
     mode_upper = mode.upper()
     print(f"\n{'='*60}")
@@ -876,7 +876,7 @@ def _build_package(
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--windowed",                              # 无控制台窗口
-        "--name", vm.PROGRAM_NAME,                 # 程序名称: VAI_E_SmartAnnotator
+        "--name", vm.PROGRAM_NAME,                 # 程序名称: BrilliantAnnotator
         "--version-file", str(version_info_path),  # Windows 版本信息
         "--distpath", str(dist_dir),
         "--workpath", str(work_dir),
@@ -969,7 +969,7 @@ def _build_package(
     # ===== 创建 zip 压缩包（用于在线分发，超过 95 MB 自动分卷）=====
     print(f"\n  [{mode_upper}] 创建 zip 压缩包...")
     app_version = "1.2.0"
-    zip_path = BUILD_DIR / "packages" / f"VAI_E_SmartAnnotator_{mode.upper()}_{app_version}.zip"
+    zip_path = BUILD_DIR / "packages" / f"BrilliantAnnotator_{mode.upper()}_{app_version}.zip"
     zip_size = _create_zip(exe_dir, zip_path)
     print(f"  zip 文件: {zip_path.name} ({zip_size / 1024 / 1024:.1f} MB)")
 
@@ -1090,7 +1090,7 @@ def main() -> None:
             print("         上传 zip 到 Gitee Release 后，编辑 download_config.ini 替换 URL，重新编译")
         online_setup = _compile_installer(
             iss_name="installer_online.iss",
-            output_name="VAI_E_SmartAnnotator_OnlineSetup.exe",
+            output_name="BrilliantAnnotator_OnlineSetup.exe",
             defines=online_defines if online_defines else None,
         )
         if online_setup:

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-VAI_E_SmartAnnotator - 程序入口
+BrilliantAnnotator - 程序入口
 
 启动 PySide6 GUI 主窗口，提供 LabelMe↔YOLO 格式转换与 ONNX/TensorRT 自动标注功能。
 
 支持两种运行方式：
     - 开发模式: python -m smart_annotator.main
-    - 打包模式: VAI_E_SmartAnnotator.exe（PyInstaller 处理路径）
+    - 打包模式: BrilliantAnnotator.exe（PyInstaller 处理路径）
 
 作者: BaiBinnan
 创建日期: 2026-08-10

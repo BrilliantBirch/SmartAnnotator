@@ -1,4 +1,4 @@
-# VAI_E_SmartAnnotator 用户使用说明书
+# BrilliantAnnotator 用户使用说明书
 
 **产品版本：** 2.1.0
 **文档版本：** 2.0
@@ -9,7 +9,7 @@
 
 ## 1. 产品概述
 
-VAI_E_SmartAnnotator 是一款基于深度学习模型的智能数据标注工具，采用 labelme 风格的三栏式标注编辑器布局，标注数据完全兼容 LabelMe JSON 格式。核心功能：
+BrilliantAnnotator 是一款基于深度学习模型的智能数据标注工具，采用 labelme 风格的三栏式标注编辑器布局，标注数据完全兼容 LabelMe JSON 格式。核心功能：
 
 | 功能             | 说明                                                                                     |
 | ---------------- | ---------------------------------------------------------------------------------------- |
@@ -46,15 +46,15 @@ VAI_E_SmartAnnotator 是一款基于深度学习模型的智能数据标注工�
 
 ### 3.1 安装器安装
 
-1. 双击安装程序（如 `VAI_E_SmartAnnotator_Setup_GPU.exe`）。
+1. 双击安装程序（如 `BrilliantAnnotator_Setup_GPU.exe`）。
 2. 按向导提示选择安装目录，完成安装。
 3. 从开始菜单或桌面快捷方式启动程序。
 
 ### 3.2 开发环境运行（源码）
 
 ```bash
-conda create -n VAI_E_SmartAnnotator python=3.12.10
-conda activate VAI_E_SmartAnnotator
+conda create -n BrilliantAnnotator python=3.12.10
+conda activate BrilliantAnnotator
 pip install -r requirements.txt
 python -m smart_annotator
 ```

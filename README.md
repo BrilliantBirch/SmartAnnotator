@@ -1,18 +1,18 @@
-# SmartAnnotator v1.2.0
+# BrilliantAnnotator v1.2.0
 
 基于 PySide6 的智能标注工具，提供 LabelMe ↔ YOLO 格式转换与 ONNX 自动标注（CPU / CUDA GPU）功能。
 
 ## 1. 功能概述
 
-| 功能             | 说明                                                                     |
-| ---------------- | ------------------------------------------------------------------------ |
+| 功能             | 说明                                                                           |
+| ---------------- | ------------------------------------------------------------------------------ |
 | **标注编辑器**   | 三栏式（工具栏/画布/信息栏）标注编辑器，矩形/点/多边形绘制、属性编辑、撤销重做 |
-| **格式转换**     | LabelMe JSON ↔ YOLO TXT 双向转换（导出/导入），支持目标检测/姿态估计/实例分割 |
-| **自动标注**     | 加载 ONNX 模型批量推理（CPU / onnxruntime CUDA EP），输出 LabelMe 标注文件 |
-| **视频标注**     | 视频抽帧标注（帧间隔/差异阈值可调），含预览播放器与损坏视频保护           |
-| **检测类别选择** | 模型加载后自动解析元数据类别，支持复选/全选/取消全选，按类别过滤推理结果 |
-| **数据集分析**   | 一键分析数据集标签/任务/方向，数据集按 train/val/test 比例分层划分       |
-| **配置管理**     | JSON 格式导入/导出，兼容旧版 camelCase 键                                |
+| **格式转换**     | LabelMe JSON ↔ YOLO TXT 双向转换（导出/导入），支持目标检测/姿态估计/实例分割  |
+| **自动标注**     | 加载 ONNX 模型批量推理（CPU / onnxruntime CUDA EP），输出 LabelMe 标注文件     |
+| **视频标注**     | 视频抽帧标注（帧间隔/差异阈值可调），含预览播放器与损坏视频保护                |
+| **检测类别选择** | 模型加载后自动解析元数据类别，支持复选/全选/取消全选，按类别过滤推理结果       |
+| **数据集分析**   | 一键分析数据集标签/任务/方向，数据集按 train/val/test 比例分层划分             |
+| **配置管理**     | JSON 格式导入/导出，兼容旧版 camelCase 键                                      |
 
 ### 支持的任务模式
 
@@ -39,7 +39,7 @@
 ## 3. 项目结构
 
 ```
-VAI_E_SmartAnnotator/
+BrilliantAnnotator/
 ├── smart_annotator/              # 主包
 │   ├── __init__.py               # 应用常量
 │   ├── __main__.py               # python -m smart_annotator 入口
@@ -71,8 +71,8 @@ VAI_E_SmartAnnotator/
 
 ```bash
 # 创建 conda 虚拟环境（Python 3.12.10）
-conda create -n VAI_E_SmartAnnotator python=3.12.10
-conda activate VAI_E_SmartAnnotator
+conda create -n BrilliantAnnotator python=3.12.10
+conda activate BrilliantAnnotator
 
 # 安装依赖
 pip install -r requirements.txt
@@ -140,16 +140,16 @@ python smart_annotator/main.py
 ## 6. 打包
 
 ```bash
-# 在项目根目录执行（GPU 模式需在 VAI_E_Vision_FrameWork conda 环境中运行）
+# 在项目根目录执行（GPU 模式需在含 TensorRT 10.x 的 conda 环境中运行，见 AGENTS.md 2.1 节）
 python build.py --mode all      # 构建 CPU + GPU 离线安装器 + 在线安装器
 python build.py --mode cpu      # 仅构建 CPU 离线安装器
 python build.py --mode gpu      # 仅构建 GPU 离线安装器
 python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gitee 后使用）
 ```
 
-打包产物位于 `build/dist_{mode}/VAI_E_SmartAnnotator/`：
+打包产物位于 `build/dist_{mode}/BrilliantAnnotator/`：
 - `BrilliantAnnotator.exe` — 可执行文件
-- `VAI_E_SmartAnnotator/` — 依赖包目录
+- `BrilliantAnnotator/` — 依赖包目录  
 - `py_packages_list.txt` — 依赖文件清单
 
 安装程序输出到 `build/installer_output/`，zip 分发包输出到 `build/packages/`。
@@ -158,11 +158,11 @@ python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gite
 
 构建系统按 `--mode` 参数严格区分 CPU/GPU 配置，**不受构建机本机 CUDA 安装状态干扰**：
 
-| 模式 | 环境隔离 | 产物内容 | 运行时行为 |
-| --- | --- | --- | --- |
-| `--mode cpu` | 剔除 PyInstaller 子进程的 `CUDA_PATH` 等环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`），从源头阻止 CUDA DLL 混入 | 零 CUDA 组件（清理模式含 `nvidia/nvml` 前缀兜底），exe 目录写入 `build_mode.txt = cpu` 标志 | 启动时读取标志，**跳过 CUDA 检测并禁用 GPU 选项**（提示"CPU 版本：仅支持 CPU 推理"），即使运行在带 NVIDIA 显卡的机器上也不会推荐 GPU |
-| `--mode gpu` | 继承构建环境不裁剪 | 保留 CUDA EP 运行库（cuDNN/cuBLAS/cuFFT/cudart 复制到 exe 目录），清理 TensorRT 残留（nvinfer/nvonnxparser），写入 `build_mode.txt = gpu` | 按 CUDA 可用性正常联动（无 N 卡自动回退 CPU 推理） |
-| 开发模式（`python -m smart_annotator`） | — | — | 无标志文件，按 CUDA 可用性正常联动 |
+| 模式                                    | 环境隔离                                                                                                                               | 产物内容                                                                                                                                  | 运行时行为                                                                                                                           |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `--mode cpu`                            | 剔除 PyInstaller 子进程的 `CUDA_PATH` 等环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`），从源头阻止 CUDA DLL 混入 | 零 CUDA 组件（清理模式含 `nvidia/nvml` 前缀兜底），exe 目录写入 `build_mode.txt = cpu` 标志                                               | 启动时读取标志，**跳过 CUDA 检测并禁用 GPU 选项**（提示"CPU 版本：仅支持 CPU 推理"），即使运行在带 NVIDIA 显卡的机器上也不会推荐 GPU |
+| `--mode gpu`                            | 继承构建环境不裁剪                                                                                                                     | 保留 CUDA EP 运行库（cuDNN/cuBLAS/cuFFT/cudart 复制到 exe 目录），清理 TensorRT 残留（nvinfer/nvonnxparser），写入 `build_mode.txt = gpu` | 按 CUDA 可用性正常联动（无 N 卡自动回退 CPU 推理）                                                                                   |
+| 开发模式（`python -m smart_annotator`） | —                                                                                                                                      | —                                                                                                                                         | 无标志文件，按 CUDA 可用性正常联动                                                                                                   |
 
 因此：在已安装 CUDA 的机器上构建 CPU 版本，产物同样纯净（仅 CPU 组件、体积最小）；
 CPU 版本分发到任何机器都不会出现"检测到 CUDA，推荐使用 GPU"的误导提示。
@@ -212,7 +212,7 @@ pages/（界面层）→ workers/（线程层）→ core/（算法层）
 
 ## 8. 文档
 
-- 用户使用说明书：[docs/VAI_E_SmartAnnotator_用户说明书.pdf](docs/VAI_E_SmartAnnotator_用户说明书.pdf)
+- 用户使用说明书：[docs/BrilliantAnnotator_用户说明书.pdf](docs/BrilliantAnnotator_用户说明书.pdf)    
   （源文件 [docs/manual.md](docs/manual.md)，修改后需运行 `python docs/generate_manual_pdf.py` 重新生成）
 
 ## 9. 贡献规范

@@ -57,7 +57,7 @@ from .tool import (
 
 # ===== 日志（标准库 logging，仅控制台输出）=====
 # 日志名称（GUI 推送处理器 qt_logger 按此名称挂接）
-LOGGING_NAME = "VAI_E_SmartAnnotator"
+LOGGING_NAME = "BrilliantAnnotator"     
 
 
 class _MillisecondFormatter(logging.Formatter):

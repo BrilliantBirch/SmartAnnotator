@@ -1,6 +1,6 @@
 ; -*- coding: utf-8 -*-
 ; ============================================================================
-; VAI_E_SmartAnnotator 在线安装器 Inno Setup 脚本
+; BrilliantAnnotator 在线安装器 Inno Setup 脚本
 ;
 ; 用途: 生成轻量级在线安装器（约 3 MB），安装时从 Gitee Release 下载
 ;       CPU 版或 GPU 版压缩包并自动解压安装。
@@ -12,21 +12,21 @@
 ; 日期: 2026-08-11
 ; ============================================================================
 
-#define MyAppName          "VAI_E_SmartAnnotator"
+#define MyAppName          "BrilliantAnnotator"
 #define MyAppVersion       "1.2.0"
-#define MyAppPublisher     "武汉川丰软件"
-#define MyAppExeName       "VAI_E_SmartAnnotator.exe"
-#define MyAppDescription   "VAI_E Smart Annotator"
+#define MyAppPublisher     "BrilliantBirch"
+#define MyAppExeName       "BrilliantAnnotator.exe"
+#define MyAppDescription   "BrilliantAnnotator"
 
 ; ===== 下载 URL 配置（可通过 /D 命令行参数覆盖）=====
 ; 默认 URL 指向 Gitee Release（build.py 编译时通过 /D 参数覆盖为 download_config.ini 中的值）
 ; 格式: https://gitee.com/{用户}/{仓库}/releases/download/{版本}/{文件名}
 ; 分卷: parts>1 时 URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
 #ifndef CPU_DOWNLOAD_URL
-  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v1.2.0/VAI_E_SmartAnnotator_CPU_1.2.0.zip"
+  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/brilliantannotator/releases/download/v1.2.0/BrilliantAnnotator_CPU_1.2.0.zip"
 #endif
 #ifndef GPU_DOWNLOAD_URL
-  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v1.2.0/VAI_E_SmartAnnotator_GPU_1.2.0.zip.part"
+  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/brilliantannotator/releases/download/v1.2.0/BrilliantAnnotator_GPU_1.2.0.zip.part"
 #endif
 #ifndef CPU_PARTS
   #define CPU_PARTS "1"
@@ -37,7 +37,7 @@
 
 [Setup]
 ; 应用信息
-AppId={{CFSoft-VAI-E-SmartAnnotator}}
+AppId={{BrilliantAnnotator}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -57,7 +57,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 
 ; 输出配置（安装程序输出到 build/installer_output/）
 OutputDir=build\installer_output
-OutputBaseFilename=VAI_E_SmartAnnotator_OnlineSetup
+OutputBaseFilename=BrilliantAnnotator_OnlineSetup
 SetupIconFile=app.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -68,7 +68,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; 版本信息
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppDescription} Online Setup
-VersionInfoProductName=VAI_E
+VersionInfoProductName=BrilliantAnnotator
 VersionInfoProductVersion=1.2.0.0
 VersionInfoVersion=1.2.0.0
 
@@ -194,7 +194,7 @@ begin
     begin
       // 分卷下载：URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
       // 下载后合并为单个 zip 文件
-      MergeZipName := 'VAI_E_SmartAnnotator_' + SelectedMode + '.zip';
+      MergeZipName := 'BrilliantAnnotator_' + SelectedMode + '.zip';
       DownloadedZipPath := TmpDir + '\' + MergeZipName;
       for PartIndex := 1 to PartCount do
       begin

@@ -1,8 +1,8 @@
-# AGENTS.md — VAI_E_SmartAnnotator AI 编码助手项目规则
+# AGENTS.md — BrilliantAnnotator AI 编码助手项目规则
 
 > 本文档是 AI 编码助手（Trae / Cursor / Copilot 等）操作本项目的**强制性规则文件**。
 > 助手在本项目内执行任何任务前，必须先完整阅读本文档并严格遵守。
-> 文档中的所有路径均相对项目根目录 `e:\VAI_E\VAI_E_SmartAnnotator`。
+> 文档中的所有路径均相对项目根目录 `e:\VAI_E\BrilliantAnnotator`。
 > **禁止自动更新本文档**：助手不得在任务执行过程中主动修改本文档（包括追加修订记录、同步变更说明等），仅当用户明确要求修改时方可变更。
 
 ---
@@ -11,7 +11,7 @@
 
 | 项       | 内容                                                                              |
 | -------- | --------------------------------------------------------------------------------- |
-| 项目名称 | VAI_E_SmartAnnotator                                                              |
+| 项目名称 | BrilliantAnnotator                                                                |
 | 产品版本 | 1.2.0（固定），文件版本 `年.月.日.构建次数` 自动递增                              |
 | 定位     | 基于 PySide6 的智能数据标注工具：LabelMe ↔ YOLO 格式转换 + ONNX/TensorRT 自动标注 |
 | 语言     | Python 3.12.10（严格锁定，禁止其他版本）                                          |
@@ -187,12 +187,12 @@ task_type: MODE           # DETECT / POSE / SEGMENT / OCR
 
 ### 3.5 文档体系
 
-| 文件                                                                                 | 说明                            |
-| ------------------------------------------------------------------------------------ | ------------------------------- |
-| [README.md](README.md)                                                               | 项目说明（结构/配置/打包/架构） |
-| [docs/manual.md](docs/manual.md)                                                     | 用户说明书源文件（Markdown）    |
-| [docs/generate_manual_pdf.py](docs/generate_manual_pdf.py)                           | 说明书 PDF 生成脚本             |
-| [docs/VAI_E_SmartAnnotator_用户说明书.pdf](docs/VAI_E_SmartAnnotator_用户说明书.pdf) | 最终 PDF（5 页）                |
+| 文件                                                                             | 说明                            |
+| -------------------------------------------------------------------------------- | ------------------------------- |
+| [README.md](README.md)                                                           | 项目说明（结构/配置/打包/架构） |
+| [docs/manual.md](docs/manual.md)                                                 | 用户说明书源文件（Markdown）    |
+| [docs/generate_manual_pdf.py](docs/generate_manual_pdf.py)                       | 说明书 PDF 生成脚本             |
+| [docs/BrilliantAnnotator_用户说明书.pdf](docs/BrilliantAnnotator_用户说明书.pdf) | 最终 PDF（5 页）                |
 
 **修改 manual.md 后必须重新生成 PDF**：
 `python docs/generate_manual_pdf.py`（在满足 2.1 节要求的环境中执行）。
@@ -218,8 +218,8 @@ python build.py --mode online   # 仅在线安装器（上传 zip 到 Gitee 后�
 ```
 
 产物位置：
-- 打包目录：`build/dist_{cpu|gpu}/VAI_E_SmartAnnotator/`
-- 安装器：`build/installer_output/VAI_E_SmartAnnotator_Setup_{CPU|GPU}.exe`
+- 打包目录：`build/dist_{cpu|gpu}/BrilliantAnnotator/`
+- 安装器：`build/installer_output/BrilliantAnnotator_Setup_{CPU|GPU}.exe`
 - zip 分卷：`build/packages/`
 
 体积基线（2026-08-26）：CPU 安装器 61.6MB，GPU 安装器 220MB，CPU 打包目录 244.6MB，GPU 737MB。

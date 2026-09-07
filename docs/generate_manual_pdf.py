@@ -26,7 +26,7 @@ from PySide6.QtPrintSupport import QPrinter
 
 DOCS_DIR = Path(__file__).parent
 MANUAL_MD = DOCS_DIR / "manual.md"
-OUTPUT_PDF = DOCS_DIR / "VAI_E_SmartAnnotator_用户说明书.pdf"
+OUTPUT_PDF = DOCS_DIR / "BrilliantAnnotator_用户说明书.pdf"
 
 # 中文字体（Windows 系统自带）
 FONT_FAMILY = "Microsoft YaHei"

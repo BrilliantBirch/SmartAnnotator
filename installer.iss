@@ -1,6 +1,6 @@
 ; -*- coding: utf-8 -*-
 ; ============================================================================
-; VAI_E_SmartAnnotator Inno Setup 安装脚本
+; BrilliantAnnotator Inno Setup 安装脚本
 ;
 ; 用途: 将 PyInstaller 打包产物制作成带安装向导的 Setup.exe
 ; 编译: ISCC.exe installer.iss
@@ -9,16 +9,17 @@
 ; 日期: 2026-08-11
 ; ============================================================================
 
-#define MyAppName          "VAI_E_SmartAnnotator"
+#define MyAppName          "BrilliantAnnotator"
 #define MyAppVersion       "1.2.0"
-#define MyAppPublisher     "武汉川丰软件"
-#define MyAppExeName       "VAI_E_SmartAnnotator.exe"
-#define MyAppDescription   "VAI_E Smart Annotator"
+#define MyAppPublisher     "BrilliantBirch"
+#define MyAppExeName       "BrilliantAnnotator.exe"
+#define MyAppDescription   "BrilliantAnnotator"
+
 
 ; 支持命令行 /D 参数覆盖（build.py 传递 /DMyDistDir=... /DOutputSuffix=... /DMyMode=...）
 ; 默认路径指向 build/dist/（独立编译时使用，build.py 会通过 /D 覆盖为 build/dist_cpu/... 等）
 #ifndef MyDistDir
-  #define MyDistDir          "build\dist\VAI_E_SmartAnnotator"
+  #define MyDistDir          "build\dist\BrilliantAnnotator"
 #endif
 #ifndef OutputSuffix
   #define OutputSuffix       ""
@@ -29,7 +30,7 @@
 
 [Setup]
 ; 应用信息
-AppId={{CFSoft-VAI-E-SmartAnnotator}}
+AppId={{BrilliantAnnotator}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -50,8 +51,8 @@ UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 ; 输出配置（安装程序输出到 build/installer_output/）
-OutputDir=build\installer_output
-OutputBaseFilename=VAI_E_SmartAnnotator_Setup{#OutputSuffix}
+OutputBaseFilename=BrilliantAnnotator_Setup{#OutputSuffix}
+OutputBaseFilename= {#OutputSuffix}
 SetupIconFile=app.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -61,8 +62,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 ; 版本信息（与 version_manager.py 一致）
 VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription={#MyAppDescription}
-VersionInfoProductName=VAI_E
+VersionInfoProductName=BrilliantAnnotator
 VersionInfoProductVersion=1.2.0.0
 VersionInfoVersion=1.2.0.0
 

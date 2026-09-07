@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "BrilliantAnnotator 运行时架构",
+    "subtitle": "PySide6 智能标注工具 · LabelMe ↔ YOLO 转换 · ONNX 自动标注",
+    "locale": "zh-CN",
+    "output": "brilliant_annotator_architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "task-path",
+        "label": "任务主链路",
+        "focus": [
+          "user",
+          "entry",
+          "mainwin",
+          "workers",
+          "core"
+        ],
+        "note": "从启动到 QThread 后台线程执行算法的主链路。"
+      },
+      {
+        "id": "inference",
+        "label": "推理链路",
+        "focus": [
+          "model",
+          "onnxrt",
+          "core",
+          "workers"
+        ],
+        "note": "ONNX 模型经 onnxruntime CPU/CUDA EP 推理并按类别过滤。"
+      },
+      {
+        "id": "data",
+        "label": "数据链路",
+        "focus": [
+          "files",
+          "opencv",
+          "core"
+        ],
+        "note": "LabelMe JSON 与 YOLO TXT 双向流转，视频抽帧进入标注。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "标注员",
+      "sublabel": "桌面用户",
+      "pos": [
+        40,
+        290
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "entry",
+      "type": "frontend",
+      "label": "main.py 入口",
+      "sublabel": "QApplication",
+      "tag": "python -m smart_annotator",
+      "pos": [
+        210,
+        288
+      ],
+      "size": [
+        130,
+        64
+      ]
+    },
+    {
+      "id": "mainwin",
+      "type": "frontend",
+      "label": "MainWindow 主窗口",
+      "sublabel": "app.py · 三栏标注编辑器",
+      "pos": [
+        410,
+        288
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "widgets",
+      "type": "frontend",
+      "label": "widgets/ 公共控件",
+      "sublabel": "画布 · 文件列表 · 类别选择",
+      "pos": [
+        430,
+        470
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "workers",
+      "type": "backend",
+      "label": "workers/ 线程层",
+      "sublabel": "QThread · 转换/标注/分析",
+      "pos": [
+        640,
+        288
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "core/ 算法层",
+      "sublabel": "转换 · 自动标注 · 无 Qt 依赖",
+      "pos": [
+        860,
+        288
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "utils",
+      "type": "backend",
+      "label": "utils/ 工具层",
+      "sublabel": "日志 · 文件扫描",
+      "pos": [
+        210,
+        470
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "model",
+      "type": "external",
+      "label": "ONNX 模型",
+      "sublabel": ".onnx 权重文件",
+      "pos": [
+        630,
+        110
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "onnxrt",
+      "type": "cloud",
+      "label": "ONNX Runtime",
+      "sublabel": "CPU EP / CUDA EP",
+      "tag": "onnxruntime 1.28",
+      "pos": [
+        860,
+        110
+      ],
+      "size": [
+        160,
+        60
+      ]
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "标注数据文件",
+      "sublabel": "LabelMe JSON · YOLO TXT",
+      "pos": [
+        1090,
+        288
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "opencv",
+      "type": "external",
+      "label": "OpenCV",
+      "sublabel": "视频抽帧 · 图像解码",
+      "pos": [
+        1060,
+        470
+      ],
+      "size": [
+        160,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "PySide6 桌面应用（smart_annotator 包）",
+      "wraps": [
+        "entry",
+        "mainwin",
+        "widgets",
+        "workers",
+        "core",
+        "utils"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-to-entry",
+      "from": "user",
+      "to": "entry",
+      "label": "启动",
+      "variant": "emphasis"
+    },
+    {
+      "id": "entry-to-mainwin",
+      "from": "entry",
+      "to": "mainwin",
+      "label": "MainWindow()"
+    },
+    {
+      "id": "mainwin-to-widgets",
+      "from": "mainwin",
+      "to": "widgets",
+      "label": "渲染 / 交互",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "mainwin-to-workers",
+      "from": "mainwin",
+      "to": "workers",
+      "label": "派发任务"
+    },
+    {
+      "id": "workers-to-mainwin",
+      "from": "workers",
+      "to": "mainwin",
+      "label": "进度 / 完成 / 错误",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "workers-to-core",
+      "from": "workers",
+      "to": "core",
+      "label": "调用算法"
+    },
+    {
+      "id": "core-to-onnxrt",
+      "from": "core",
+      "to": "onnxrt",
+      "label": "predict()",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "model-to-onnxrt",
+      "from": "model",
+      "to": "onnxrt",
+      "label": "加载 .onnx"
+    },
+    {
+      "id": "core-to-files",
+      "from": "core",
+      "to": "files",
+      "label": "读写标注"
+    },
+    {
+      "id": "core-to-opencv",
+      "from": "core",
+      "to": "opencv",
+      "label": "视频抽帧",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "mainwin-to-utils",
+      "from": "mainwin",
+      "to": "utils",
+      "label": "日志 / 文件扫描",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "界面层",
+      "items": [
+        "PySide6 6.11.1 · Python 3.12.10 严格锁定",
+        "三栏标注编辑器，QListView 虚拟化万级文件秒开",
+        "类别选择 → selected_classes 过滤推理结果"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "并发与算法",
+      "items": [
+        "BaseWorker(QThread) 信号驱动进度 / 日志 / 错误，UI 不阻塞",
+        "core/ 纯 Python 无 Qt 依赖，可独立测试",
+        "LabelMe JSON ↔ YOLO TXT 双向转换"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "推理后端",
+      "items": [
+        "onnxruntime 1.28 CPU / CUDA EP 双模式",
+        "启动时自动注册 pip 包内 CUDA 运行库 DLL",
+        "conf / nms / 类别过滤输出 LabelMe 标注"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "数据与输入",
+      "items": [
+        "DETECT / POSE / SEGMENT / OCR 四种任务模式",
+        "OpenCV 视频抽帧（帧间隔 / 差异阈值可调）",
+        "JSON 配置导入导出，兼容旧版 camelCase 键"
+      ]
+    }
+  ]
+}

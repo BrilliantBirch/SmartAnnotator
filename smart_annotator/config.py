@@ -22,7 +22,7 @@ from typing import Any
 
 
 # ===== 应用级常量 =====
-__APPNAME__ = "VAI_E_SmartAnnotator"
+__APPNAME__ = "BrilliantAnnotator"
 __VERSION__ = "1.2.0"
 LABELME_VERSION = "5.4.1"
 RANDOM_SEED = 42

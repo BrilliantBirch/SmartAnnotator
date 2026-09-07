@@ -1,4 +1,4 @@
-# VAI_E_SmartAnnotator 依赖列表
+# BrilliantAnnotator 依赖列表
 # Python 3.12.10 | 严格锁定版本，禁止自行升级或降级
 
 # GUI 框架
