@@ -10,7 +10,6 @@
 """
 
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel, QWidget, QLayout
-from PySide6.QtCore import Qt
 
 
 class Card(QFrame):

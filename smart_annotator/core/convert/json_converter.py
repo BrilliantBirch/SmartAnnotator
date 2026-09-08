@@ -19,7 +19,6 @@ from smart_annotator.config import LABELME_VERSION, ConvertConfig, MODE
 from smart_annotator.utils import LOGGER
 from pathlib import Path
 import shutil
-import os
 import cv2
 import numpy as np
 

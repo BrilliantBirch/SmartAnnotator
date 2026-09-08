@@ -13,7 +13,7 @@
 创建日期: 2026-09-02
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QListWidget
 
 

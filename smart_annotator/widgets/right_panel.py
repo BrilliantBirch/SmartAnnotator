@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-右侧信息栏控件 - RightPanel 聚合面板（内含 LabelSection / ObjectSection /
-FileSection 三分区）
+右侧信息栏控件 - 三个独立分区控件（LabelSection / ObjectSection /
+FileSection）
 
-主窗口右侧以单一 QDockWidget 承载 RightPanel 聚合面板：面板内部为垂直
-QSplitter，纵向装载三个分区控件——
+主窗口右侧以三个独立 QDockWidget 分别承载三个分区控件（纵向堆叠）——
     - LabelSection（标签列表）：工作路径下全部标签（单击/双击设为当前
       绘制标签）
     - ObjectSection（对象列表，标题"对象"）：当前图片上的全部标注对象
@@ -14,10 +13,10 @@ QSplitter，纵向装载三个分区控件——
       （FileSearchProxyModel 按文件名/标签/已标注状态实时过滤）与
       "无匹配文件"空态提示
 
-面板整体宽度由 Dock 分隔条拖拽调节；分区相对高度由面板内部分隔条
-拖拽调节（每个分区构造时强制 96px 最小高度拖拽下限，防止折叠消失）。
-三个分区实例由主窗口创建并持引用后传入 RightPanel（同名属性暴露），
-列表选择等交互经信号对外发射，由主窗口统一处理，保持面板与画布联动。
+Dock 纵向堆叠时高度由 Dock 间分隔条拖拽调节；挂靠左右边界时宽度由
+Dock 与中央控件间分隔条拖拽调节。每个分区构造时强制 96px 最小高度与
+180px 最小宽度（拖拽下限，防止分区被拖到不可用）。分区交互经信号对外
+发射，由主窗口统一处理，保持列表与画布联动。
 
 作者: BaiBinnan
 创建日期: 2026-09-02
@@ -48,17 +47,25 @@ QSplitter，纵向装载三个分区控件——
       LabelSection / ObjectSection / FileSection（各设 objectName 与
       180px 最小宽度，由主窗口三个 QDockWidget 分别承载，宽度由 Dock
       分隔条调节）
-更新: 2026-09-08 恢复 RightPanel 聚合面板（主窗口以单一 QDockWidget
-      承载：构造接收主窗口已建的三个分区实例并暴露同名属性，内部垂直
-      QSplitter 装载三分区，每分区强制 96px 最小高度防折叠；新增
-      sizes_changed 信号、set_section_heights/section_heights 高度记忆
-      与 set_section_visible 分区显隐）；FileSection 新增
-      file_edit_requested 双击编辑信号
+更新: 2026-09-08 三分区再次独立 Dock 化：删除 RightPanel 聚合面板与
+      宽度边界常量（主窗口以三个 QDockWidget 分别承载三分区，纵向
+      堆叠高度由 Dock 间分隔条拖拽调节、挂靠左右边界时宽度由 Dock
+      与中央控件间分隔条拖拽调节，布局状态统一由 dock_state 持久化，
+      高度记忆 sizes_changed/宽度上限随之移除）；_Section 统一 96px
+      最小高度（Dock 堆叠拖拽下限防折叠）与 180px 最小宽度
+更新: 2026-09-08 对象列表交互增强：新增双击条目编辑（复用右键"编辑"
+      链路 edit_object_requested：主窗口进入编辑模式 + 属性弹窗，与
+      单击选择互不冲突）；新增内部拖拽排序（_ObjectListWidget
+      InternalMove + Move 动作，dropEvent 屏蔽中间态噪声信号并延后
+      到事件循环下一拍收尾——覆盖"插入落点副本 + startDrag 删源行"
+      两步重排）；形状下标改存条目 UserRole 数据（拖放副本经 mime
+      编解码保留），收尾按 UserRole 重建行号映射，重排经新增
+      objects_reordered 信号通知主窗口同步重排画布形状
 """
 
 from typing import List
 
-from PySide6.QtCore import Qt, Signal, QEvent, QItemSelectionModel
+from PySide6.QtCore import Qt, Signal, QEvent, QItemSelectionModel, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QVBoxLayout,
@@ -71,16 +78,10 @@ from PySide6.QtWidgets import (
     QMenu,
     QAbstractItemView,
     QLineEdit,
-    QSplitter,
-    QWidget,
 )
 
 from .canvas import color_for_label
 from .file_list_model import FileListModel, FileSearchProxyModel
-
-# 聚合面板宽度边界（Dock 分隔条拖拽时受 RightPanel min/max 宽度约束）
-PANEL_MIN_WIDTH = 220
-PANEL_MAX_WIDTH = 800
 
 
 def _color_dot_icon(color: QColor) -> QIcon:
@@ -116,12 +117,13 @@ class _Section(QFrame):
     """
 
     def __init__(self, title: str, parent=None):
-        """初始化分区容器（边框/最小宽度/标题行）。"""
+        """初始化分区容器（边框/最小尺寸/标题行）。"""
         super().__init__(parent)
         self.setStyleSheet("QFrame { border: 1px solid #e4e4e7; border-radius: 8px; }")
-        # 最小宽度：防止 Dock 过窄导致列表不可用（不设最大宽度，
-        # 宽度由主窗口 Dock 分隔条拖拽调节）
-        self.setMinimumWidth(180)
+        # 最小尺寸：Dock 纵向堆叠时高度下限 96px、宽度下限 180px，
+        # 防止分隔条拖拽过度导致分区不可用（不设最大尺寸，堆叠高度与
+        # 挂靠宽度均由主窗口 Dock 分隔条拖拽调节）
+        self.setMinimumSize(180, 96)
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(8, 8, 8, 8)
         self.lay.setSpacing(6)
@@ -187,21 +189,71 @@ class LabelSection(_Section):
         self.label_selected.emit(item.text())
 
 
+class _ObjectListWidget(QListWidget):
+    """对象列表控件（QListWidget + 内部拖拽排序支持）。
+
+    InternalMove 拖放的完整重排分两步跨调用栈完成：dropEvent 内插入
+    落点副本，源行删除发生在拖放循环返回之后（QAbstractItemView
+    startDrag 的 clearOrRemove）。本控件在 dropEvent 期间屏蔽自身
+    信号（模型处于"副本+源行"中间态，itemChanged/selectionChanged
+    以旧映射解读会误发可见性/选中联动），并延后到事件循环下一拍统一
+    收尾，确保列表已是最终视觉顺序后再通知重排。
+
+    Signals:
+        order_dropped: 一次内部拖放落点完成（延后收尾由 ObjectSection
+            的 _finalize_order_drop 执行）。
+    """
+
+    order_dropped = Signal()
+
+    def dropEvent(self, event) -> None:
+        """拖放落点：屏蔽信号执行默认移动逻辑，延后到下一拍收尾。
+
+        Args:
+            event: 拖放事件。
+        """
+        self.blockSignals(True)
+        try:
+            super().dropEvent(event)
+        except Exception:  # pragma: no cover - 默认拖放异常时恢复信号防卡死
+            self.blockSignals(False)
+            raise
+        # 信号恢复与映射重建延后到 _finalize_order_drop（覆盖源行删除阶段）
+        QTimer.singleShot(0, self._finalize_order_drop)
+
+    def _finalize_order_drop(self) -> None:
+        """拖放收尾（事件循环下一拍执行）：恢复信号并通知排序完成。
+
+        此时源行删除（startDrag 的 clearOrRemove）已完成、列表处于
+        最终视觉顺序；信号恢复后发射 order_dropped，由 ObjectSection
+        重建行号映射并通知主窗口重排画布形状。
+        """
+        self.blockSignals(False)
+        self.order_dropped.emit()
+
+
 class ObjectSection(_Section):
     """对象列表分区：当前图片上的全部标注对象（含 point 形状）。
 
-    每项带可见性复选框与颜色圆点；支持多选（ExtendedSelection）与右键
-    上下文菜单（编辑属性/删除/进入编辑模式）。列表行号经 _object_indices
-    映射到 canvas.shapes() 的真实形状下标。
+    每项带可见性复选框与颜色圆点；支持多选（ExtendedSelection）、右键
+    上下文菜单（编辑属性/删除/进入编辑模式）、双击条目进入编辑模式
+    （复用右键"编辑"链路，与单击选择互不冲突）与内部拖拽排序（落点
+    经 _finalize_order_drop 重建映射后经 objects_reordered 通知主窗口
+    同步重排画布形状）。列表行号经 _object_indices 映射到
+    canvas.shapes() 的真实形状下标；形状下标同时存于条目 UserRole
+    数据（拖放副本经 mime 编解码保留，供重排后重建映射）。
 
     Signals:
         objects_selected(list): 用户选中对象集合变化（参数为形状下标列表）。
         shape_visibility_requested(int, bool): 用户切换对象列表项复选框
             （参数为形状下标与是否可见）。
-        edit_object_requested(int): 右键请求编辑指定对象（参数为形状下标）。
+        edit_object_requested(int): 右键"编辑"或双击条目请求编辑指定对象
+            （参数为形状下标；主窗口进入编辑模式并弹出属性编辑窗）。
         delete_objects_requested(list): 右键请求删除选中对象
             （参数为形状下标列表）。
         enter_edit_mode_requested: 右键请求进入编辑模式。
+        objects_reordered(list): 拖拽排序完成（参数为新视觉顺序的形状
+            下标列表，new_order[i] = 重排后第 i 行对应的原形状下标）。
     """
 
     # 参数为对象下标列表（object 签名避免 QVariantList 转换）
@@ -211,22 +263,34 @@ class ObjectSection(_Section):
     edit_object_requested = Signal(int)
     delete_objects_requested = Signal(object)
     enter_edit_mode_requested = Signal()
+    # 参数为新顺序形状下标列表（object 签名避免 QVariantList 转换）
+    objects_reordered = Signal(object)
 
     def __init__(self, parent=None):
-        """初始化对象列表分区（多选 + 可见性复选框 + 右键菜单）。"""
+        """初始化对象列表分区（多选 + 可见性复选框 + 右键菜单 + 双击编辑 + 拖拽排序）。"""
         super().__init__("对象", parent)
         self.setObjectName("objectSection")
         # 行号 → 形状下标映射（所有选中/编辑/删除交互均经此映射到
         # canvas.shapes() 的真实下标）
         self._object_indices: List[int] = []
 
-        self.list = QListWidget()
+        # _ObjectListWidget：支持 InternalMove 内部拖拽排序（dropEvent
+        # 屏蔽中间态噪声信号并延后收尾，见类注释）
+        self.list = _ObjectListWidget()
         self.list.setStyleSheet(
             "QListWidget { background-color: #fafafa; border: 0; }"
         )
         self.list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
+        # 拖拽排序：仅允许列表内部移动（不与外部部件交换数据），
+        # 强制 Move 动作保证拖放语义为"移动"而非"复制"
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        # 拖放落点收尾：重建行号 → 形状下标映射并通知主窗口重排画布
+        self.list.order_dropped.connect(self._on_order_dropped)
+        # 双击条目：进入该对象编辑模式（复用右键"编辑"链路）
+        self.list.itemDoubleClicked.connect(self._on_object_double_clicked)
         self.list.itemSelectionChanged.connect(
             self._on_object_selection_changed
         )
@@ -266,9 +330,57 @@ class ObjectSection(_Section):
             item.setCheckState(
                 Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked
             )
+            # 形状下标存入 UserRole：拖放副本经 mime 编解码保留该数据，
+            # 重排完成后按条目 UserRole 重建行号 → 形状下标映射
+            item.setData(Qt.ItemDataRole.UserRole, int(shape_index))
             lst.addItem(item)
             self._object_indices.append(int(shape_index))
         lst.blockSignals(False)
+
+    def _on_object_double_clicked(self, item: QListWidgetItem) -> None:
+        """双击条目：进入该对象编辑模式并弹出属性编辑窗。
+
+        复用右键"编辑"链路（edit_object_requested → 主窗口先切编辑
+        模式再弹属性窗）；双击的第一击已先行选中该行并同步画布选中，
+        单击选择功能不受影响。双击落点为条目文本区（复选框区双击
+        属快速连续切换可见性的边缘场景，不做特判）。
+
+        Args:
+            item: 被双击的列表项。
+        """
+        row = self.list.row(item)
+        if 0 <= row < len(self._object_indices):
+            self.edit_object_requested.emit(self._object_indices[row])
+
+    def _on_order_dropped(self) -> None:
+        """拖拽排序落点收尾：按最终视觉顺序重建映射并发射重排信号。
+
+        触发时列表已完成 InternalMove 的两步重排（落点副本插入 + 源
+        行删除），行序即用户期望的新顺序。按条目 UserRole 数据重建
+        行号 → 形状下标映射；重建结果须为画布形状下标的合法排列
+        （无重复缺失），且与收尾前的映射不一致（顺序确有变化）时才
+        发射——拖放到无效位置或拖放被视图忽略时列表顺序不变，跳过
+        以避免误发重排信号导致无意义置脏。
+        """
+        # 按最终视觉顺序从条目 UserRole 收集形状下标
+        rebuilt = []
+        for row in range(self.list.count()):
+            data = self.list.item(row).data(Qt.ItemDataRole.UserRole)
+            if data is None:
+                return  # 条目缺少下标数据（异常状态）：放弃本次重排
+            rebuilt.append(int(data))
+        # 合法性校验：须为 0..n-1 的完整排列
+        if sorted(rebuilt) != list(range(len(rebuilt))):
+            return
+        # 顺序未变化（无效拖放/拖放被忽略）：跳过，避免无意义置脏
+        if rebuilt == self._object_indices:
+            return
+        self._object_indices = rebuilt
+        # 拖放只改变顺序、不改变选中集合：画布选中按对象身份存储，
+        # 重排天然保持；源行删除阶段被屏蔽的列表选中变化有意丢弃，
+        # 后续 shapes_changed → _refresh_objects 会按画布选中恢复列表
+        # 选中态（拖动项保持选中）。
+        self.objects_reordered.emit(list(rebuilt))
 
     def _on_object_selection_changed(self) -> None:
         """对象列表选中集合变化：行号经映射转形状下标后发射。"""
@@ -547,106 +659,3 @@ class FileSection(_Section):
                 QAbstractItemView.ScrollHint.PositionAtCenter,
             )
 
-
-class RightPanel(QWidget):
-    """右侧信息栏聚合面板：垂直 QSplitter 纵向承载三个分区实例。
-
-    由主窗口以单一 QDockWidget 承载本面板：整体宽度由 Dock 分隔条拖拽
-    调节，三个分区的相对高度由面板内部垂直 QSplitter 拖拽调节；每个
-    分区构造时强制 96px 最小高度（拖拽下限，防止分区被拖到不可见而
-    "消失"，与 setChildrenCollapsible(False) 构成双保险）。
-
-    三个分区实例由主窗口创建后传入（主窗口既有 self.label_section 等
-    引用无缝保留），本面板保存引用并暴露同名属性；分区显隐经
-    set_section_visible 控制（隐藏不丢数据），分区分隔条拖动经
-    sizes_changed 信号通知主窗口（主窗口防抖后持久化分区高度）。
-
-    Args:
-        label_section: 标签列表分区实例（LabelSection）。
-        object_section: 对象列表分区实例（ObjectSection）。
-        file_section: 文件列表分区实例（FileSection）。
-        parent: 父控件。
-
-    Signals:
-        sizes_changed: 分区分隔条被拖动（主窗口防抖后落盘分区高度）。
-    """
-
-    # 分区分隔条拖动（主窗口防抖后持久化分区高度）
-    sizes_changed = Signal()
-
-    def __init__(self, label_section, object_section, file_section, parent=None):
-        """初始化聚合面板（垂直 QSplitter 装载三分区并设最小高度）。"""
-        super().__init__(parent)
-        self.setObjectName("rightPanel")
-        # 面板宽度边界：Dock 分隔条拖拽时受此约束（响应及时、边界准确）
-        self.setMinimumWidth(PANEL_MIN_WIDTH)
-        self.setMaximumWidth(PANEL_MAX_WIDTH)
-        # 保存分区引用并暴露同名属性（主窗口既有引用无缝保留）
-        self.label_section = label_section
-        self.object_section = object_section
-        self.file_section = file_section
-
-        # 外层零边距布局内嵌垂直分栏（分区相对高度拖拽调节）
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.splitter = QSplitter(Qt.Orientation.Vertical, self)
-        self.splitter.setHandleWidth(6)
-        # 禁止拖拽折叠（与分区最小高度双保险，分区不会被拖没）
-        self.splitter.setChildrenCollapsible(False)
-        # 三个分区加入分栏，并统一强制 96px 最小高度（拖拽下限，防止
-        # 折叠消失；设在本处而非 Section 类内，分区独立使用时不受约束）
-        for section in (self.label_section, self.object_section, self.file_section):
-            section.setMinimumHeight(96)
-            self.splitter.addWidget(section)
-        outer.addWidget(self.splitter)
-
-        # 分区分隔条拖动完成即通知主窗口（防抖后落盘分区高度）
-        self.splitter.splitterMoved.connect(self._on_splitter_moved)
-
-    def _on_splitter_moved(self, pos: int, index: int) -> None:
-        """分区分隔条拖动：转发为 sizes_changed 信号。
-
-        Args:
-            pos: 分隔条新位置。
-            index: 被拖动的分隔条下标。
-        """
-        self.sizes_changed.emit()
-
-    def set_section_visible(self, name: str, visible: bool) -> None:
-        """设置指定分区显隐（仅视觉隐藏，不影响分区数据）。
-
-        Args:
-            name: 分区名称，"labels"=标签列表 / "objects"=对象列表 /
-                "files"=文件列表。
-            visible: 是否显示。
-
-        Raises:
-            ValueError: name 不在 labels/objects/files 之中。
-        """
-        sections = {
-            "labels": self.label_section,
-            "objects": self.object_section,
-            "files": self.file_section,
-        }
-        if name not in sections:
-            raise ValueError(f"未知分区名称: {name}（可选 labels/objects/files）")
-        sections[name].setVisible(visible)
-
-    def set_section_heights(self, heights: List[int]) -> None:
-        """设置三个分区的相对高度（主窗口启动时恢复记忆高度）。
-
-        Args:
-            heights: 长度为 3 的高度列表（标签/对象/文件分区）；长度不符
-                时忽略本次调用。
-        """
-        if len(heights) == 3:
-            self.splitter.setSizes(list(heights))
-
-    def section_heights(self) -> List[int]:
-        """返回三个分区的当前高度（主窗口关闭时记忆）。
-
-        Returns:
-            长度为 3 的高度列表（标签/对象/文件分区）。
-        """
-        return list(self.splitter.sizes())

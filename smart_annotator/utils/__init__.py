@@ -19,6 +19,9 @@
 更新: 2026-09-04 删除 logger.py（LogManager/文件轮转/stdout 重定向全部
       移除），LOGGER 定义内联本文件：logging.getLogger + 单控制台
       StreamHandler（stderr），不再输出本地日志文件
+更新: 2026-09-08 冗余清理：移除死函数 checkAnnotationFiles/
+      is_rect_inside/detect_anomalies/rotate_90_image 的导入与 __all__
+      导出（函数本体已删，全库零引用）
 """
 
 import logging
@@ -32,7 +35,6 @@ from .files import (
     getTxtFilesInDir,
     getImageFilesInDir,
     getVideoFilesInDir,
-    checkAnnotationFiles,
     move_files,
     getModelClasses,
     getModelTaskType,
@@ -41,8 +43,6 @@ from .files import (
 )
 from .tool import (
     is_point_in_box,
-    is_rect_inside,
-    detect_anomalies,
     classMapping,
     split_data,
     create_yaml,
@@ -52,7 +52,6 @@ from .tool import (
     segment_to_labelme,
     yolo_to_labelme,
     generate_labelme_file,
-    rotate_90_image,
 )
 
 # ===== 日志（标准库 logging，仅控制台输出）=====
@@ -110,15 +109,12 @@ __all__ = [
     "getTxtFilesInDir",
     "getImageFilesInDir",
     "getVideoFilesInDir",
-    "checkAnnotationFiles",
     "move_files",
     "getModelClasses",
     "getModelTaskType",
     "resolve_dataset_dirs",
     "scan_dataset_files",
     "is_point_in_box",
-    "is_rect_inside",
-    "detect_anomalies",
     "classMapping",
     "split_data",
     "create_yaml",
@@ -128,5 +124,4 @@ __all__ = [
     "segment_to_labelme",
     "yolo_to_labelme",
     "generate_labelme_file",
-    "rotate_90_image",
 ]

@@ -46,6 +46,13 @@
       虚线十字延长线（_GUIDE_PEN/_guide_items，点工具不画）；绘制中顶点
       标记改回圆点（白 2px 描边 + 深灰填充）；删除 _make_crosshair 及
       QPainterPath/QGraphicsPathItem 导入
+更新: 2026-09-08 新增 reorder_shapes 形状重排（对象列表拖拽排序联动）：
+      按 new_order 排列保持字典对象身份不变（选中集合/_visible 键不受
+      影响），入撤销栈可 Ctrl+Z 恢复，非法排列与原序一致时忽略
+更新: 2026-09-08 形状文本防重叠与阴影可调：文本锚点由"第一个点上方"
+      改为形状包围盒左上角外侧固定偏移（_TEXT_OFFSET 像素间隙，文字
+      左缘对齐框左缘，恒不与框体重叠）；阴影不透明度改取渲染配置
+      text_shadow_opacity（0-100，0=无阴影，黑色阴影 + setOpacity）
 """
 
 import copy
@@ -58,7 +65,6 @@ from PySide6.QtGui import (
     QBrush,
     QPixmap,
     QPolygonF,
-    QCursor,
     QPainter,
     QFont,
 )
@@ -109,6 +115,8 @@ _MAX_UNDO = 50
 _PASTE_OFFSET = 10.0
 # 形状描述文本在图像上的显示截断长度（超过则用 .. 截断）
 _OCR_TRUNCATE = 32
+# 形状文本与包围盒左上角的固定垂直间隙（像素，保证文字在框外不重叠）
+_TEXT_OFFSET = 4.0
 
 
 def color_for_label(label: str) -> QColor:
@@ -481,6 +489,32 @@ class Canvas(QGraphicsView):
         self.shapes_changed.emit()
         self.selection_changed.emit(self.selected_shapes())
 
+    def reorder_shapes(self, new_order: List[int]) -> None:
+        """按新顺序重排形状列表（对象列表拖拽排序联动）。
+
+        仅按 new_order 重排列表引用（不深拷贝），形状字典对象身份
+        保持不变——选中集合（按对象 id 记录）与 "_visible" 运行时键
+        均不受影响；重排视为一次可撤销修改（入撤销栈，可 Ctrl+Z
+        恢复原顺序），列表顺序即标注 JSON 的保存顺序。
+
+        Args:
+            new_order: 新顺序下标列表（new_order[i] = 重排后第 i 个
+                形状在原列表中的下标）；非法（非 0..n-1 的完整排列）
+                或与原顺序一致时忽略本次调用。
+        """
+        n = len(self._shapes)
+        # 合法性校验：须为 0..n-1 的完整排列（拖放中间态/异常数据直接忽略）
+        if sorted(new_order) != list(range(n)):
+            return
+        # 顺序未变化（无效拖放）：无操作，不置脏不入撤销栈
+        if new_order == list(range(n)):
+            return
+        # 入撤销栈后按新顺序重排（保持字典对象引用不变）
+        self._push_undo()
+        self._shapes = [self._shapes[i] for i in new_order]
+        self._render()
+        self.shapes_changed.emit()
+
     # -------------------------- 撤销 / 重做 --------------------------
     def _snapshot(self) -> List[Dict]:
         """返回当前形状列表的深拷贝快照。"""
@@ -778,12 +812,15 @@ class Canvas(QGraphicsView):
         self._highlight_selection()
 
     def _maybe_add_shape_text(self, shape: Dict) -> None:
-        """按渲染配置在形状第一个点上方渲染文本（标签/组号/描述，多行）。
+        """按渲染配置在形状包围盒左上方渲染文本（标签/组号/描述，多行）。
 
         - 标签：show_label 开且 label 非空；label 为 "text"（OCR 形状）时跳过
         - 组号：show_group 开且 group_id 非 None，显示 "G{group_id}"
         - 描述：show_description 开且非空，超过 _OCR_TRUNCATE 字符截断加 ".."
         - 全部关闭或无内容时不渲染；文本颜色与标签色一致，字号取配置。
+        - 文本锚点固定在形状包围盒左上角外侧（向上偏移 _TEXT_OFFSET
+          像素间隙），与标注框不重叠。
+        - 阴影不透明度取配置 text_shadow_opacity（0-100，0 = 无阴影）。
         - 纯显示效果：不改变标注数据。
 
         Args:
@@ -810,24 +847,34 @@ class Canvas(QGraphicsView):
         points = shape.get("points") or []
         if not points:
             return
+        # 包围盒（顶点最小/最大 x/y）：文本锚定其左上角外侧
+        bbox = self._points_bbox(points)
+        if bbox is None:
+            return
         # 多行文本（HTML 换行），颜色与标签色一致
         html = "<br>".join(p.replace("<", "&lt;").replace(">", "&gt;") for p in parts)
         text_item = QGraphicsTextItem()
         font = QFont()
         font.setPointSizeF(float(cfg.font_size))
         text_item.setFont(font)
-        # 文本投影：轻微黑色阴影提升在任意底色图像上的可读性
+        # 文本投影：黑色阴影提升在任意底色图像上的可读性，
+        # 透明度由阴影色 alpha 承载（配置 0-100 → alpha 0-255，0 = 无阴影）
         eff = QGraphicsDropShadowEffect(text_item)
         eff.setBlurRadius(3)
         eff.setOffset(1, 1)
-        eff.setColor(QColor(0, 0, 0, 140))
+        eff.setColor(
+            QColor(0, 0, 0, int(round(255 * max(0, min(100, cfg.text_shadow_opacity)) / 100.0)))
+        )
         text_item.setGraphicsEffect(eff)
         text_item.setHtml(
             f'<span style="color:{color_for_label(str(shape.get("label", "") or "")).name()};">{html}</span>'
         )
+        # 固定偏移定位：包围盒左上角外侧（向上让出文本高度 + 间隙），
+        # 文字左缘与标注框左缘对齐，恒不与框体重叠
+        text_height = text_item.boundingRect().height()
         text_item.setPos(
-            float(points[0][0]),
-            float(points[0][1]) - (float(cfg.font_size) + 4),
+            bbox.left(),
+            bbox.top() - text_height - _TEXT_OFFSET,
         )
         text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(text_item)

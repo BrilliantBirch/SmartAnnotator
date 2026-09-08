@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtGui import QFont
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal
 
 from .base_page import BasePage
 from ..widgets.buttons import PrimaryButton, SecondaryButton

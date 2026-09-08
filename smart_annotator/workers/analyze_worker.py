@@ -13,10 +13,7 @@ from PySide6.QtCore import Signal, QMutexLocker
 
 from smart_annotator.utils import LOGGER
 from .base_worker import BaseWorker
-from smart_annotator.core.convert.dataset_analyzer import (
-    analyze_dataset,
-    DatasetAnalysis,
-)
+from smart_annotator.core.convert.dataset_analyzer import analyze_dataset
 
 
 class AnalyzeWorker(BaseWorker):

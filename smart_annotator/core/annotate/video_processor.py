@@ -13,7 +13,7 @@
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Optional, Generator
+from typing import List, Tuple, Generator
 
 # 损坏视频判定：连续读取 N 帧位不前进即视为损坏（防死循环）
 _STUCK_POS_LIMIT = 5

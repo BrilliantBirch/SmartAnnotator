@@ -36,10 +36,12 @@ LabelMe JSON 格式读写模块
 更新: 2026-09-04 collect_labels_from_files 返回值新增 shape_counts 分组计数
       （rectangle/point/polygon，分组规则与 dataset_analyzer 一致），
       供主窗口导出前置统计复用（推断任务类型与预填类别）
+更新: 2026-09-08 冗余清理：删除全库零引用的死函数 document_labels
+      （文档标签提取，与 collect_labels_from_files 的扫描链路功能重复）
+      与未使用 import Path
 """
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from smart_annotator.config import LABELME_VERSION
@@ -155,20 +157,6 @@ def document_shapes(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
         形状字典列表。
     """
     return list(doc.get("shapes", []) or [])
-
-
-def document_labels(doc: Dict[str, Any]) -> List[str]:
-    """提取文档中出现的所有标签名（去重、按字典序排序）。
-
-    Args:
-        doc: labelme 文档字典。
-
-    Returns:
-        标签名列表。
-    """
-    labels = {shape.get("label", "") for shape in document_shapes(doc)}
-    labels.discard("")
-    return sorted(labels)
 
 
 def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> None:

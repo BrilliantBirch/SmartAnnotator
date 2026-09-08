@@ -24,7 +24,6 @@ from smart_annotator.core.convert.json_converter import _safe_copy
 from typing import List, Tuple, Set
 from pathlib import Path
 import random
-import shutil
 import json
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont

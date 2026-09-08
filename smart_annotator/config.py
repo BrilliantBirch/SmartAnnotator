@@ -25,12 +25,15 @@
       服务它们的 _read_int 辅助；新增 DEFAULT_SHORTCUTS 默认快捷键表
       与 ShortcutsConfig dataclass（action_id 白名单过滤，键序列合法
       性由应用层经 QKeySequence 校验）
-更新: 2026-09-08 RenderConfig 恢复三分区高度字段 label_list_height/
-      object_list_height/file_list_height（默认 180/180/280，整型校验
-      越界钳制 [80,2000]，QSplitter 拖拽调整，随渲染配置持久化），并
-      新增 auto_save 自动保存开关（文件菜单勾选，默认开启，切换图片
-      时自动落盘当前标注）；to_dict/from_dict 同步补键，废弃键清单
-      移除三高度键（保留 panel_width/kpt_list_height）
+更新: 2026-09-08 RenderConfig 布局字段收口：删除三分区高度字段
+      label_list_height/object_list_height/file_list_height 与
+      right_panel_width（三分区独立 Dock 化后，Dock 堆叠高度与挂靠
+      宽度统一由 dock_state 持久化承担，旧 JSON 键由 from_dict 静默
+      忽略）；保留 auto_save 自动保存开关（默认开启，切换图片时自动
+      落盘当前标注）
+更新: 2026-09-08 RenderConfig 新增 text_shadow_opacity（形状标签文本
+      阴影不透明度，0-100 整型校验越界钳制，默认 45 与原硬编码视觉
+      一致；视图菜单档位可调，随配置持久化）
 """
 
 from dataclasses import dataclass, field
@@ -263,8 +266,8 @@ class SysConfig:
 class RenderConfig:
     """画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator/render_config.json）。
 
-    窗口布局（dock_state）与三分区高度、自动保存开关均随渲染配置
-    持久化，启动时恢复。
+    窗口布局（dock_state，含三个列表 Dock 的位置/堆叠高度/挂靠宽度/
+    显隐）与自动保存开关均随渲染配置持久化，启动时恢复。
 
     Attributes:
         show_label: 是否在画布渲染形状标签文本。
@@ -277,14 +280,11 @@ class RenderConfig:
         point_size: 关键点准星臂长（场景单位，钳制 [1.0, 20.0]）。
         opacity: 多边形填充不透明度（0.0-1.0）。
         font_size: 渲染文本字号（磅）。
-        right_panel_width: 右侧对象面板宽度（Dock 分隔条拖拽，钳制
-            [220, 800]，启动时恢复）。
-        label_list_height: 标签列表分区高度（三分区高度，QSplitter 拖拽
-            调整，最小 80）。
-        object_list_height: 对象列表分区高度（同 label_list_height）。
-        file_list_height: 文件列表分区高度（同 label_list_height）。
+        text_shadow_opacity: 形状标签文本阴影不透明度（0-100，钳制；
+            0 = 不渲染阴影，100 = 全不透明阴影，随配置持久化）。
         dock_state: QMainWindow 布局状态（saveState 产物的 base64 字符串，
-            持久化顶部工具栏与对象面板 Dock 的位置/尺寸；空串 = 默认布局）。
+            持久化顶部工具栏与三个列表 Dock 的位置/尺寸/显隐；
+            空串 = 默认布局）。
         auto_scan_labels: 是否打开文件夹后自动启动标签扫描统计。
         auto_save: 自动保存（文件菜单勾选）默认开启，切换图片时自动
             落盘当前标注。
@@ -301,11 +301,8 @@ class RenderConfig:
     point_size: float = 4.0
     opacity: float = 0.3
     font_size: int = 12
-    # ===== 窗口布局状态（三分区高度 + Dock 布局 base64，QSplitter 拖拽调整）=====
-    label_list_height: int = 180  # 标签列表分区高度（最小 80）
-    object_list_height: int = 180  # 对象列表分区高度（最小 80）
-    file_list_height: int = 280  # 文件列表分区高度（最小 80）
-    right_panel_width: int = 320  # 右侧对象面板宽度（Dock 分隔条拖拽，钳制 [220, 800]）
+    text_shadow_opacity: int = 45  # 文本阴影不透明度（0-100，0=不渲染阴影）
+    # ===== 窗口布局状态（Dock 布局 base64，QMainWindow 拖拽调整）=====
     dock_state: str = ""  # QMainWindow 布局状态（saveState 产物 base64，空串=默认布局）
     # ===== 行为偏好（统计菜单"自动扫描"开关 / 文件菜单"自动保存"开关）=====
     auto_scan_labels: bool = False  # 打开文件夹后自动启动标签扫描统计
@@ -328,10 +325,7 @@ class RenderConfig:
             "point_size": self.point_size,
             "opacity": self.opacity,
             "font_size": self.font_size,
-            "label_list_height": self.label_list_height,
-            "object_list_height": self.object_list_height,
-            "file_list_height": self.file_list_height,
-            "right_panel_width": self.right_panel_width,
+            "text_shadow_opacity": self.text_shadow_opacity,
             "dock_state": self.dock_state,
             "auto_scan_labels": self.auto_scan_labels,
             "auto_save": self.auto_save,
@@ -343,9 +337,10 @@ class RenderConfig:
 
         逐字段校验类型（bool/int/float/str；bool 为 int 子类，整型校验需排除），
         数值越界时钳制到合法区间（opacity→[0,1]、pen_width→[0.5,10]、
-        point_size→[1.0,20.0]、font_size→[6,72]、三分区高度→[80,2000]）。
-        旧版 JSON 中的 panel_width/kpt_list_height 等已废弃键被静默
-        忽略，不报错。
+        point_size→[1.0,20.0]、font_size→[6,72]）。
+        旧版 JSON 中的 panel_width/kpt_list_height/label_list_height/
+        object_list_height/file_list_height/right_panel_width 等
+        已废弃键被静默忽略，不报错。
 
         Args:
             data: 字段名字典。
@@ -392,28 +387,12 @@ class RenderConfig:
         font_size = data.get("font_size")
         if isinstance(font_size, int) and not isinstance(font_size, bool):
             cfg.font_size = min(72, max(6, int(font_size)))
-        # 三分区高度：越界钳制 [80, 2000]
-        label_list_height = data.get("label_list_height")
-        if isinstance(label_list_height, int) and not isinstance(
-            label_list_height, bool
+        # 文本阴影不透明度：越界钳制 [0, 100]
+        text_shadow_opacity = data.get("text_shadow_opacity")
+        if isinstance(text_shadow_opacity, int) and not isinstance(
+            text_shadow_opacity, bool
         ):
-            cfg.label_list_height = min(2000, max(80, int(label_list_height)))
-        object_list_height = data.get("object_list_height")
-        if isinstance(object_list_height, int) and not isinstance(
-            object_list_height, bool
-        ):
-            cfg.object_list_height = min(2000, max(80, int(object_list_height)))
-        file_list_height = data.get("file_list_height")
-        if isinstance(file_list_height, int) and not isinstance(
-            file_list_height, bool
-        ):
-            cfg.file_list_height = min(2000, max(80, int(file_list_height)))
-        # 右侧面板宽度：越界钳制 [220, 800]（与 RightPanel 拖拽边界一致）
-        right_panel_width = data.get("right_panel_width")
-        if isinstance(right_panel_width, int) and not isinstance(
-            right_panel_width, bool
-        ):
-            cfg.right_panel_width = min(800, max(220, int(right_panel_width)))
+            cfg.text_shadow_opacity = min(100, max(0, int(text_shadow_opacity)))
 
         # ===== 字符串字段校验（窗口布局状态 base64，非法类型回退空串） =====
         if isinstance(data.get("dock_state"), str):

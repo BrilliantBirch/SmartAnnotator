@@ -5,10 +5,11 @@
 主体布局（参考 labelme / X-Anylabel）：
     - 顶部：快捷操作栏（LeftToolbar，QToolBar）—— 文件操作/标注工具
     - 中央：标注画布（Canvas）—— 图像显示 + 标注绘制/编辑
-    - 右侧：对象面板 Dock（QDockWidget 承载 RightPanel 聚合面板）——
-      内部垂直分栏装载标签列表/对象列表/文件列表（LabelSection/
-      ObjectSection/FileSection，可移动/浮动/关闭；面板整体与 Dock 的
-      位置/尺寸、三分区相对高度均随渲染配置持久化）
+    - 右侧：三个列表 Dock（QDockWidget 分别承载 LabelSection/
+      ObjectSection/FileSection，纵向堆叠）——堆叠高度由 Dock 间分隔条
+      拖拽调节、挂靠左右边界时宽度由 Dock 与中央控件间分隔条拖拽调节，
+      可移动/浮动/关闭；Dock 布局（位置/尺寸/显隐）随渲染配置
+      dock_state 持久化
 
 标准菜单栏（文件/编辑/视图/工具/统计/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
@@ -121,6 +122,24 @@
       即时受约束）；新增 RenderConfig.right_panel_width 字段（钳制
       [220, 800]），启动经 resizeDocks 恢复宽度、closeEvent 落盘
       right_panel.width()，布局偏好重启后完整还原
+更新: 2026-09-08 三分区再次独立 Dock 化：删除 RightPanel 聚合面板与
+      rightPanelDock，三分区控件（LabelSection/ObjectSection/
+      FileSection）分别装入 labelDock/objectDock/fileDock（右区依次
+      addDockWidget 纵向堆叠，Dock 间分隔条拖拽调堆叠高度、挂靠左右
+      边界时 Dock 与中央控件间分隔条拖拽调宽度）；视图菜单改为三个
+      Dock 的 toggleViewAction（"显示标签列表/显示对象列表/显示文件
+      列表"，勾选态随 dock_state 持久化）；删除三分区高度记忆与
+      right_panel_width 链路（_on_right_sizes_changed/resizeDocks
+      恢复/closeEvent 落盘），布局位置/尺寸/显隐统一由 dock_state
+      承担，无记忆状态时经 resizeDocks 设默认初始尺寸
+更新: 2026-09-08 对象列表交互增强：双击条目进入编辑模式（复用
+      edit_object_requested → _on_edit_object 链路：切编辑模式 + 属性
+      弹窗）；新增拖拽排序链路 objects_reordered → _on_objects_reordered
+      → canvas.reorder_shapes（列表顺序即画布形状顺序，置脏与列表
+      刷新经 shapes_changed 自动完成，画布选中集合保持）
+更新: 2026-09-08 视图菜单新增"阴影不透明度"档位子菜单（0/20/40/60/
+      80/100，控制形状文本阴影清晰度；0=无阴影），档位写入
+      RenderConfig.text_shadow_opacity 随配置持久化，启动自动恢复
 """
 
 import json
@@ -149,7 +168,7 @@ from PySide6.QtWidgets import (
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
-from .config import SysConfig, RenderConfig, DEVICE, DEFAULT_SHORTCUTS
+from .config import SysConfig, RenderConfig, DEFAULT_SHORTCUTS
 from .core import labelme_io
 from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir, getVideoFilesInDir
 from .utils.render_store import load_render_config, save_render_config, load_shortcuts, save_shortcuts
@@ -163,7 +182,7 @@ from .widgets.left_toolbar import (
     TOOL_POINT,
     TOOL_POLYGON,
 )
-from .widgets import FileSection, LabelSection, ObjectSection, RightPanel
+from .widgets import FileSection, LabelSection, ObjectSection
 from .widgets.canvas import Canvas, color_for_label
 from .widgets.shape_dialog import ShapeDialog
 from .widgets.scan_stats_dialog import ScanProgressDialog, ScanStatsDialog
@@ -411,6 +430,13 @@ class MainWindow(QMainWindow):
             "font_size",
         ))
 
+        # 阴影不透明度档位（互斥单选，控制形状文本阴影清晰度；0 = 无阴影）
+        menu_view.addMenu(self._build_render_option_menu(
+            "阴影不透明度",
+            [("0", 0), ("20%", 20), ("40%", 40), ("60%", 60), ("80%", 80), ("100%", 100)],
+            "text_shadow_opacity",
+        ))
+
         # 关键点大小档位（互斥单选，控制关键点准星臂长）
         menu_view.addMenu(self._build_render_option_menu(
             "关键点大小",
@@ -644,82 +670,77 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas()
         self.setCentralWidget(self.canvas)
 
-        # 右侧对象面板：单一 QDockWidget 承载 RightPanel 聚合面板（内部
-        # 垂直 QSplitter 装载三分区，分区相对高度由面板内分隔条拖拽调节，
-        # 面板整体宽度由 Dock 分隔条拖拽调节；可移动/浮动/关闭）。
+        # 右侧三个列表 Dock：三分区控件分别由独立 QDockWidget 承载，
+        # 纵向堆叠于右区——堆叠高度由 Dock 间分隔条拖拽调节，挂靠左右
+        # 边界时宽度由 Dock 与中央控件间分隔条拖拽调节（QMainWindow
+        # 原生行为）；可移动/浮动/关闭。
         # objectName 为 saveState/restoreState 序列化布局的唯一标识，
         # 缺失会告警且无法恢复
         self.label_section = LabelSection()
         self.object_section = ObjectSection()
         self.file_section = FileSection()
-        self.right_panel = RightPanel(self.label_section, self.object_section, self.file_section)
-        self.right_dock = QDockWidget("对象面板", self)
-        self.right_dock.setObjectName("rightPanelDock")
-        self.right_dock.setFeatures(
+        # Dock 特性统一：可移动/浮动/关闭（用户可自由重排三列表布局）
+        dock_features = (
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
-        self.right_dock.setWidget(self.right_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.right_dock)
+        self.label_dock = QDockWidget("标签列表", self)
+        self.label_dock.setObjectName("labelDock")
+        self.object_dock = QDockWidget("对象列表", self)
+        self.object_dock.setObjectName("objectDock")
+        self.file_dock = QDockWidget("文件列表", self)
+        self.file_dock.setObjectName("fileDock")
+        for dock, section in (
+            (self.label_dock, self.label_section),
+            (self.object_dock, self.object_section),
+            (self.file_dock, self.file_section),
+        ):
+            dock.setFeatures(dock_features)
+            dock.setWidget(section)
+            # 右区依次加入：同区域多 Dock 默认纵向堆叠
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
-        # 对象面板 Dock 显隐开关（QDockWidget 自带 toggleViewAction）加入
+        # 三个列表 Dock 显隐开关（QDockWidget 自带 toggleViewAction）加入
         # 视图菜单，勾选态随 QMainWindow 布局状态（dock_state）持久化
-        panel_toggle = self.right_dock.toggleViewAction()
-        panel_toggle.setText("显示对象面板")
-        panel_toggle.setToolTip("显示/隐藏右侧对象面板（Dock）")
-        self._menu_view.addAction(panel_toggle)
-
-        # 三分区显隐动作（隐藏不丢数据；先 setChecked 再 connect，防构建期
-        # toggled 误触发）
-        self.act_show_label_list = QAction("显示标签列表", self)
-        self.act_show_label_list.setCheckable(True)
-        self.act_show_label_list.setChecked(True)
-        self.act_show_label_list.toggled.connect(
-            lambda on: self.right_panel.set_section_visible("labels", on)
-        )
-        self._menu_view.addAction(self.act_show_label_list)
-
-        self.act_show_object_list = QAction("显示对象列表", self)
-        self.act_show_object_list.setCheckable(True)
-        self.act_show_object_list.setChecked(True)
-        self.act_show_object_list.toggled.connect(
-            lambda on: self.right_panel.set_section_visible("objects", on)
-        )
-        self._menu_view.addAction(self.act_show_object_list)
-
-        self.act_show_file_list = QAction("显示文件列表", self)
-        self.act_show_file_list.setCheckable(True)
-        self.act_show_file_list.setChecked(True)
-        self.act_show_file_list.toggled.connect(
-            lambda on: self.right_panel.set_section_visible("files", on)
-        )
-        self._menu_view.addAction(self.act_show_file_list)
+        for dock, text, tip in (
+            (self.label_dock, "显示标签列表", "显示/隐藏标签列表（Dock）"),
+            (self.object_dock, "显示对象列表", "显示/隐藏对象列表（Dock）"),
+            (self.file_dock, "显示文件列表", "显示/隐藏文件列表（Dock）"),
+        ):
+            toggle = dock.toggleViewAction()
+            toggle.setText(text)
+            toggle.setToolTip(tip)
+            self._menu_view.addAction(toggle)
 
         # 应用持久化的窗口布局状态
         self._apply_panel_sizes()
 
     # -------------------------- 界面布局尺寸 --------------------------
     def _apply_panel_sizes(self) -> None:
-        """应用持久化的窗口布局状态（工具栏与对象面板 Dock、三分区高度）。"""
-        # 恢复工具栏与对象面板 Dock 的位置/尺寸（含浮窗几何）
+        """应用持久化的窗口布局状态（工具栏与三个列表 Dock 的位置/尺寸）。
+
+        dock_state 恢复后 Dock 的位置、堆叠高度、挂靠宽度与显隐一并
+        还原（QMainWindow saveState 序列化完整布局）；首次运行（配置
+        无状态字节）时按默认布局设初始尺寸：右区纵向堆叠三个 Dock
+        （高度 180/180/280）、面板宽度 320。
+        """
         self._restore_window_state()
-        # 恢复三分区相对高度（splitter 状态不在 saveState 内，restoreState
-        # 不会覆盖；放其后执行稳妥）
-        self.right_panel.set_section_heights(
-            [
-                self._render_config.label_list_height,
-                self._render_config.object_list_height,
-                self._render_config.file_list_height,
-            ]
-        )
-        # 恢复面板宽度（显式覆盖 dock_state 中的旧宽度；resizeDocks 受
-        # RightPanel min/max 宽度约束自动钳制到 [220, 800]）
-        self.resizeDocks(
-            [self.right_dock],
-            [self._render_config.right_panel_width],
-            Qt.Orientation.Horizontal,
-        )
+        # 无记忆状态（首次运行）：设默认初始尺寸（有记忆时不得覆盖
+        # restoreState 还原的用户自定义布局）
+        if not self._render_config.dock_state:
+            # 堆叠高度：右区纵向三 Dock 按序分配（与分区最小高度 96 双保险）
+            self.resizeDocks(
+                [self.label_dock, self.object_dock, self.file_dock],
+                [180, 180, 280],
+                Qt.Orientation.Vertical,
+            )
+            # 挂靠宽度：Dock 与中央画布间分隔条拖拽调节，此处设初始宽度
+            self.resizeDocks(
+                [self.label_dock, self.object_dock, self.file_dock],
+                [320, 320, 320],
+                Qt.Orientation.Horizontal,
+            )
 
     def _restore_window_state(self) -> None:
         """从渲染配置恢复 QMainWindow 布局状态（工具栏/Dock 位置与尺寸）。
@@ -750,17 +771,6 @@ class MainWindow(QMainWindow):
         except OSError as e:
             LOGGER.warning(f"渲染配置保存失败: {e}")
 
-    def _on_right_sizes_changed(self) -> None:
-        """右栏分区分隔条拖动：记忆三分区高度并防抖落盘。"""
-        heights = self.right_panel.section_heights()
-        if len(heights) != 3:
-            return
-        # 依序写入标签/对象/文件三分区高度字段（RenderConfig 持久化）
-        self._render_config.label_list_height = int(heights[0])
-        self._render_config.object_list_height = int(heights[1])
-        self._render_config.file_list_height = int(heights[2])
-        self._schedule_render_save()
-
     # -------------------------- 信号连接 --------------------------
     def _connect_signals(self) -> None:
         """连接工具栏、右栏、画布与菜单动作之间的信号。"""
@@ -774,9 +784,6 @@ class MainWindow(QMainWindow):
         self.left_toolbar.tool_selected.connect(self._on_tool_selected)
         # 工具栏"适应窗口"：画布适应窗口（连接时 canvas 已创建，无需延迟解析）
         self.left_toolbar.fit_requested.connect(self.canvas.fit_to_window)
-
-        # 右栏聚合面板：分区分隔条拖动 → 记忆三分区高度并防抖落盘
-        self.right_panel.sizes_changed.connect(self._on_right_sizes_changed)
 
         # 画布
         self.canvas.shapes_changed.connect(self._on_shapes_changed)
@@ -795,6 +802,8 @@ class MainWindow(QMainWindow):
         self.object_section.edit_object_requested.connect(self._on_edit_object)
         self.object_section.delete_objects_requested.connect(self._on_delete_objects)
         self.object_section.enter_edit_mode_requested.connect(self._enter_edit_mode)
+        # 对象列表拖拽排序：按新顺序重排画布形状（列表顺序即标注保存顺序）
+        self.object_section.objects_reordered.connect(self._on_objects_reordered)
         # 文件列表 Dock
         self.file_section.file_selected.connect(self._on_file_selected)
         # 文件列表双击：加载该图片并进入编辑模式
@@ -2046,6 +2055,20 @@ class MainWindow(QMainWindow):
         """
         self.canvas.select_shapes_by_indices(indices)
 
+    def _on_objects_reordered(self, new_order: list) -> None:
+        """对象列表拖拽排序完成：按新顺序重排画布形状。
+
+        列表新顺序即画布形状新顺序（标注 JSON 保存顺序随之变化）；
+        reorder_shapes 保持形状字典对象身份不变（画布选中集合不丢），
+        内部发射 shapes_changed → 自动置脏并刷新对象列表（重建为
+        与画布一致的恒等映射）。
+
+        Args:
+            new_order: 新视觉顺序的形状下标列表（new_order[i] = 重排后
+                第 i 个形状在原列表中的下标）。
+        """
+        self.canvas.reorder_shapes(new_order)
+
     def _on_shape_visibility_requested(self, index: int, visible: bool) -> None:
         """列表复选框切换：设置对应形状的渲染可见性（纯视图状态）。
 
@@ -2257,10 +2280,9 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             event.ignore()
             return
-        # 记录窗口布局状态（工具栏/对象面板 Dock 的位置与尺寸）随配置落盘
+        # 记录窗口布局状态（工具栏/三个列表 Dock 的位置、堆叠高度、
+        # 挂靠宽度与显隐）随配置落盘，启动时经 restoreState 完整还原
         self._render_config.dock_state = bytes(self.saveState().toBase64()).decode("ascii")
-        # 记录右侧面板宽度（用户拖拽分隔条自定义，启动时恢复）
-        self._render_config.right_panel_width = self.right_panel.width()
         # 防抖兜底：拖拽分栏后立即关闭窗口时确保尺寸配置落盘
         if self._render_save_timer.isActive():
             self._render_save_timer.stop()

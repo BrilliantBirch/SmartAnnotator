@@ -7,6 +7,9 @@
 作者: BaiBinnan
 创建日期: 2026-08-10
 更新: 2026-09-03 新增 getModelTaskType（按模型元数据/输出结构推导任务类型）
+更新: 2026-09-08 冗余清理：删除全库零引用的死函数 checkAnnotationFiles
+      （目录图片/标注对应性检查，无任何调用方；其内部使用的
+      resolve_dataset_dirs 链为 scan_dataset_files 活代码，保留）
 """
 
 import glob
@@ -157,43 +160,6 @@ def scan_dataset_files(input_dir) -> dict:
         "txt_files": getTxtFilesInDir(str(anno_dir)) if anno_dir else [],
         "image_files": getImageFilesInDir(str(image_dir)) if image_dir else [],
     }
-
-
-def checkAnnotationFiles(dirPath: str, type) -> tuple:
-    """检查目录下图片与标注文件是否一一对应，找出缺少图片的标注文件。
-
-    Args:
-        dirPath: 数据集目录。
-        type: "json"（LabelMe 平铺结构）或 "txt"（YOLO images/labels 结构）。
-
-    Returns:
-        (annotationFiles, imageFiles, lostAnnoFiles) 元组。
-    """
-    if type == "json":
-        imageFiles = getImageFilesInDir(dirPath)
-        annotationFiles = getJsonFilesInDir(dirPath)
-        image_basenames = {os.path.splitext(os.path.basename(f))[0] for f in imageFiles}
-        annotation_basenames = {
-            os.path.splitext(os.path.basename(f))[0] for f in annotationFiles
-        }
-        return (
-            annotationFiles,
-            imageFiles,
-            list(annotation_basenames - image_basenames),
-        )
-    elif type == "txt":
-        imageFiles = getImageFilesInDir(Path(dirPath) / "images")
-        annotationFiles = getTxtFilesInDir(Path(dirPath) / "labels")
-        image_basenames = {os.path.splitext(os.path.basename(f))[0] for f in imageFiles}
-        annotation_basenames = {
-            os.path.splitext(os.path.basename(f))[0] for f in annotationFiles
-        }
-        return (
-            annotationFiles,
-            imageFiles,
-            list(annotation_basenames - image_basenames),
-        )
-    return ([], [], [])
 
 
 def move_files(filelist, splitname, output):

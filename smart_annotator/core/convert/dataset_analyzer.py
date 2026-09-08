@@ -22,13 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...config import MODE, Format
-from ...utils import (
-    LOGGER,
-    getJsonFilesInDir,
-    getTxtFilesInDir,
-    getImageFilesInDir,
-    scan_dataset_files,
-)
+from ...utils import LOGGER, scan_dataset_files
 
 
 # LabelMe shape_type → shape 分组（用于任务类型推断）

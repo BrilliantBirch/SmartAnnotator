@@ -41,7 +41,7 @@ from .base_page import BasePage
 from ..widgets.cards import Card
 from ..widgets.class_selector import ClassSelectorWidget
 from ..widgets.fields import PathField, LabeledSpin, apply_click_to_focus
-from ..config import SysConfig, AnnotateConfig, MODE, DEVICE
+from ..config import SysConfig, MODE, DEVICE
 from ..utils import LOGGER, getModelClasses, getModelTaskType
 from ..utils.paths import get_build_mode
 

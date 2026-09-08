@@ -7,7 +7,6 @@
 """
 
 from typing import Dict, List, Any, Optional
-import numpy as np
 
 
 class BaseFormatter:

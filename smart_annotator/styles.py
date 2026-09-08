@@ -23,6 +23,11 @@
 更新: 2026-09-07 三分区独立 Dock 化：列表字号 11px 规则的作用域由旧聚合
       面板 objectName 改为三个分区控件（#labelSection/#objectSection
       QListWidget 与 #fileSection QListWidget/QListView），生效面不变
+更新: 2026-09-08 修复 Dock 分隔条无法拖拽：separator QSS 方向语义纠正
+      （:vertical 为左右区域竖条调宽度设 width、:horizontal 为堆叠
+      dock 横条调高度设 height），原 height:0/width:6px 写反导致竖条
+      纵向长度与横条厚度为 0、命中区消失（高度与宽度均拖不动）；
+      双向分隔条统一 6px 透明 + 悬停高亮提示可拖
 """
 
 GLOBAL_QSS = """
@@ -208,14 +213,21 @@ QSplitter::handle:vertical {
     height: 3px;
 }
 
-/* ===== 主窗口分隔条 ===== */
-/* 顶部工具栏（不可拖动）与中央画布之间不留空隙 */
+/* ===== 主窗口 Dock 分隔条 ===== */
+/* 方向语义：:vertical = 左右区域之间的竖条（拖拽调 dock 区整体宽度）；
+   :horizontal = 上下堆叠 dock 之间的横条（拖拽调各 dock 高度）。
+   厚度必须显式设置（width 控竖条厚度 / height 控横条厚度），
+   缺省时 QSS 盒模型下厚度为 0 → 分隔条无法命中拖拽。
+   默认透明不干扰视觉，悬停高亮提示可拖 */
 QMainWindow::separator:vertical {
-    height: 0;
-}
-/* 右侧对象面板（Dock）与画布之间的分隔条：透明可拖拽，悬停高亮 */
-QMainWindow::separator:horizontal {
     width: 6px;
+    background-color: transparent;
+}
+QMainWindow::separator:vertical:hover {
+    background-color: #d4d4d8;
+}
+QMainWindow::separator:horizontal {
+    height: 6px;
     background-color: transparent;
 }
 QMainWindow::separator:horizontal:hover {

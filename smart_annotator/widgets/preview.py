@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QPixmap, QImage, QShortcut, QKeySequence
+from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
