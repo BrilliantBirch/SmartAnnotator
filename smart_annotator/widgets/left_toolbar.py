@@ -5,7 +5,7 @@
 菜单栏下方的水平工具栏（QToolBar），两个分组从左到右排列，
 分组之间以竖分隔线区隔，全部按钮为图标按钮（QPainter 程序化矢量图标，
 语义保留在 tooltip 与 accessibleName）：
-    - 文件操作：打开文件夹、打开文件、保存、另存为、删除选中、删除图片文件
+    - 文件操作：打开文件夹、打开文件、保存、另存为、删除选中、删除图片文件、适应窗口
     - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形（互斥可选，含快捷键提示）
 
 自动标注入口（加载模型/标注当前图片/标注所有图片/标注视频）统一收敛到
@@ -37,7 +37,13 @@
       按钮改为紧凑方形，工具栏高度与溢出折叠行为不变
 更新: 2026-09-07 补设 objectName（leftToolBar）：修复 QMainWindow.saveState
       因工具栏缺少 objectName 而告警且布局无法恢复的问题
+更新: 2026-09-08 新增"适应窗口"按钮（fit 图标四角括号 + 中心矩形、
+      fit_requested 信号，置于文件操作组末尾），并新增
+      refresh_shortcut_hints 方法：主窗口快捷键应用/自定义改键后调用，
+      同步各按钮 tooltip 的快捷键提示（覆盖 Ctrl+0 等默认占位提示）
 """
+
+from typing import Dict
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
@@ -256,6 +262,20 @@ def _paint_polygon(p: QPainter, color: QColor) -> None:
     )
 
 
+def _paint_fit(p: QPainter, color: QColor) -> None:
+    """绘制"适应窗口"图标：四角 L 形括号 + 中心矩形（示意视图内适配）。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # 左上/右上/右下/左下四组 L 形括号（视窗四角）
+    p.drawPolyline([QPointF(3, 9), QPointF(3, 3), QPointF(9, 3)])
+    p.drawPolyline([QPointF(15, 3), QPointF(21, 3), QPointF(21, 9)])
+    p.drawPolyline([QPointF(21, 15), QPointF(21, 21), QPointF(15, 21)])
+    p.drawPolyline([QPointF(9, 21), QPointF(3, 21), QPointF(3, 15)])
+    # 中心小矩形（示意图像在视窗内完整适配）
+    p.drawRect(QRectF(9, 9, 6, 6))
+
+
 # 图标名 -> 绘制函数（按钮构造处按名取用）
 _ICON_PAINTERS = {
     "folder": _paint_folder,
@@ -268,6 +288,7 @@ _ICON_PAINTERS = {
     "rectangle": _paint_rectangle,
     "point": _paint_point,
     "polygon": _paint_polygon,
+    "fit": _paint_fit,
 }
 
 
@@ -395,6 +416,7 @@ class LeftToolbar(QToolBar):
         save_as_requested: 请求另存为标注。
         delete_requested: 请求删除选中标注（形状）。
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
+        fit_requested: 请求适应窗口（缩放视图以完整显示当前图片）。
         tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
     """
 
@@ -404,6 +426,7 @@ class LeftToolbar(QToolBar):
     save_as_requested = Signal()
     delete_requested = Signal()
     delete_image_requested = Signal()
+    fit_requested = Signal()
     tool_selected = Signal(str)
 
     def __init__(self, parent=None):
@@ -436,6 +459,9 @@ class LeftToolbar(QToolBar):
         self.btn_delete.clicked.connect(self.delete_requested.emit)
         self.btn_delete_image = _ToolBarButton("删除图片文件", "Shift+Delete", "trash")
         self.btn_delete_image.clicked.connect(self.delete_image_requested.emit)
+        # "Ctrl+0" 仅为默认占位提示，主窗口 refresh_shortcut_hints 后会按实际绑定覆盖
+        self.btn_fit = _ToolBarButton("适应窗口", "Ctrl+0", "fit")
+        self.btn_fit.clicked.connect(self.fit_requested.emit)
 
         # ===== 标注工具（互斥可选）=====
         self._tool_buttons = {}
@@ -450,6 +476,7 @@ class LeftToolbar(QToolBar):
             self.btn_save_as,
             self.btn_delete,
             self.btn_delete_image,
+            self.btn_fit,
         ):
             self.addWidget(btn)
 
@@ -480,6 +507,19 @@ class LeftToolbar(QToolBar):
 
         # 默认选中"编辑"工具（编辑模式：拖拽/端点缩放/多选）
         self._tool_buttons[TOOL_SELECT].setChecked(True)
+
+        # 记录各按钮原始语义文本（refresh_shortcut_hints 刷新 tooltip 的描述基准）
+        self._button_texts: Dict[QPushButton, str] = {
+            self.btn_open: self.btn_open.accessibleName(),
+            self.btn_open_file: self.btn_open_file.accessibleName(),
+            self.btn_save: self.btn_save.accessibleName(),
+            self.btn_save_as: self.btn_save_as.accessibleName(),
+            self.btn_delete: self.btn_delete.accessibleName(),
+            self.btn_delete_image: self.btn_delete_image.accessibleName(),
+            self.btn_fit: self.btn_fit.accessibleName(),
+        }
+        for btn in self._tool_buttons.values():
+            self._button_texts[btn] = btn.accessibleName()
 
         # ===== 末端水平弹性留白：按钮整体靠左，多余空间由占位控件吸收 =====
         # （窗口过窄时占位先收缩为 0，仍不足则触发 QToolBar 自带"»"溢出折叠）
@@ -546,3 +586,44 @@ class LeftToolbar(QToolBar):
             enabled: 是否可用。
         """
         self.btn_delete_image.setEnabled(enabled)
+
+    def refresh_shortcut_hints(
+        self, bindings: Dict[str, str], action_defs: Dict[str, str]
+    ) -> None:
+        """刷新各按钮 tooltip 的快捷键提示（主窗口快捷键应用流程调用）。
+
+        主窗口在应用/自定义快捷键（_apply_shortcuts，含配置导入与用户改键）后
+        调用本方法，将按钮 tooltip 的快捷键提示与实际绑定同步——构造时的
+        "Ctrl+0" 等默认占位提示会被实际绑定覆盖。
+
+        Args:
+            bindings: action_id -> 快捷键序列文本（如 "Ctrl+S"）；
+                缺失或空串表示该动作未绑定（对应提示回退为仅描述文本）。
+            action_defs: action_id -> 动作中文描述，作为描述文本的回退来源
+                （正常情况下以构造时记录的 _button_texts 为准）。
+        """
+        # ===== 文件操作按钮：tooltip = "描述（快捷键）"，未绑定则仅描述 =====
+        file_button_ids = {
+            self.btn_open: "open",
+            self.btn_open_file: "open_file",
+            self.btn_save: "save",
+            self.btn_save_as: "save_as",
+            self.btn_fit: "fit_window",
+        }
+        for btn, action_id in file_button_ids.items():
+            text = self._button_texts.get(btn) or action_defs.get(action_id, "")
+            seq = bindings.get(action_id, "")
+            # 有绑定显示"描述（快捷键）"，否则仅显示描述
+            btn.setToolTip(f"{text}（{seq}）" if seq else text)
+        # ===== 工具按钮：双提示"工具快捷键 / 编辑模式快捷键" =====
+        for tool, btn in self._tool_buttons.items():
+            text = self._button_texts.get(btn) or btn.accessibleName()
+            seq = bindings.get(f"tool_{tool}", "")
+            edit_seq = bindings.get("edit_mode", "")
+            # 两项均绑定 → "描述（A / B）"；仅一项 → "描述（A）"；均无 → 仅描述
+            if seq and edit_seq:
+                btn.setToolTip(f"{text}（{seq} / {edit_seq}）")
+            elif seq or edit_seq:
+                btn.setToolTip(f"{text}（{seq or edit_seq}）")
+            else:
+                btn.setToolTip(text)

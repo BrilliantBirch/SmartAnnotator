@@ -18,11 +18,24 @@
       panel_width 与 kpt_list_height（旧 JSON 键由 from_dict 静默忽略），
       新增 dock_state（QMainWindow 布局状态 base64，持久化工具栏与
       对象面板 Dock 的位置/尺寸）
+更新: 2026-09-07 RenderConfig 新增删除/清空确认开关 confirm_delete_shapes/
+      confirm_clear/confirm_delete_file（默认开启）与 point_size（关键点
+      准星臂长，钳制 [1.0,20.0]）；删除三组列表高度字段（界面布局记忆
+      统一由 dock_state 承担，旧 JSON 键由 from_dict 静默忽略）及仅
+      服务它们的 _read_int 辅助；新增 DEFAULT_SHORTCUTS 默认快捷键表
+      与 ShortcutsConfig dataclass（action_id 白名单过滤，键序列合法
+      性由应用层经 QKeySequence 校验）
+更新: 2026-09-08 RenderConfig 恢复三分区高度字段 label_list_height/
+      object_list_height/file_list_height（默认 180/180/280，整型校验
+      越界钳制 [80,2000]，QSplitter 拖拽调整，随渲染配置持久化），并
+      新增 auto_save 自动保存开关（文件菜单勾选，默认开启，切换图片
+      时自动落盘当前标注）；to_dict/from_dict 同步补键，废弃键清单
+      移除三高度键（保留 panel_width/kpt_list_height）
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict
 
 
 # ===== 应用级常量 =====
@@ -250,35 +263,53 @@ class SysConfig:
 class RenderConfig:
     """画布渲染配置（视图菜单可调，持久化于 %APPDATA%/BrilliantAnnotator/render_config.json）。
 
+    窗口布局（dock_state）与三分区高度、自动保存开关均随渲染配置
+    持久化，启动时恢复。
+
     Attributes:
         show_label: 是否在画布渲染形状标签文本。
         show_group: 是否在画布渲染形状组号（G{group_id}）。
         show_description: 是否在画布渲染形状描述文本。
+        confirm_delete_shapes: 删除选中标注/对象列表删除前是否弹确认框。
+        confirm_clear: 清空标注前是否弹确认框。
+        confirm_delete_file: 删除图片及标注前是否弹确认框。
         pen_width: 矩形/多边形描边线宽（像素，选中态为 pen_width + 2）。
+        point_size: 关键点准星臂长（场景单位，钳制 [1.0, 20.0]）。
         opacity: 多边形填充不透明度（0.0-1.0）。
         font_size: 渲染文本字号（磅）。
-        label_list_height: 标签列表高度（像素）。
-        object_list_height: 对象列表高度（像素）。
-        file_list_height: 文件列表高度（像素）。
+        right_panel_width: 右侧对象面板宽度（Dock 分隔条拖拽，钳制
+            [220, 800]，启动时恢复）。
+        label_list_height: 标签列表分区高度（三分区高度，QSplitter 拖拽
+            调整，最小 80）。
+        object_list_height: 对象列表分区高度（同 label_list_height）。
+        file_list_height: 文件列表分区高度（同 label_list_height）。
         dock_state: QMainWindow 布局状态（saveState 产物的 base64 字符串，
             持久化顶部工具栏与对象面板 Dock 的位置/尺寸；空串 = 默认布局）。
         auto_scan_labels: 是否打开文件夹后自动启动标签扫描统计。
+        auto_save: 自动保存（文件菜单勾选）默认开启，切换图片时自动
+            落盘当前标注。
     """
 
     show_label: bool = True
     show_group: bool = False
     show_description: bool = True
+    # ===== 确认弹窗开关（危险操作前二次确认，默认开启）=====
+    confirm_delete_shapes: bool = True  # 删除选中标注/对象列表删除前是否确认
+    confirm_clear: bool = True  # 清空标注前是否确认
+    confirm_delete_file: bool = True  # 删除图片及标注前是否确认
     pen_width: float = 2.0
+    point_size: float = 4.0
     opacity: float = 0.3
     font_size: int = 12
-    # ===== 界面布局尺寸（三组列表高度，右栏内部分栏拖拽调节）=====
-    label_list_height: int = 180
-    object_list_height: int = 180
-    file_list_height: int = 280
-    # ===== 窗口布局状态（工具栏/对象面板 Dock 的位置与尺寸，base64）=====
-    dock_state: str = ""
-    # ===== 行为偏好（统计菜单"自动扫描"开关，打开文件夹即自动扫描）=====
-    auto_scan_labels: bool = False
+    # ===== 窗口布局状态（三分区高度 + Dock 布局 base64，QSplitter 拖拽调整）=====
+    label_list_height: int = 180  # 标签列表分区高度（最小 80）
+    object_list_height: int = 180  # 对象列表分区高度（最小 80）
+    file_list_height: int = 280  # 文件列表分区高度（最小 80）
+    right_panel_width: int = 320  # 右侧对象面板宽度（Dock 分隔条拖拽，钳制 [220, 800]）
+    dock_state: str = ""  # QMainWindow 布局状态（saveState 产物 base64，空串=默认布局）
+    # ===== 行为偏好（统计菜单"自动扫描"开关 / 文件菜单"自动保存"开关）=====
+    auto_scan_labels: bool = False  # 打开文件夹后自动启动标签扫描统计
+    auto_save: bool = True  # 自动保存（默认开启），切换图片时自动落盘当前标注
 
     def to_dict(self) -> dict:
         """序列化为字典（JSON 持久化用）。
@@ -290,34 +321,21 @@ class RenderConfig:
             "show_label": self.show_label,
             "show_group": self.show_group,
             "show_description": self.show_description,
+            "confirm_delete_shapes": self.confirm_delete_shapes,
+            "confirm_clear": self.confirm_clear,
+            "confirm_delete_file": self.confirm_delete_file,
             "pen_width": self.pen_width,
+            "point_size": self.point_size,
             "opacity": self.opacity,
             "font_size": self.font_size,
             "label_list_height": self.label_list_height,
             "object_list_height": self.object_list_height,
             "file_list_height": self.file_list_height,
+            "right_panel_width": self.right_panel_width,
             "dock_state": self.dock_state,
             "auto_scan_labels": self.auto_scan_labels,
+            "auto_save": self.auto_save,
         }
-
-    @staticmethod
-    def _read_int(data: dict, key: str, default: int, lo: int, hi: int) -> int:
-        """读取整数字段（排除 bool；越界钳制；非法/缺失回退默认值）。
-
-        Args:
-            data: 字段名字典。
-            key: 字段名。
-            default: 回退默认值。
-            lo: 合法下界（含）。
-            hi: 合法上界（含）。
-
-        Returns:
-            校验后的整数值。
-        """
-        value = data.get(key)
-        if isinstance(value, int) and not isinstance(value, bool):
-            return min(hi, max(lo, int(value)))
-        return default
 
     @classmethod
     def from_dict(cls, data: dict) -> "RenderConfig":
@@ -325,8 +343,9 @@ class RenderConfig:
 
         逐字段校验类型（bool/int/float/str；bool 为 int 子类，整型校验需排除），
         数值越界时钳制到合法区间（opacity→[0,1]、pen_width→[0.5,10]、
-        font_size→[6,72]、列表高度→[80,2000]）。旧版 JSON 中的
-        panel_width/kpt_list_height 等已废弃键被静默忽略，不报错。
+        point_size→[1.0,20.0]、font_size→[6,72]、三分区高度→[80,2000]）。
+        旧版 JSON 中的 panel_width/kpt_list_height 等已废弃键被静默
+        忽略，不报错。
 
         Args:
             data: 字段名字典。
@@ -347,13 +366,24 @@ class RenderConfig:
             cfg.show_group = data["show_group"]
         if isinstance(data.get("show_description"), bool):
             cfg.show_description = data["show_description"]
+        if isinstance(data.get("confirm_delete_shapes"), bool):
+            cfg.confirm_delete_shapes = data["confirm_delete_shapes"]
+        if isinstance(data.get("confirm_clear"), bool):
+            cfg.confirm_clear = data["confirm_clear"]
+        if isinstance(data.get("confirm_delete_file"), bool):
+            cfg.confirm_delete_file = data["confirm_delete_file"]
         if isinstance(data.get("auto_scan_labels"), bool):
             cfg.auto_scan_labels = data["auto_scan_labels"]
+        if isinstance(data.get("auto_save"), bool):
+            cfg.auto_save = data["auto_save"]
 
         # ===== 浮点字段校验（接受 int，排除 bool；越界钳制） =====
         pen_width = data.get("pen_width")
         if isinstance(pen_width, (int, float)) and not isinstance(pen_width, bool):
             cfg.pen_width = min(10.0, max(0.5, float(pen_width)))
+        point_size = data.get("point_size")
+        if isinstance(point_size, (int, float)) and not isinstance(point_size, bool):
+            cfg.point_size = min(20.0, max(1.0, float(point_size)))
         opacity = data.get("opacity")
         if isinstance(opacity, (int, float)) and not isinstance(opacity, bool):
             cfg.opacity = min(1.0, max(0.0, float(opacity)))
@@ -362,21 +392,112 @@ class RenderConfig:
         font_size = data.get("font_size")
         if isinstance(font_size, int) and not isinstance(font_size, bool):
             cfg.font_size = min(72, max(6, int(font_size)))
+        # 三分区高度：越界钳制 [80, 2000]
+        label_list_height = data.get("label_list_height")
+        if isinstance(label_list_height, int) and not isinstance(
+            label_list_height, bool
+        ):
+            cfg.label_list_height = min(2000, max(80, int(label_list_height)))
+        object_list_height = data.get("object_list_height")
+        if isinstance(object_list_height, int) and not isinstance(
+            object_list_height, bool
+        ):
+            cfg.object_list_height = min(2000, max(80, int(object_list_height)))
+        file_list_height = data.get("file_list_height")
+        if isinstance(file_list_height, int) and not isinstance(
+            file_list_height, bool
+        ):
+            cfg.file_list_height = min(2000, max(80, int(file_list_height)))
+        # 右侧面板宽度：越界钳制 [220, 800]（与 RightPanel 拖拽边界一致）
+        right_panel_width = data.get("right_panel_width")
+        if isinstance(right_panel_width, int) and not isinstance(
+            right_panel_width, bool
+        ):
+            cfg.right_panel_width = min(800, max(220, int(right_panel_width)))
 
         # ===== 字符串字段校验（窗口布局状态 base64，非法类型回退空串） =====
         if isinstance(data.get("dock_state"), str):
             cfg.dock_state = data["dock_state"]
+        return cfg
 
-        # ===== 界面布局字段（三组列表高度）=====
-        cfg.label_list_height = cls._read_int(
-            data, "label_list_height", cfg.label_list_height, 80, 2000
-        )
-        cfg.object_list_height = cls._read_int(
-            data, "object_list_height", cfg.object_list_height, 80, 2000
-        )
-        cfg.file_list_height = cls._read_int(
-            data, "file_list_height", cfg.file_list_height, 80, 2000
-        )
+
+# ===== 默认快捷键表与快捷键配置 =====
+# 默认快捷键表（action_id -> QKeySequence 可解析的字符串；应用层经 QKeySequence 校验）
+DEFAULT_SHORTCUTS: Dict[str, str] = {
+    "open": "Ctrl+O",
+    "open_file": "Ctrl+Shift+O",
+    "save": "Ctrl+S",
+    "save_as": "Ctrl+Shift+S",
+    "edit_mode": "Ctrl+E",
+    "undo": "Ctrl+Z",
+    "redo": "Ctrl+Shift+Z",
+    "copy": "Ctrl+C",
+    "paste": "Ctrl+V",
+    "tool_select": "V",
+    "tool_rectangle": "R",
+    "tool_point": "P",
+    "tool_polygon": "G",
+    "delete": "Delete",
+    "delete_image": "Shift+Delete",
+    "prev_image": "A",
+    "next_image": "D",
+    "fit_window": "Ctrl+0",
+}
+
+
+@dataclass
+class ShortcutsConfig:
+    """快捷键配置（持久化于 %APPDATA%/BrilliantAnnotator/shortcuts.json）。
+
+    仅持久化 action_id -> 快捷键字符串 的绑定表。键序列合法性
+    （QKeySequence 可解析性）由应用层校验，config 层只做值类型与
+    action_id 白名单过滤（未知动作 id 丢弃，缺失动作回退默认绑定）。
+
+    Attributes:
+        bindings: 动作 id 到快捷键字符串的映射（始终包含全部默认动作）。
+    """
+
+    bindings: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SHORTCUTS))
+
+    def to_dict(self) -> dict:
+        """序列化为可写入 JSON 的字典。
+
+        Returns:
+            {"bindings": {action_id: 快捷键字符串}} 字典。
+        """
+        return {"bindings": dict(self.bindings)}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ShortcutsConfig":
+        """从字典构造，非法条目丢弃，缺失动作回退默认绑定。
+
+        bindings 仅接受键存在于 DEFAULT_SHORTCUTS（action_id 白名单）
+        且值为非空 str 的条目；未知 action_id 与非 str 值静默丢弃；
+        未覆盖的动作保留默认绑定（合并而非整体替换）。
+
+        Args:
+            data: 字典（可为 to_dict 产物或手工编辑的 JSON）。
+
+        Returns:
+            ShortcutsConfig 实例。
+        """
+        # 以默认绑定表为基底
+        cfg = cls()
+        # 非字典输入直接返回默认配置
+        if not isinstance(data, dict):
+            return cfg
+        raw = data.get("bindings")
+        # bindings 缺失或类型非法时整体回退默认绑定
+        if not isinstance(raw, dict):
+            return cfg
+        # 白名单与类型过滤：仅保留已知动作 id 的非空字符串绑定
+        valid = {
+            k: v
+            for k, v in raw.items()
+            if k in DEFAULT_SHORTCUTS and isinstance(v, str) and v
+        }
+        # 合并而非替换：用户未覆盖的动作保留默认绑定
+        cfg.bindings = {**DEFAULT_SHORTCUTS, **valid}
         return cfg
 
 

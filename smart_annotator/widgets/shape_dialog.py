@@ -17,6 +17,7 @@
 更新: 2026-09-03 Group ID 改为可编辑 QComboBox（下拉填充画布已有分组，去重升序），
       构造签名增加 group_ids 参数
 更新: 2026-09-03 标签列表单击选中项同步 label 编辑框（选中即预览）
+更新: 2026-09-07 修复复合标签双击失效：单击同步文本时阻断过滤信号（blockSignals），避免列表实时重排导致双击第二击落点漂移
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -134,22 +135,33 @@ class ShapeDialog(QDialog):
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         """单击标签列表项：同步 label 编辑框内容为该项文本。
 
-        回环安全：setText 触发 textChanged → _filter_labels 仅对列表项
-        setHidden 过滤，不改变列表选中态，因此不会再次触发 itemClicked，
-        无信号回环。
+        同步时阻断 textChanged（blockSignals），避免 setText 触发
+        _filter_labels 实时过滤导致列表重排——双击的第一击 release 会先
+        发出 itemClicked，若列表随即重排，第二击落点漂移将使
+        itemDoubleClicked 无法触发（复合标签双击失效）；用户手动键入
+        仍经 textChanged 正常过滤。
 
         Args:
             item: 被单击的列表项。
         """
+        # 阻断 textChanged：单击同步文本不触发实时过滤，列表保持稳定
+        self.label_edit.blockSignals(True)
         self.label_edit.setText(item.text())
+        self.label_edit.blockSignals(False)
 
     def _on_item_double(self, item: QListWidgetItem) -> None:
         """双击标签项：填入编辑框并确认对话框。
 
+        填入时与单击路径一致阻断 textChanged，保持同步行为统一，
+        避免确认前列表被过滤重排。
+
         Args:
             item: 被双击的列表项。
         """
+        # 阻断 textChanged：双击填入同样不触发实时过滤
+        self.label_edit.blockSignals(True)
         self.label_edit.setText(item.text())
+        self.label_edit.blockSignals(False)
         self.accept()
 
     # -------------------------- 结果读取 --------------------------

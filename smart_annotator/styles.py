@@ -17,8 +17,12 @@
 更新: 2026-09-03 新增 QComboBox 下拉箭头、禁用态与 QMenu 样式（修复下拉按钮不可见、禁用无视觉反馈）
 更新: 2026-09-03 新增 QSplitter 分栏拖拽手柄样式（默认透明，悬停高亮）
 更新: 2026-09-07 新增主窗口分隔样式（顶部工具栏与画布贴合无空隙；右侧
-      Dock 分隔条 6px 透明可拖拽、悬停高亮）；新增右栏（#rightPanel）
-      列表字号 11px 规则（不影响全局 13px）
+      Dock 分隔条 6px 透明可拖拽、悬停高亮）；新增右栏列表（旧聚合面板
+      objectName 作用域）字号 11px 规则（不影响全局 13px）
+更新: 2026-09-07 列表选中色加深（#d4d4d8）并补 QListView 规则；条目 padding 收紧（2px→1px）
+更新: 2026-09-07 三分区独立 Dock 化：列表字号 11px 规则的作用域由旧聚合
+      面板 objectName 改为三个分区控件（#labelSection/#objectSection
+      QListWidget 与 #fileSection QListWidget/QListView），生效面不变
 """
 
 GLOBAL_QSS = """
@@ -171,12 +175,16 @@ QListWidget {
     padding: 4px;
     outline: 0;
 }
+/* 条目 padding 收紧：11px 字号下行高约 16px，无跨行重叠 */
 QListWidget::item {
     border-radius: 6px;
-    padding: 2px 4px;
+    padding: 1px 4px;
 }
-QListWidget::item:selected {
-    background-color: #f4f4f5;
+/* 选中态加深（zinc 层次链：#f4f4f5 hover → #e4e4e7 边框 → #d4d4d8 选中）；
+   QListView 规则覆盖文件列表（QListView 不匹配 QListWidget 选择器） */
+QListWidget::item:selected,
+QListView::item:selected {
+    background-color: #d4d4d8;
     color: #18181b;
 }
 
@@ -247,9 +255,9 @@ QToolTip {
     padding: 4px 8px;
 }
 
-/* ===== 右栏（对象面板）列表字号 ===== */
+/* ===== 右栏三个列表 Dock（标签/对象/文件分区）列表字号 ===== */
 /* 右栏三组列表使用更紧凑的 11px 字号（不影响全局 13px） */
-#rightPanel QListWidget, #rightPanel QListView {
+#labelSection QListWidget, #objectSection QListWidget, #fileSection QListWidget, #fileSection QListView {
     font-size: 11px;
 }
 

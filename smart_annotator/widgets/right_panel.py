@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-右侧信息栏组件 - RightPanel
+右侧信息栏控件 - RightPanel 聚合面板（内含 LabelSection / ObjectSection /
+FileSection 三分区）
 
-经典三栏布局的右栏（参考 labelme / X-Anylabel 风格），纵向堆叠三组列表：
-    - 标签列表（b）：工作路径下全部标签（单击/双击设为当前绘制标签）
-    - 标签对象列表（a，标题"标签"）：当前图片上的全部标注对象（含 point 形状），
-      支持多选与右键菜单（编辑属性/删除/进入编辑模式）
-    - 文件列表：工作路径下全部图片
+主窗口右侧以单一 QDockWidget 承载 RightPanel 聚合面板：面板内部为垂直
+QSplitter，纵向装载三个分区控件——
+    - LabelSection（标签列表）：工作路径下全部标签（单击/双击设为当前
+      绘制标签）
+    - ObjectSection（对象列表，标题"对象"）：当前图片上的全部标注对象
+      （含 point 形状），支持多选、可见性复选框与右键上下文菜单
+      （编辑属性/删除/进入编辑模式）
+    - FileSection（文件列表）：工作路径下全部图片，顶部检索框
+      （FileSearchProxyModel 按文件名/标签/已标注状态实时过滤）与
+      "无匹配文件"空态提示
 
-三组列表以垂直分栏（QSplitter）堆叠，各列表高度可拖拽调节，尺寸变化
-经 sizes_changed 信号交由主窗口持久化；面板整体由主窗口右侧
-QDockWidget（对象面板）承载，宽度随 Dock 分隔条拖拽调节，分区整体
-显隐经 set_section_visible 由主窗口视图菜单控制。
-列表选择通过信号对外发射，由主窗口统一处理，保持面板与画布联动。
+面板整体宽度由 Dock 分隔条拖拽调节；分区相对高度由面板内部分隔条
+拖拽调节（每个分区构造时强制 96px 最小高度拖拽下限，防止折叠消失）。
+三个分区实例由主窗口创建并持引用后传入 RightPanel（同名属性暴露），
+列表选择等交互经信号对外发射，由主窗口统一处理，保持面板与画布联动。
 
 作者: BaiBinnan
 创建日期: 2026-09-02
@@ -37,6 +42,18 @@ QDockWidget（对象面板）承载，宽度随 Dock 分隔条拖拽调节，分
       过滤，命中行高亮），选中行号经 mapToSource 转换；检索无匹配时
       视图上覆盖"无匹配文件"空态提示；新增 set_file_tags 转发接口；
       select_file 目标被过滤隐藏时清空检索词后再选中
+更新: 2026-09-07 三分区独立 Dock 化：删除 RightPanel 聚合类（垂直分栏
+      QSplitter、sizes_changed/高度记忆、set_section_visible、宽度上限
+      setMaximumWidth 全部随之移除），_Section 演化为三个独立公开控件
+      LabelSection / ObjectSection / FileSection（各设 objectName 与
+      180px 最小宽度，由主窗口三个 QDockWidget 分别承载，宽度由 Dock
+      分隔条调节）
+更新: 2026-09-08 恢复 RightPanel 聚合面板（主窗口以单一 QDockWidget
+      承载：构造接收主窗口已建的三个分区实例并暴露同名属性，内部垂直
+      QSplitter 装载三分区，每分区强制 96px 最小高度防折叠；新增
+      sizes_changed 信号、set_section_heights/section_heights 高度记忆
+      与 set_section_visible 分区显隐）；FileSection 新增
+      file_edit_requested 双击编辑信号
 """
 
 from typing import List
@@ -44,7 +61,6 @@ from typing import List
 from PySide6.QtCore import Qt, Signal, QEvent, QItemSelectionModel
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -54,12 +70,17 @@ from PySide6.QtWidgets import (
     QListView,
     QMenu,
     QAbstractItemView,
-    QSplitter,
     QLineEdit,
+    QSplitter,
+    QWidget,
 )
 
 from .canvas import color_for_label
 from .file_list_model import FileListModel, FileSearchProxyModel
+
+# 聚合面板宽度边界（Dock 分隔条拖拽时受 RightPanel min/max 宽度约束）
+PANEL_MIN_WIDTH = 220
+PANEL_MAX_WIDTH = 800
 
 
 def _color_dot_icon(color: QColor) -> QIcon:
@@ -83,23 +104,29 @@ def _color_dot_icon(color: QColor) -> QIcon:
 
 
 class _Section(QFrame):
-    """信息栏分组容器：标题行 + 可滚动列表（垂直分栏中的子项）。"""
+    """信息栏分区基类：QFrame 圆角边框容器 + 标题行 + 内容垂直布局。
+
+    三个具体分区（LabelSection / ObjectSection / FileSection）继承本类，
+    复用边框/标题骨架；列表控件由子类自行构建并挂入 self.lay（子类决定
+    挂载顺序，如文件分区需在标题与列表之间插入检索框）。
+
+    Args:
+        title: 分区标题。
+        parent: 父控件。
+    """
 
     def __init__(self, title: str, parent=None):
-        """初始化分组。
-
-        Args:
-            title: 分组标题。
-            parent: 父控件。
-        """
+        """初始化分区容器（边框/最小宽度/标题行）。"""
         super().__init__(parent)
         self.setStyleSheet("QFrame { border: 1px solid #e4e4e7; border-radius: 8px; }")
-        # 分栏子项的最小高度：防止拖拽时分组被压缩到不可用
-        self.setMinimumHeight(80)
+        # 最小宽度：防止 Dock 过窄导致列表不可用（不设最大宽度，
+        # 宽度由主窗口 Dock 分隔条拖拽调节）
+        self.setMinimumWidth(180)
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(8, 8, 8, 8)
         self.lay.setSpacing(6)
 
+        # 标题行：弱化色标题 + 右侧伸缩占位
         header = QHBoxLayout()
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("color: #71717a; font-weight: 600; border: 0;")
@@ -107,156 +134,41 @@ class _Section(QFrame):
         header.addStretch()
         self.lay.addLayout(header)
 
+
+class LabelSection(_Section):
+    """标签列表分区：工作路径下全部标签（单击/双击设为当前绘制标签）。
+
+    Signals:
+        label_selected(str): 用户单击/双击标签（主窗口设为当前绘制标签）。
+    """
+
+    label_selected = Signal(str)
+
+    def __init__(self, parent=None):
+        """初始化标签列表分区（objectName 供全局 QSS 按作用域设置字号）。"""
+        super().__init__("标签列表", parent)
+        self.setObjectName("labelSection")
+        # 标签列表：每项前显示与类别框颜色一致的圆点图标
         self.list = QListWidget()
         self.list.setStyleSheet(
             "QListWidget { background-color: #fafafa; border: 0; }"
         )
+        self.list.itemDoubleClicked.connect(self._on_label_double)
+        # 单击即选中标签作为当前绘制标签（直接选择预设标签进行标注）
+        self.list.itemClicked.connect(self._on_label_click)
         self.lay.addWidget(self.list, 1)
 
-
-class RightPanel(QWidget):
-    """右侧信息栏。
-
-    Signals:
-        label_selected(str): 用户在标签列表中选中/单击标签（设为当前绘制标签）。
-        objects_selected(list): 用户在对象列表中选中对象集合（参数为形状下标列表）。
-        file_selected(int): 用户在文件列表中选中文件（参数为文件下标）。
-        sizes_changed(list): 三组列表高度变化（参数为 [标签, 对象, 文件] 高度列表）。
-        shape_visibility_requested(int, bool): 用户切换对象列表项复选框
-            （参数为形状下标与是否可见）。
-        edit_object_requested(int): 对象列表右键请求编辑指定对象（参数为形状下标）。
-        delete_objects_requested(list): 对象列表右键请求删除选中对象
-            （参数为形状下标列表）。
-        enter_edit_mode_requested: 对象列表右键请求进入编辑模式。
-    """
-
-    label_selected = Signal(str)
-    # 参数为对象下标列表（object 签名避免 QVariantList 转换）
-    objects_selected = Signal(object)
-    file_selected = Signal(int)
-    # 参数为三组列表高度列表（object 签名避免 QVariantList 转换复制）
-    sizes_changed = Signal(object)
-    # 参数为形状下标 + 是否可见（对象列表复选框切换）
-    shape_visibility_requested = Signal(int, bool)
-    edit_object_requested = Signal(int)
-    delete_objects_requested = Signal(object)
-    enter_edit_mode_requested = Signal()
-
-    def __init__(self, parent=None):
-        """初始化三组列表（垂直分栏）与信号连接。"""
-        super().__init__(parent)
-        # 对象名：全局 QSS 以 #rightPanel 为作用域设置右栏列表字号
-        self.setObjectName("rightPanel")
-        # 宽度界限：实际宽度由主窗口右侧 Dock 分隔条拖拽控制（200-800 像素）
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(800)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(6, 8, 6, 8)
-        root.setSpacing(8)
-
-        # 三组列表以垂直分栏堆叠：拖拽分隔条调节各列表高度
-        self.splitter = QSplitter(Qt.Orientation.Vertical, self)
-        self.splitter.setHandleWidth(6)
-        self.splitter.setChildrenCollapsible(False)
-        # 记忆高度（持久化用）
-        self._section_heights: List[int] = [180, 180, 280]
-        # 行号 → 形状下标映射（所有选中/编辑/删除交互均经此映射到
-        # canvas.shapes() 的真实下标）
-        self._object_indices: List[int] = []
-
-        # ===== 标签列表（b）=====
-        self.label_section = _Section("标签列表")
-        self.label_section.list.itemDoubleClicked.connect(self._on_label_double)
-        # 单击即选中标签作为当前绘制标签（直接选择预设标签进行标注）
-        self.label_section.list.itemClicked.connect(self._on_label_click)
-        self.splitter.addWidget(self.label_section)
-
-        # ===== 标签对象列表（a，标题"标签"）=====
-        self.object_section = _Section("对象")
-        self.object_section.list.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self.object_section.list.itemSelectionChanged.connect(
-            self._on_object_selection_changed
-        )
-        # 复选框切换：发射形状可见性变化信号
-        self.object_section.list.itemChanged.connect(self._on_object_item_changed)
-        # 右键上下文菜单：编辑（仅单选）/删除（多选可用）/进入编辑模式
-        self.object_section.list.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.object_section.list.customContextMenuRequested.connect(
-            self._on_object_context_menu
-        )
-        self.splitter.addWidget(self.object_section)
-
-        # ===== 文件列表（QListView + 检索代理模型：UI 虚拟化，只读已标注复选框）=====
-        self.file_section = _Section("文件列表")
-        # 用 QListView 替换 _Section 默认的 QListWidget（大目录不逐项建 item）
-        self.file_section.lay.removeWidget(self.file_section.list)
-        self.file_section.list.deleteLater()
-        self.file_model = FileListModel(self)
-        # 检索代理：视图挂代理模型，按文件名/标签/已标注状态实时过滤
-        self.file_proxy = FileSearchProxyModel(self)
-        self.file_proxy.setSourceModel(self.file_model)
-        self.file_section.list = QListView()
-        self.file_section.list.setModel(self.file_proxy)
-        self.file_section.list.setStyleSheet(
-            "QListView { background-color: #fafafa; border: 0; }"
-        )
-        # 检索框（列表上方，实时过滤文件名/标签/标注状态）
-        self.file_search_edit = QLineEdit()
-        self.file_search_edit.setObjectName("fileSearchEdit")
-        self.file_search_edit.setPlaceholderText("检索文件名/标签…")
-        self.file_search_edit.setClearButtonEnabled(True)
-        self.file_search_edit.textChanged.connect(self._on_file_search_changed)
-        self.file_section.lay.addWidget(self.file_search_edit)
-        self.file_section.lay.addWidget(self.file_section.list, 1)
-        # 空态提示：覆盖在列表视图上，仅检索词非空且无匹配时显示
-        self._file_empty_label = QLabel("无匹配文件", self.file_section.list)
-        self._file_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._file_empty_label.setStyleSheet(
-            "color: #a1a1aa; background-color: #fafafa; border: 0;"
-        )
-        self._file_empty_label.hide()
-        # 视图尺寸变化时空态提示保持覆盖整个视图
-        self.file_section.list.installEventFilter(self)
-        # currentRowChanged 等价信号：当前行变化经 selectionModel 转发
-        # （视图挂代理模型，行号需 mapToSource 转回源模型行号）
-        self.file_section.list.selectionModel().currentRowChanged.connect(
-            lambda cur, _: self.file_selected.emit(
-                self.file_proxy.mapToSource(cur).row() if cur.isValid() else -1
-            )
-        )
-        # 代理行数变化（过滤生效/模型重置）与布局变化时同步空态提示显隐
-        self.file_proxy.modelReset.connect(self._update_file_empty_state)
-        self.file_proxy.layoutChanged.connect(self._update_file_empty_state)
-        self.file_proxy.rowsInserted.connect(self._update_file_empty_state)
-        self.file_proxy.rowsRemoved.connect(self._update_file_empty_state)
-        self.splitter.addWidget(self.file_section)
-
-        # 剩余空间的伸缩比例（标签/对象/文件的视觉权重）
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 2)
-        # 分隔条拖动：更新记忆高度并通知主窗口持久化
-        self.splitter.splitterMoved.connect(self._on_splitter_moved)
-
-        root.addWidget(self.splitter)
-
-    # -------------------------- 标签列表 --------------------------
     def set_labels(self, labels) -> None:
         """填充标签列表，每项前显示与类别框颜色一致的圆点。
 
         Args:
             labels: 标签名列表。
         """
-        self.label_section.list.clear()
+        self.list.clear()
         for name in labels:
             item = QListWidgetItem(str(name))
             item.setIcon(_color_dot_icon(color_for_label(str(name))))
-            self.label_section.list.addItem(item)
+            self.list.addItem(item)
 
     def _on_label_double(self, item: QListWidgetItem) -> None:
         """双击标签：发射设为当前绘制标签信号。
@@ -274,7 +186,61 @@ class RightPanel(QWidget):
         """
         self.label_selected.emit(item.text())
 
-    # -------------------------- 对象列表 --------------------------
+
+class ObjectSection(_Section):
+    """对象列表分区：当前图片上的全部标注对象（含 point 形状）。
+
+    每项带可见性复选框与颜色圆点；支持多选（ExtendedSelection）与右键
+    上下文菜单（编辑属性/删除/进入编辑模式）。列表行号经 _object_indices
+    映射到 canvas.shapes() 的真实形状下标。
+
+    Signals:
+        objects_selected(list): 用户选中对象集合变化（参数为形状下标列表）。
+        shape_visibility_requested(int, bool): 用户切换对象列表项复选框
+            （参数为形状下标与是否可见）。
+        edit_object_requested(int): 右键请求编辑指定对象（参数为形状下标）。
+        delete_objects_requested(list): 右键请求删除选中对象
+            （参数为形状下标列表）。
+        enter_edit_mode_requested: 右键请求进入编辑模式。
+    """
+
+    # 参数为对象下标列表（object 签名避免 QVariantList 转换）
+    objects_selected = Signal(object)
+    # 参数为形状下标 + 是否可见（对象列表复选框切换）
+    shape_visibility_requested = Signal(int, bool)
+    edit_object_requested = Signal(int)
+    delete_objects_requested = Signal(object)
+    enter_edit_mode_requested = Signal()
+
+    def __init__(self, parent=None):
+        """初始化对象列表分区（多选 + 可见性复选框 + 右键菜单）。"""
+        super().__init__("对象", parent)
+        self.setObjectName("objectSection")
+        # 行号 → 形状下标映射（所有选中/编辑/删除交互均经此映射到
+        # canvas.shapes() 的真实下标）
+        self._object_indices: List[int] = []
+
+        self.list = QListWidget()
+        self.list.setStyleSheet(
+            "QListWidget { background-color: #fafafa; border: 0; }"
+        )
+        self.list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.list.itemSelectionChanged.connect(
+            self._on_object_selection_changed
+        )
+        # 复选框切换：发射形状可见性变化信号
+        self.list.itemChanged.connect(self._on_object_item_changed)
+        # 右键上下文菜单：编辑（仅单选）/删除（多选可用）/进入编辑模式
+        self.list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.list.customContextMenuRequested.connect(
+            self._on_object_context_menu
+        )
+        self.lay.addWidget(self.list, 1)
+
     def set_objects(self, items) -> None:
         """填充当前图片对象列表（全部形状），带可见性复选框与下标映射。
 
@@ -287,7 +253,7 @@ class RightPanel(QWidget):
                 形状下标为在 canvas.shapes() 中的真实下标；圆点颜色由调用方
                 按"有合法组号用组色、否则用标签色"计算传入（与画布描边一致）。
         """
-        lst = self.object_section.list
+        lst = self.list
         lst.blockSignals(True)
         # 清空列表并同步重置行号 → 形状下标映射
         lst.clear()
@@ -306,7 +272,7 @@ class RightPanel(QWidget):
 
     def _on_object_selection_changed(self) -> None:
         """对象列表选中集合变化：行号经映射转形状下标后发射。"""
-        rows = sorted({idx.row() for idx in self.object_section.list.selectedIndexes()})
+        rows = sorted({idx.row() for idx in self.list.selectedIndexes()})
         self.objects_selected.emit([self._object_indices[r] for r in rows])
 
     def _on_object_item_changed(self, item: QListWidgetItem, *args) -> None:
@@ -322,7 +288,7 @@ class RightPanel(QWidget):
         # role 检查不可用时跳过（当前 Qt 版本的 itemChanged 不携带 role）
         if args and args[0] != Qt.ItemDataRole.CheckStateRole:
             return
-        row = self.object_section.list.row(item)
+        row = self.list.row(item)
         if 0 <= row < len(self._object_indices):
             self.shape_visibility_requested.emit(
                 self._object_indices[row],
@@ -339,7 +305,7 @@ class RightPanel(QWidget):
         Args:
             pos: 右键位置（列表部件局部坐标）。
         """
-        lst = self.object_section.list
+        lst = self.list
         # 右键命中的项若不在当前选中集合中，改为单选该项
         item = lst.itemAt(pos)
         if item is not None and not item.isSelected():
@@ -378,7 +344,7 @@ class RightPanel(QWidget):
             indices: 形状下标列表（未出现在映射中的下标自动忽略）。
         """
         wanted = set(indices)
-        lst = self.object_section.list
+        lst = self.list
         lst.blockSignals(True)
         lst.clearSelection()
         # 选中形状下标命中映射的行，并记录最小命中行作为当前项
@@ -400,7 +366,7 @@ class RightPanel(QWidget):
 
     def clear_object_selection(self) -> None:
         """清除对象列表选中态（不发射信号）。"""
-        lst = self.object_section.list
+        lst = self.list
         lst.blockSignals(True)
         lst.clearSelection()
         lst.setCurrentRow(-1)
@@ -412,10 +378,76 @@ class RightPanel(QWidget):
         Returns:
             形状下标列表（按行序升序）。
         """
-        rows = sorted({idx.row() for idx in self.object_section.list.selectedIndexes()})
+        rows = sorted({idx.row() for idx in self.list.selectedIndexes()})
         return [self._object_indices[r] for r in rows]
 
-    # -------------------------- 文件列表 --------------------------
+
+class FileSection(_Section):
+    """文件列表分区：工作路径下全部图片（QListView + 检索代理模型）。
+
+    顶部检索框（fileSearchEdit）经 FileSearchProxyModel 按文件名/标签/
+    已标注状态实时过滤；检索无匹配时视图上覆盖"无匹配文件"空态提示。
+    每项带只读"已标注"复选框（勾选状态由主窗口在保存后经
+    set_file_annotated 维护）。
+
+    Signals:
+        file_selected(int): 用户选中文件（参数为文件在源模型中的下标，
+            代理行号已经 mapToSource 转换）。
+        file_edit_requested(int): 用户双击文件条目：请求加载该图片并
+            进入编辑模式（参数为文件在源模型中的下标，代理行号已经
+            mapToSource 转换）。
+    """
+
+    file_selected = Signal(int)
+    # 双击条目：请求加载该图片并进入编辑模式（参数为源模型文件下标）
+    file_edit_requested = Signal(int)
+
+    def __init__(self, parent=None):
+        """初始化文件列表分区（QListView 虚拟化 + 检索框 + 空态提示）。"""
+        super().__init__("文件列表", parent)
+        self.setObjectName("fileSection")
+        # 源模型 + 检索代理：视图挂代理模型，按文件名/标签/已标注状态过滤
+        self.file_model = FileListModel(self)
+        self.file_proxy = FileSearchProxyModel(self)
+        self.file_proxy.setSourceModel(self.file_model)
+        # QListView（大目录不逐项建 item，UI 虚拟化）
+        self.list = QListView()
+        self.list.setModel(self.file_proxy)
+        self.list.setStyleSheet(
+            "QListView { background-color: #fafafa; border: 0; }"
+        )
+        # 检索框（标题与列表之间，实时过滤文件名/标签/标注状态）
+        self.file_search_edit = QLineEdit()
+        self.file_search_edit.setObjectName("fileSearchEdit")
+        self.file_search_edit.setPlaceholderText("检索文件名/标签…")
+        self.file_search_edit.setClearButtonEnabled(True)
+        self.file_search_edit.textChanged.connect(self._on_file_search_changed)
+        self.lay.addWidget(self.file_search_edit)
+        self.lay.addWidget(self.list, 1)
+        # 空态提示：覆盖在列表视图上，仅检索词非空且无匹配时显示
+        self._file_empty_label = QLabel("无匹配文件", self.list)
+        self._file_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._file_empty_label.setStyleSheet(
+            "color: #a1a1aa; background-color: #fafafa; border: 0;"
+        )
+        self._file_empty_label.hide()
+        # 视图尺寸变化时空态提示保持覆盖整个视图
+        self.list.installEventFilter(self)
+        # 当前行变化经 selectionModel 转发（视图挂代理模型，行号需
+        # mapToSource 转回源模型行号）
+        self.list.selectionModel().currentRowChanged.connect(
+            lambda cur, _: self.file_selected.emit(
+                self.file_proxy.mapToSource(cur).row() if cur.isValid() else -1
+            )
+        )
+        # 双击条目：请求加载该图片并进入编辑模式（行号经 mapToSource 转换）
+        self.list.doubleClicked.connect(self._on_file_double_clicked)
+        # 代理行数变化（过滤生效/模型重置）与布局变化时同步空态提示显隐
+        self.file_proxy.modelReset.connect(self._update_file_empty_state)
+        self.file_proxy.layoutChanged.connect(self._update_file_empty_state)
+        self.file_proxy.rowsInserted.connect(self._update_file_empty_state)
+        self.file_proxy.rowsRemoved.connect(self._update_file_empty_state)
+
     def set_files(self, files, annotated=None) -> None:
         """填充文件列表（每项带只读"已标注"复选框）。
 
@@ -464,6 +496,17 @@ class RightPanel(QWidget):
         has_text = bool(self.file_search_edit.text().strip())
         self._file_empty_label.setVisible(has_text and self.file_proxy.rowCount() == 0)
 
+    def _on_file_double_clicked(self, proxy_index) -> None:
+        """双击条目：请求加载该图片并进入编辑模式。
+
+        Args:
+            proxy_index: 双击命中的代理模型下标。
+        """
+        # 代理行号经 mapToSource 转回源模型行号（与 file_selected 一致）
+        self.file_edit_requested.emit(
+            self.file_proxy.mapToSource(proxy_index).row()
+        )
+
     def eventFilter(self, obj, event) -> bool:
         """文件列表视图事件过滤：视图尺寸变化时保持空态提示覆盖全视图。
 
@@ -474,8 +517,8 @@ class RightPanel(QWidget):
         Returns:
             是否拦截事件（此处不拦截，交还原处理链）。
         """
-        if obj is self.file_section.list and event.type() == QEvent.Type.Resize:
-            self._file_empty_label.setGeometry(self.file_section.list.rect())
+        if obj is self.list and event.type() == QEvent.Type.Resize:
+            self._file_empty_label.setGeometry(self.list.rect())
         return super().eventFilter(obj, event)
 
     def select_file(self, index: int) -> None:
@@ -492,7 +535,7 @@ class RightPanel(QWidget):
         Args:
             index: 文件下标（越界时不操作）。
         """
-        view = self.file_section.list
+        view = self.list
         if 0 <= index < self.file_model.count():
             proxy_index = self.file_proxy.mapFromSource(self.file_model.index(index))
             if not proxy_index.isValid():
@@ -504,60 +547,106 @@ class RightPanel(QWidget):
                 QAbstractItemView.ScrollHint.PositionAtCenter,
             )
 
-    # -------------------------- 分区显隐 --------------------------
-    def set_section_visible(self, section_name: str, visible: bool) -> None:
-        """显示/隐藏指定分区（整体收起列表，列表数据不丢失）。
 
-        隐藏分区在垂直分栏中自动让出空间，恢复显示后回到原高度记忆。
+class RightPanel(QWidget):
+    """右侧信息栏聚合面板：垂直 QSplitter 纵向承载三个分区实例。
+
+    由主窗口以单一 QDockWidget 承载本面板：整体宽度由 Dock 分隔条拖拽
+    调节，三个分区的相对高度由面板内部垂直 QSplitter 拖拽调节；每个
+    分区构造时强制 96px 最小高度（拖拽下限，防止分区被拖到不可见而
+    "消失"，与 setChildrenCollapsible(False) 构成双保险）。
+
+    三个分区实例由主窗口创建后传入（主窗口既有 self.label_section 等
+    引用无缝保留），本面板保存引用并暴露同名属性；分区显隐经
+    set_section_visible 控制（隐藏不丢数据），分区分隔条拖动经
+    sizes_changed 信号通知主窗口（主窗口防抖后持久化分区高度）。
+
+    Args:
+        label_section: 标签列表分区实例（LabelSection）。
+        object_section: 对象列表分区实例（ObjectSection）。
+        file_section: 文件列表分区实例（FileSection）。
+        parent: 父控件。
+
+    Signals:
+        sizes_changed: 分区分隔条被拖动（主窗口防抖后落盘分区高度）。
+    """
+
+    # 分区分隔条拖动（主窗口防抖后持久化分区高度）
+    sizes_changed = Signal()
+
+    def __init__(self, label_section, object_section, file_section, parent=None):
+        """初始化聚合面板（垂直 QSplitter 装载三分区并设最小高度）。"""
+        super().__init__(parent)
+        self.setObjectName("rightPanel")
+        # 面板宽度边界：Dock 分隔条拖拽时受此约束（响应及时、边界准确）
+        self.setMinimumWidth(PANEL_MIN_WIDTH)
+        self.setMaximumWidth(PANEL_MAX_WIDTH)
+        # 保存分区引用并暴露同名属性（主窗口既有引用无缝保留）
+        self.label_section = label_section
+        self.object_section = object_section
+        self.file_section = file_section
+
+        # 外层零边距布局内嵌垂直分栏（分区相对高度拖拽调节）
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self.splitter.setHandleWidth(6)
+        # 禁止拖拽折叠（与分区最小高度双保险，分区不会被拖没）
+        self.splitter.setChildrenCollapsible(False)
+        # 三个分区加入分栏，并统一强制 96px 最小高度（拖拽下限，防止
+        # 折叠消失；设在本处而非 Section 类内，分区独立使用时不受约束）
+        for section in (self.label_section, self.object_section, self.file_section):
+            section.setMinimumHeight(96)
+            self.splitter.addWidget(section)
+        outer.addWidget(self.splitter)
+
+        # 分区分隔条拖动完成即通知主窗口（防抖后落盘分区高度）
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        """分区分隔条拖动：转发为 sizes_changed 信号。
 
         Args:
-            section_name: 分区名（"labels"=标签列表 / "objects"=对象列表 /
-                "files"=文件列表）。
-            visible: 是否可见。
+            pos: 分隔条新位置。
+            index: 被拖动的分隔条下标。
+        """
+        self.sizes_changed.emit()
+
+    def set_section_visible(self, name: str, visible: bool) -> None:
+        """设置指定分区显隐（仅视觉隐藏，不影响分区数据）。
+
+        Args:
+            name: 分区名称，"labels"=标签列表 / "objects"=对象列表 /
+                "files"=文件列表。
+            visible: 是否显示。
+
+        Raises:
+            ValueError: name 不在 labels/objects/files 之中。
         """
         sections = {
             "labels": self.label_section,
             "objects": self.object_section,
             "files": self.file_section,
         }
-        sec = sections.get(section_name)
-        if sec is not None:
-            sec.setVisible(visible)
+        if name not in sections:
+            raise ValueError(f"未知分区名称: {name}（可选 labels/objects/files）")
+        sections[name].setVisible(visible)
 
-    # -------------------------- 分栏尺寸 --------------------------
-    def set_section_heights(self, heights) -> None:
-        """程序化设置三组列表的分栏高度（应用并记忆）。
+    def set_section_heights(self, heights: List[int]) -> None:
+        """设置三个分区的相对高度（主窗口启动时恢复记忆高度）。
 
         Args:
-            heights: [标签, 对象, 文件] 高度列表。
+            heights: 长度为 3 的高度列表（标签/对象/文件分区）；长度不符
+                时忽略本次调用。
         """
-        self._section_heights = [int(h) for h in heights[:3]]
-        self.splitter.setSizes(list(self._section_heights))
+        if len(heights) == 3:
+            self.splitter.setSizes(list(heights))
 
     def section_heights(self) -> List[int]:
-        """返回三组列表的记忆高度列表。
+        """返回三个分区的当前高度（主窗口关闭时记忆）。
 
         Returns:
-            [标签, 对象, 文件] 高度列表。
+            长度为 3 的高度列表（标签/对象/文件分区）。
         """
-        return list(self._section_heights)
-
-    def _on_splitter_moved(self, pos: int, index: int) -> None:
-        """列表分栏拖动：更新记忆高度并发射尺寸变化信号。
-
-        Args:
-            pos: 拖动位置（仅为信号签名，未使用）。
-            index: 拖动的分隔条下标（仅为信号签名，未使用）。
-        """
-        sizes = self.splitter.sizes()
-        sections = (
-            self.label_section,
-            self.object_section,
-            self.file_section,
-        )
-        # 仅更新当前可见段的记忆高度（用 isHidden 判断自身显式隐藏态，
-        # 避免父窗口未显示时 isVisible() 恒 False 的误判）
-        for i, sec in enumerate(sections):
-            if not sec.isHidden() and i < len(sizes):
-                self._section_heights[i] = sizes[i]
-        self.sizes_changed.emit(list(self._section_heights))
+        return list(self.splitter.sizes())
