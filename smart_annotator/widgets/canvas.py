@@ -58,6 +58,12 @@
       自动缩小、缩小自动放大；_apply_zoom/fit_to_window 后经
       _update_point_items 重算既有圆点几何；白描边改 cosmetic
       （屏幕恒定 1px）
+更新: 2026-09-09 修复缩放重绘偶发 native 崩溃（0xC0000409/0xC000041D，
+      ucrtbase 栈保护 fail-fast）：根因为 QGraphicsDropShadowEffect
+      软件模糊管线在缩放重绘下的栈破坏（压测复现，Python 层不可
+      捕获）；文本阴影改为双 QGraphicsTextItem 自绘（底层黑色阴影
+      setOpacity 承载 0-100 配置 + 顶层标签色文字，偏移 (1,1)），
+      移除 QGraphicsDropShadowEffect 依赖
 """
 
 import copy
@@ -83,7 +89,6 @@ from PySide6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsTextItem,
     QGraphicsItem,
-    QGraphicsDropShadowEffect,
 )
 
 from ..config import RenderConfig
@@ -900,29 +905,42 @@ class Canvas(QGraphicsView):
             return
         # 多行文本（HTML 换行），颜色与标签色一致
         html = "<br>".join(p.replace("<", "&lt;").replace(">", "&gt;") for p in parts)
-        text_item = QGraphicsTextItem()
         font = QFont()
         font.setPointSizeF(float(cfg.font_size))
-        text_item.setFont(font)
-        # 文本投影：黑色阴影提升在任意底色图像上的可读性，
-        # 透明度由阴影色 alpha 承载（配置 0-100 → alpha 0-255，0 = 无阴影）
-        eff = QGraphicsDropShadowEffect(text_item)
-        eff.setBlurRadius(3)
-        eff.setOffset(1, 1)
-        eff.setColor(
-            QColor(0, 0, 0, int(round(255 * max(0, min(100, cfg.text_shadow_opacity)) / 100.0)))
+
+        # 阴影实现（双文本项自绘，禁用 QGraphicsDropShadowEffect）：
+        # Qt 图形视图的软件模糊管线在缩放重绘场景下存在栈破坏 native
+        # 崩溃（实测复现 0xC000041D/0xC0000409，Python 层不可捕获），
+        # 故以底层黑色文本 + 顶层彩色文本叠加替代，视觉近似且规避
+        # 整类 effect 崩溃；阴影不透明度取配置（0-100 → setOpacity，
+        # 0 = 无阴影）。
+        shadow_item = QGraphicsTextItem()
+        shadow_item.setFont(font)
+        shadow_item.setHtml(
+            f'<span style="color:#000000;">{html}</span>'
         )
-        text_item.setGraphicsEffect(eff)
+        shadow_item.setOpacity(
+            max(0.0, min(1.0, cfg.text_shadow_opacity / 100.0))
+        )
+        shadow_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self._scene.addItem(shadow_item)
+        self._text_items.append(shadow_item)
+
+        text_item = QGraphicsTextItem()
+        text_item.setFont(font)
         text_item.setHtml(
             f'<span style="color:{color_for_label(str(shape.get("label", "") or "")).name()};">{html}</span>'
         )
         # 固定偏移定位：包围盒左上角外侧（向上让出文本高度 + 间隙），
-        # 文字左缘与标注框左缘对齐，恒不与框体重叠
+        # 文字左缘与标注框左缘对齐，恒不与框体重叠；阴影项偏移 (1,1)
+        # 与原投影效果一致
         text_height = text_item.boundingRect().height()
-        text_item.setPos(
+        base_pos = QPointF(
             bbox.left(),
             bbox.top() - text_height - _TEXT_OFFSET,
         )
+        shadow_item.setPos(base_pos + QPointF(1.0, 1.0))
+        text_item.setPos(base_pos)
         text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self._scene.addItem(text_item)
         self._text_items.append(text_item)
