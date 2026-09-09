@@ -34,6 +34,10 @@
 更新: 2026-09-08 RenderConfig 新增 text_shadow_opacity（形状标签文本
       阴影不透明度，0-100 整型校验越界钳制，默认 45 与原硬编码视觉
       一致；视图菜单档位可调，随配置持久化）
+更新: 2026-09-09 删除持久化确认开关 confirm_delete_shapes/confirm_clear/
+      confirm_delete_file（旧 JSON 键由 from_dict 白名单静默忽略）：
+      删除确认的"不再提醒"改为应用运行期会话级记忆，不落盘，
+      重启恢复默认提醒状态
 """
 
 from dataclasses import dataclass, field
@@ -273,9 +277,6 @@ class RenderConfig:
         show_label: 是否在画布渲染形状标签文本。
         show_group: 是否在画布渲染形状组号（G{group_id}）。
         show_description: 是否在画布渲染形状描述文本。
-        confirm_delete_shapes: 删除选中标注/对象列表删除前是否弹确认框。
-        confirm_clear: 清空标注前是否弹确认框。
-        confirm_delete_file: 删除图片及标注前是否弹确认框。
         pen_width: 矩形/多边形描边线宽（像素，选中态为 pen_width + 2）。
         point_size: 关键点准星臂长（场景单位，钳制 [1.0, 20.0]）。
         opacity: 多边形填充不透明度（0.0-1.0）。
@@ -293,10 +294,6 @@ class RenderConfig:
     show_label: bool = True
     show_group: bool = False
     show_description: bool = True
-    # ===== 确认弹窗开关（危险操作前二次确认，默认开启）=====
-    confirm_delete_shapes: bool = True  # 删除选中标注/对象列表删除前是否确认
-    confirm_clear: bool = True  # 清空标注前是否确认
-    confirm_delete_file: bool = True  # 删除图片及标注前是否确认
     pen_width: float = 2.0
     point_size: float = 4.0
     opacity: float = 0.3
@@ -318,9 +315,6 @@ class RenderConfig:
             "show_label": self.show_label,
             "show_group": self.show_group,
             "show_description": self.show_description,
-            "confirm_delete_shapes": self.confirm_delete_shapes,
-            "confirm_clear": self.confirm_clear,
-            "confirm_delete_file": self.confirm_delete_file,
             "pen_width": self.pen_width,
             "point_size": self.point_size,
             "opacity": self.opacity,
@@ -361,12 +355,6 @@ class RenderConfig:
             cfg.show_group = data["show_group"]
         if isinstance(data.get("show_description"), bool):
             cfg.show_description = data["show_description"]
-        if isinstance(data.get("confirm_delete_shapes"), bool):
-            cfg.confirm_delete_shapes = data["confirm_delete_shapes"]
-        if isinstance(data.get("confirm_clear"), bool):
-            cfg.confirm_clear = data["confirm_clear"]
-        if isinstance(data.get("confirm_delete_file"), bool):
-            cfg.confirm_delete_file = data["confirm_delete_file"]
         if isinstance(data.get("auto_scan_labels"), bool):
             cfg.auto_scan_labels = data["auto_scan_labels"]
         if isinstance(data.get("auto_save"), bool):

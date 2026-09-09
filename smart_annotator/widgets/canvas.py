@@ -53,6 +53,11 @@
       改为形状包围盒左上角外侧固定偏移（_TEXT_OFFSET 像素间隙，文字
       左缘对齐框左缘，恒不与框体重叠）；阴影不透明度改取渲染配置
       text_shadow_opacity（0-100，0=无阴影，黑色阴影 + setOpacity）
+更新: 2026-09-09 关键点圆点与缩放反向联动：场景半径 = point_size /
+      视图缩放（_point_scene_radius），圆点屏幕像素大小恒定——放大
+      自动缩小、缩小自动放大；_apply_zoom/fit_to_window 后经
+      _update_point_items 重算既有圆点几何；白描边改 cosmetic
+      （屏幕恒定 1px）
 """
 
 import copy
@@ -320,6 +325,8 @@ class Canvas(QGraphicsView):
         """
         if self._pixmap_item is not None:
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            # 关键点反向联动：fit 缩放后按新比例重算圆点尺寸
+            self._update_point_items()
 
     # -------------------------- 图像信息访问器 --------------------------
     def image_path(self) -> str:
@@ -732,6 +739,43 @@ class Canvas(QGraphicsView):
         self.verticalScrollBar().setValue(
             self.verticalScrollBar().value() + delta.y()
         )
+        # 关键点反向联动：缩放后按新比例重算圆点尺寸（屏幕像素恒定）
+        self._update_point_items()
+
+    def _point_scene_radius(self) -> float:
+        """返回关键点圆点的场景半径（与画布缩放反向联动）。
+
+        point_size 为屏幕像素基准半径；场景半径 = point_size / 视图
+        缩放比例——放大时场景半径自动缩小、缩小时自动放大，圆点的
+        屏幕视觉大小恒定（不受缩放级别影响）。
+
+        Returns:
+            场景半径（视图未初始化/异常缩放时回退 point_size）。
+        """
+        scale = self.transform().m11()
+        if scale <= 1e-9:
+            return float(self._render_config.point_size)
+        return float(self._render_config.point_size) / scale
+
+    def _update_point_items(self) -> None:
+        """按当前视图缩放反向重算全部关键点圆点的几何尺寸。
+
+        遍历形状列表中的 point 形状，按新场景半径重设对应
+        QGraphicsEllipseItem 的矩形（圆心保持不变）；缩放与渲染配置
+        变更后调用，保证圆点屏幕像素大小恒定。
+        """
+        for shape in self._shapes:
+            if shape.get("shape_type") != labelme_io.SHAPE_POINT:
+                continue
+            item = self._shape_items.get(id(shape))
+            if item is None or not hasattr(item, "setRect"):
+                continue
+            points = shape.get("points") or []
+            if not points:
+                continue
+            r = self._point_scene_radius()
+            x, y = float(points[0][0]), float(points[0][1])
+            item.setRect(QRectF(x - r, y - r, r * 2, r * 2))
 
     # -------------------------- 渲染逻辑 --------------------------
     def _make_item(self, shape: Dict) -> Optional[QGraphicsItem]:
@@ -761,12 +805,15 @@ class Canvas(QGraphicsView):
             return item
 
         if shape_type == labelme_io.SHAPE_POINT and len(points) >= 1:
-            # 关键点圆点：半径取渲染配置 point_size（场景单位，跟随缩放），
-            # 白色细描边（非 cosmetic，随缩放）+ 标签色填充
+            # 关键点圆点：屏幕像素半径 = point_size（反向联动缩放——放大
+            # 时圆点场景半径自动缩小、缩小时自动放大，视觉大小恒定），
+            # 白色细描边（cosmetic，屏幕恒定 1px）+ 标签色填充
             x, y = float(points[0][0]), float(points[0][1])
-            r = float(self._render_config.point_size)
+            r = self._point_scene_radius()
             item = QGraphicsEllipseItem(x - r, y - r, r * 2, r * 2)
-            item.setPen(QPen(QColor("#ffffff"), 1))
+            pen_point = QPen(QColor("#ffffff"), 1)
+            pen_point.setCosmetic(True)
+            item.setPen(pen_point)
             item.setBrush(QBrush(QColor(color)))
             return item
 

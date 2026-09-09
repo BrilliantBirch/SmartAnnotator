@@ -140,6 +140,11 @@
 更新: 2026-09-08 视图菜单新增"阴影不透明度"档位子菜单（0/20/40/60/
       80/100，控制形状文本阴影清晰度；0=无阴影），档位写入
       RenderConfig.text_shadow_opacity 随配置持久化，启动自动恢复
+更新: 2026-09-09 删除确认统一为会话级提醒：_confirm_destructive 的
+      "不再提醒"改记运行期集合 _confirm_skipped（不再持久化，重启
+      恢复默认提醒）；补齐画布右键删除与 Delete 快捷键对象列表分支/
+      默认画布分支的确认链路（统一收敛到 _confirm_destructive）；
+      "关键点大小"档位最小值下调至 1px 并新增 2px
 """
 
 import json
@@ -249,6 +254,9 @@ class MainWindow(QMainWindow):
         # 程序性加载守卫：打开图片/标注回填期间置 True，画布 set_shapes/
         # clear_shapes 触发的 shapes_changed 不误置脏（try/finally 保证复位）
         self._loading: bool = False
+        # 删除确认"不再提醒"的会话级记忆（操作类型集合）：不持久化，
+        # 应用重启后恢复默认提醒状态
+        self._confirm_skipped: set = set()
 
         # 自动标注配置（加载模型后可用）
         self.annotate_config: "SysConfig | None" = None
@@ -437,10 +445,12 @@ class MainWindow(QMainWindow):
             "text_shadow_opacity",
         ))
 
-        # 关键点大小档位（互斥单选，控制关键点准星臂长）
+        # 关键点大小档位（互斥单选，控制关键点屏幕像素基准半径；
+        # 最小 1px，渲染时与画布缩放反向联动）
         menu_view.addMenu(self._build_render_option_menu(
             "关键点大小",
-            [("3", 3.0), ("4", 4.0), ("5", 5.0), ("6", 6.0), ("8", 8.0)],
+            [("1px", 1.0), ("2px", 2.0), ("3px", 3.0), ("4px", 4.0),
+             ("5px", 5.0), ("6px", 6.0), ("8px", 8.0)],
             "point_size",
         ))
 
@@ -1216,21 +1226,22 @@ class MainWindow(QMainWindow):
         self.canvas.redo()
 
     def _confirm_destructive(self, kind: str, title: str, text: str) -> bool:
-        """破坏性删除统一确认（含"不再提醒"记忆，按操作类型分别记忆）。
+        """破坏性删除统一确认（含"不再提醒"会话级记忆，按操作类型分别记忆）。
 
-        勾选"不再提醒"后写入 RenderConfig 对应 confirm_* 字段并即时落盘。
+        勾选"不再提醒"后仅记录到运行期集合 _confirm_skipped（不写
+        RenderConfig、不落盘），应用重启后恢复默认提醒状态。
 
         Args:
-            kind: RenderConfig 的 confirm_* 字段名（如 "confirm_clear"）；
-                配置已关闭确认（False）时直接放行。
+            kind: 操作类型标识（如 "confirm_clear"）；本会话内已勾选
+                "不再提醒"的操作类型直接放行。
             title: 确认框标题。
             text: 确认框正文。
 
         Returns:
-            用户确认（或已选择不再提醒）返回 True；取消返回 False。
+            用户确认（或本会话已选择不再提醒）返回 True；取消返回 False。
         """
-        # 该操作类型已勾选"不再提醒"：直接放行
-        if not getattr(self._render_config, kind, True):
+        # 该操作类型本会话已勾选"不再提醒"：直接放行
+        if kind in self._confirm_skipped:
             return True
         msg = QMessageBox(
             QMessageBox.Icon.Question,
@@ -1239,14 +1250,13 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             self,
         )
-        # "不再提醒"勾选框：勾选并确认后按操作类型记忆到渲染配置
+        # "不再提醒"勾选框：勾选并确认后按操作类型会话级记忆（不持久化）
         check = QCheckBox("不再提醒")
         msg.setCheckBox(check)
         if msg.exec() != QMessageBox.StandardButton.Ok:
             return False
         if check.isChecked():
-            setattr(self._render_config, kind, False)
-            self._save_render_config_now()
+            self._confirm_skipped.add(kind)
         return True
 
     def _on_delete(self) -> None:
@@ -1283,19 +1293,20 @@ class MainWindow(QMainWindow):
     def _on_delete_shortcut(self) -> None:
         """Delete 快捷键：按当前焦点控件路由删除业务。
 
-        路由顺序：文本输入控件不拦截 → 对象列表删选中对象 →
-        文件列表删选中图像及标注（含确认框）→ 默认删画布选中形状。
+        路由顺序：文本输入控件不拦截 → 对象列表删选中对象（统一确认）
+        → 文件列表删选中图像及标注（统一确认）→ 默认删画布选中形状
+        （统一确认）。三条删除路径均经 _confirm_destructive 确认框。
         """
         fw = QApplication.focusWidget()
         # 焦点在文本输入控件：不拦截，保留正常文本删除行为
         if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
             return
-        # 焦点在对象列表：删除列表选中对象（映射下标，与画布选中态双向同步）
+        # 焦点在对象列表：删除列表选中对象（映射下标，复用含确认框的删除链路）
         obj_list = self.object_section.list
         if fw is obj_list or (fw is not None and obj_list.isAncestorOf(fw)):
             indices = self.object_section.selected_object_indices()
             if indices:
-                self.canvas.delete_shapes_at(indices)
+                self._on_delete_objects(indices)
             return
         # 焦点在文件列表：删除选中图像及同名标注（复用含确认框的健壮删除逻辑）
         file_list = self.file_section.list
@@ -1304,8 +1315,8 @@ class MainWindow(QMainWindow):
             if self._has_workspace() and cur.isValid() and cur.row() >= 0:
                 self._on_delete_image_and_annotation()
             return
-        # 默认（画布或其他控件）：删除画布选中形状（无选中则无操作）
-        self.canvas.delete_selected()
+        # 默认（画布或其他控件）：删除画布选中形状（统一确认链路）
+        self._on_delete()
 
     # -------------------------- 文件删除 --------------------------
     def _on_delete_image_and_annotation(self) -> None:
@@ -1927,7 +1938,8 @@ class MainWindow(QMainWindow):
         if chosen is act_edit:
             self._on_edit_object(self._shape_index(selected[0]))
         elif chosen is act_del:
-            self.canvas.delete_selected()
+            # 画布右键删除：走统一确认链路（_on_delete 内含确认框）
+            self._on_delete()
         elif chosen is act_copy:
             self.canvas.copy_selected()
         elif chosen is act_paste:
