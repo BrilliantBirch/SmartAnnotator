@@ -44,6 +44,15 @@
 更新: 2026-09-09 在线安装器版本 define 化：编译时传 /DMyAppVersion=
       PRODUCT_VERSION（version_manager 唯一定义处），配合应用内
       "检查更新"（Gitee Release tag v{产品版本} 比对）与静默更新安装
+更新: 2026-09-10 download_config.ini 改为构建自动写入：zip 命名改用
+      PRODUCT_VERSION（消除硬编码 1.2.0），新增 _resolve_download_config
+      按 packages 实际产物探测 URL/分卷数并回写 [urls] 与 [info]，
+      删除 _read_download_config/_update_download_config_parts（人工
+      维护 ini 的旧机制废弃）；新增 GITEE_REPO 发布仓库常量
+更新: 2026-09-10 GPU 包瘦身：新增 _cleanup_gpu_duplicate_dlls 删除
+      contents 目录内与 exe 根目录重复的 CUDA 运行库（PyInstaller
+      bindepend 收集副本约 1.0 GB，运行期加载根目录优先），
+      离线 installer.iss 版本同样参数化（MyAppVersion）
 """
 import argparse
 import configparser
@@ -73,6 +82,11 @@ PACKAGES_DIR_NAME = "BrilliantAnnotator"
 # GPU 版本：标志值为 "gpu"，运行时按 CUDA 可用性正常联动。
 # 开发模式（无标志文件）按 CUDA 可用性正常联动。
 BUILD_MODE_FLAG_FILENAME = "build_mode.txt"
+
+# ===== Gitee 发布仓库（Release 下载直链的唯一来源）=====
+# 约定: Release tag = v{产品版本}，附件名 BrilliantAnnotator_{MODE}_{版本}.zip；
+# 须与 smart_annotator/core/updater.py 的 UPDATE_API_URL/RELEASE_PAGE_URL 保持同步
+GITEE_REPO = "baibinnan/vai_-e_-smart-annotator"
 
 # ===== 需要排除的模块（减小打包体积）=====
 # 注意：不排除 numpy/opencv/onnx/onnxruntime/PIL/yaml/psutil（运行时必需）
@@ -212,6 +226,25 @@ GPU_REDUNDANT_DLL_PATTERNS = [
     "nvinfer_plugin",
     "nvinfer_builder_resource",
     "onnxruntime_providers_tensorrt",
+]
+
+# ===== GPU 模式 contents 目录去重模式表（前缀匹配，仅限 PACKAGES_DIR_NAME 子目录）=====
+# PyInstaller 的 bindepend 会把 onnxruntime_providers_cuda 的 CUDA 传递依赖
+#（nvidia pip 包运行库）收集进 contents 目录，而 _copy_cudnn_dlls 又会将相同
+# （或更新版本）运行库复制到 exe 根目录；运行期 _ensure_cuda_dlls 注册 exe
+# 根目录优先，contents 内副本为死重（实测 cublasLt/cufft/cublas/cudart/cudnn
+# 双份约 1.0 GB）。仅清理 contents 目录（exe 根目录副本为运行必需，必须保留）；
+# 不含 onnxruntime_providers_cuda（仅存在于 capi 目录，无根目录副本，不得删）。
+GPU_PACKAGES_REDUNDANT_DLL_PATTERNS = [
+    "cudnn",
+    "cublas",
+    "cufft",
+    "cudart",
+    "cufftw",
+    "nvblas",
+    "nvrtc",
+    "nvjit",
+    "nvvm",
 ]
 
 # ===== CPU 模式需要删除的冗余 CUDA DLL（前缀匹配，递归遍历整个打包目录）=====
@@ -500,10 +533,11 @@ def _copy_cudnn_dlls(exe_dir: Path) -> int:
 
     onnxruntime_providers_cuda.dll 依赖 cudnn64_9.dll（cuDNN 9）、
     cublas64_12/cublasLt64_12（cuBLAS）、cufft64_11（cuFFT）、
-    cudart64_12（CUDA Runtime），这些 DLL 均不随 onnxruntime-gpu 安装，
-    仅存在于 pip 包 nvidia-*-cu12 的 nvidia/<组件>/bin 目录。PyInstaller
-    的 PE 依赖分析搜索不到该目录（不在 PATH），需手动复制到 exe 目录；
-    运行期由 onnxbackend._ensure_cuda_dlls 注册 exe 目录完成加载。
+    cudart64_12（CUDA Runtime）。这些 DLL 不随 onnxruntime-gpu 安装，
+    仅存在于 pip 包 nvidia-*-cu12 的 nvidia/<组件>/bin 目录；复制到 exe
+    根目录后运行期由 onnxbackend._ensure_cuda_dlls 注册 exe 目录完成加载
+    （PyInstaller bindepend 也会收集一份进 contents 目录，由
+    _cleanup_gpu_duplicate_dlls 去重，根目录副本保证为当前 pip 版本）。
 
     Args:
         exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
@@ -529,6 +563,26 @@ def _copy_cudnn_dlls(exe_dir: Path) -> int:
     return copied_size
 
 
+def _cleanup_gpu_duplicate_dlls(exe_dir: Path) -> int:
+    """GPU 模式专用：删除 contents 目录中与 exe 根目录重复的 CUDA 运行库。
+
+    PyInstaller bindepend 会把 onnxruntime_providers_cuda 的 CUDA 传递依赖
+    收集进 contents 目录，而 _copy_cudnn_dlls 又将相同（或更新版本）运行库
+    复制到 exe 根目录；运行期 _ensure_cuda_dlls 注册 exe 根目录优先，contents
+    内副本为死重（实测约 1.0 GB）。仅遍历 contents 子目录（exe 根目录副本为
+    运行必需必须保留），且模式表不含 onnxruntime_providers_cuda（无重复，不得删）。
+
+    Args:
+        exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
+
+    Returns:
+        已删除文件的总字节数。
+    """
+    return _remove_dlls_by_patterns(
+        exe_dir / PACKAGES_DIR_NAME, GPU_PACKAGES_REDUNDANT_DLL_PATTERNS
+    )
+
+
 def _cleanup_cpu_redundant_dlls(exe_dir: Path) -> int:
     """CPU 模式专用：递归删除所有 CUDA 相关 DLL。
 
@@ -547,11 +601,14 @@ def _cleanup_cpu_redundant_dlls(exe_dir: Path) -> int:
 
 
 def _remove_dlls_by_patterns(root_dir: Path, patterns: list) -> int:
-    """按文件名前缀模式递归删除目录中的 DLL 文件。
+    """按文件名前缀模式递归删除目录中的 DLL 文件（大小写不敏感）。
+
+    匹配统一转小写比较，避免 "nvJitLink_120_0.dll" 等混合大小写文件名
+    因模式表全小写而漏删。
 
     Args:
         root_dir: 递归遍历的根目录路径。
-        patterns: DLL 文件名（不含扩展名）前缀模式列表。
+        patterns: DLL 文件名（不含扩展名）前缀模式列表（建议全小写）。
 
     Returns:
         已删除文件的总字节数。
@@ -561,9 +618,9 @@ def _remove_dlls_by_patterns(root_dir: Path, patterns: list) -> int:
 
     removed_size = 0
     for dll in root_dir.rglob("*.dll"):
-        dll_name = dll.stem  # 不含扩展名
+        dll_name = dll.stem.lower()  # 不含扩展名，统一小写比较
         for pattern in patterns:
-            if dll_name.startswith(pattern):
+            if dll_name.startswith(pattern.lower()):
                 removed_size += dll.stat().st_size
                 dll.unlink()
                 break
@@ -676,62 +733,74 @@ def _split_zip(zip_path: Path, max_part_size: int = MAX_PART_SIZE) -> int:
     return num_parts
 
 
-def _read_download_config() -> dict:
-    """从 download_config.ini 读取 Gitee Release 下载配置。
+def _resolve_download_config(product_version: str) -> dict:
+    """按产品版本解析 Gitee Release 下载配置并自动回写 download_config.ini。
 
-    配置文件位于项目根目录，格式:
-        [urls]
-        cpu_url = https://gitee.com/.../CPU_1.2.0.zip      ; parts=1 时为完整 URL
-        cpu_parts = 1
-        gpu_url = https://gitee.com/.../GPU_1.2.0.zip.part  ; parts>1 时为基础 URL（追加 001/002/...）
-        gpu_parts = 6
-
-    Returns:
-        dict: {"cpu_url": str|None, "gpu_url": str|None, "cpu_parts": int, "gpu_parts": int}
-    """
-    config_path = PROJECT_ROOT / "download_config.ini"
-    if not config_path.exists():
-        print(f"  [警告] 下载配置文件不存在: {config_path}")
-        return {"cpu_url": None, "gpu_url": None, "cpu_parts": 1, "gpu_parts": 1}
-
-    cp = configparser.ConfigParser()
-    cp.read(config_path, encoding="utf-8")
-
-    cpu_url = cp.get("urls", "cpu_url", fallback=None)
-    gpu_url = cp.get("urls", "gpu_url", fallback=None)
-    cpu_parts = cp.getint("urls", "cpu_parts", fallback=1)
-    gpu_parts = cp.getint("urls", "gpu_parts", fallback=1)
-
-    # 检测占位符（用户尚未替换实际 Gitee 账号）
-    for url in (cpu_url, gpu_url):
-        if url and "your-account" in url:
-            print(f"  [警告] 下载 URL 仍为占位符，请编辑 download_config.ini 替换 'your-account'")
-            print(f"         当前 URL: {url}")
-            return {"cpu_url": None, "gpu_url": None, "cpu_parts": 1, "gpu_parts": 1}
-
-    return {"cpu_url": cpu_url, "gpu_url": gpu_url, "cpu_parts": cpu_parts, "gpu_parts": gpu_parts}
-
-
-def _update_download_config_parts(mode: str, parts: int) -> None:
-    """更新 download_config.ini 中指定模式的分卷数量。
-
-    构建后自动写入，供后续 --mode online 读取。
+    发布约定: Release tag = v{产品版本}，附件名为
+    BrilliantAnnotator_{CPU|GPU}_{产品版本}.zip（分卷后缀 .part001...）。
+    以 build/packages/ 下的实际产物为准探测 URL 与分卷数；某模式本轮无产物
+    时（如 GPU 包未随本次构建发布）保留 ini 中现有配置。[info] 段同步记录
+    版本号与 zip 实测大小。download_config.ini 自此为构建自动写入的产物，
+    人工无需维护（版本号唯一来源为 VersionManager.PRODUCT_VERSION）。
 
     Args:
-        mode: "cpu" 或 "gpu"。
-        parts: 分卷数量。
-    """
-    config_path = PROJECT_ROOT / "download_config.ini"
-    if not config_path.exists():
-        return
+        product_version: 产品版本号（vm.PRODUCT_VERSION，如 "2.1.0"）。
 
+    Returns:
+        dict: {"cpu_url": str, "gpu_url": str, "cpu_parts": int, "gpu_parts": int}
+    """
+    tag = f"v{product_version}"
+    base_url = f"https://gitee.com/{GITEE_REPO}/releases/download/{tag}"
+    config_path = PROJECT_ROOT / "download_config.ini"
+    packages_dir = BUILD_DIR / "packages"
+
+    # ===== 读取现有 ini（无产物模式保留旧值；文件缺失时按默认值补全） =====
     cp = configparser.ConfigParser()
-    cp.read(config_path, encoding="utf-8")
+    if config_path.exists():
+        cp.read(config_path, encoding="utf-8")
     if not cp.has_section("urls"):
         cp.add_section("urls")
-    cp.set("urls", f"{mode}_parts", str(parts))
+    if not cp.has_section("info"):
+        cp.add_section("info")
+
+    result: dict = {}
+    for mode in ("cpu", "gpu"):
+        mode_upper = mode.upper()
+        stem = f"BrilliantAnnotator_{mode_upper}_{product_version}.zip"
+        zip_path = packages_dir / stem
+        if zip_path.exists():
+            # 完整 zip（未分卷）：完整下载 URL，单分卷
+            url = f"{base_url}/{stem}"
+            parts = 1
+            size_mb = zip_path.stat().st_size / 1024 / 1024
+        else:
+            # 分卷产物探测（_split_zip 生成 .part001...，原 zip 已删除）
+            part_files = sorted(packages_dir.glob(f"{stem}.part*"))
+            if part_files:
+                url = f"{base_url}/{stem}.part"
+                parts = len(part_files)
+                size_mb = sum(p.stat().st_size for p in part_files) / 1024 / 1024
+            else:
+                # 本轮未构建该模式：保留 ini 现有配置并提示
+                url = cp.get("urls", f"{mode}_url", fallback="")
+                parts = cp.getint("urls", f"{mode}_parts", fallback=1)
+                size_mb = cp.getfloat("info", f"{mode}_size_mb", fallback=0.0)
+                if f"_{product_version}" not in url:
+                    print(f"  [提示] {mode_upper} 包未随本次版本构建（产物缺失），URL 沿用现有配置")
+        cp.set("urls", f"{mode}_url", url)
+        cp.set("urls", f"{mode}_parts", str(parts))
+        cp.set("info", "version", product_version)
+        cp.set("info", f"{mode}_size_mb", f"{size_mb:.1f}")
+        result[f"{mode}_url"] = url
+        result[f"{mode}_parts"] = parts
+
+    # ===== 回写 ini（构建自动生成，头部注释注明勿手动编辑） =====
     with open(config_path, "w", encoding="utf-8") as f:
+        f.write("; download_config.ini - 由 build.py 构建时自动写入，请勿手动编辑\n")
+        f.write("; URL 约定: Gitee Release tag=v{产品版本}，附件 BrilliantAnnotator_{MODE}_{版本}.zip\n")
+        f.write("; 分卷: parts>1 时 URL 为基础 URL（追加 001/002/...），供在线安装器与在线更新使用\n")
         cp.write(f)
+    return result
 
 
 def _find_iscc() -> str | None:
@@ -961,6 +1030,11 @@ def _build_package(
         print(f"\n  [GPU] 复制 cuDNN DLL 到 exe 目录（CUDA EP 运行时依赖）...")
         copied_cudnn = _copy_cudnn_dlls(exe_dir)
         print(f"  已复制 cuDNN DLL，共 {copied_cudnn / 1024 / 1024:.1f} MB")
+        # 删除 contents 目录内与 exe 根目录重复的 CUDA 运行库（PyInstaller
+        # bindepend 自动收集的一份为死重，运行期加载 exe 根目录优先）
+        print(f"\n  [GPU] 删除 contents 目录内重复的 CUDA 运行库...")
+        removed_dup = _cleanup_gpu_duplicate_dlls(exe_dir)
+        print(f"  已删除重复 CUDA DLL，释放 {removed_dup / 1024 / 1024:.1f} MB")
 
     # ===== 生成 py_packages_list.txt =====
     print(f"\n  [{mode_upper}] 生成 py_packages_list.txt...")
@@ -970,30 +1044,17 @@ def _build_package(
     packages_list_path.write_text(packages_list_content, encoding="utf-8")
 
     # ===== 创建 zip 压缩包（用于在线分发，超过 95 MB 自动分卷）=====
+    # 版本号唯一来源为 VersionManager.PRODUCT_VERSION（原硬编码 1.2.0 已消除）
     print(f"\n  [{mode_upper}] 创建 zip 压缩包...")
-    app_version = "1.2.0"
-    zip_path = BUILD_DIR / "packages" / f"BrilliantAnnotator_{mode.upper()}_{app_version}.zip"
+    zip_path = (
+        BUILD_DIR / "packages" / f"BrilliantAnnotator_{mode.upper()}_{vm.PRODUCT_VERSION}.zip"
+    )
     zip_size = _create_zip(exe_dir, zip_path)
     print(f"  zip 文件: {zip_path.name} ({zip_size / 1024 / 1024:.1f} MB)")
 
-    # 自动分卷（Gitee Release 单文件 100 MB 限制）
-    num_parts = _split_zip(zip_path)
-    if num_parts > 1:
-        # 分卷后 URL 需追加 .part001/.part002/...，更新配置中的基础 URL
-        _update_download_config_parts(mode, num_parts)
-        # 更新 download_config.ini 中的 URL 为分卷基础 URL（以 .part 结尾）
-        config_path = PROJECT_ROOT / "download_config.ini"
-        if config_path.exists():
-            cp = configparser.ConfigParser()
-            cp.read(config_path, encoding="utf-8")
-            old_url = cp.get("urls", f"{mode}_url", fallback="")
-            if old_url and not old_url.endswith(".part"):
-                cp.set("urls", f"{mode}_url", old_url + ".part")
-                with open(config_path, "w", encoding="utf-8") as f:
-                    cp.write(f)
-                print(f"  已更新 download_config.ini: {mode}_url → 分卷基础 URL, {mode}_parts = {num_parts}")
-    else:
-        _update_download_config_parts(mode, 1)
+    # 自动分卷（Gitee Release 单文件 100 MB 限制）；分卷数与下载 URL 由
+    # _resolve_download_config 探测 packages 产物后统一回写 download_config.ini
+    _split_zip(zip_path)
 
     # 打印目录总大小
     total_size = sum(f.stat().st_size for f in exe_dir.rglob("*") if f.is_file())
@@ -1069,32 +1130,35 @@ def main() -> None:
                     "MyDistDir": str(dist_rel).replace("\\", "/"),
                     "OutputSuffix": f"_{mode_upper}",
                     "MyMode": mode_upper,
+                    # 安装器外壳版本资源与产品版本联动（version_manager 唯一定义处）
+                    "MyAppVersion": vm.PRODUCT_VERSION,
                 },
             )
             if setup:
                 setup_exes.append(setup)
 
+    # ===== 按产物刷新 download_config.ini（构建自动写入，人工无需维护）=====
+    # 版本号唯一来源为 VersionManager.PRODUCT_VERSION；URL/分卷数以
+    # build/packages/ 实际产物探测为准，[urls] 与 [info] 一并回写
+    print("\n[步骤 5] 刷新下载配置 download_config.ini...")
+    dl_config = _resolve_download_config(vm.PRODUCT_VERSION)
+    print(f"  产品版本: {vm.PRODUCT_VERSION}")
+    print(f"  CPU 下载 URL: {dl_config['cpu_url']} (分卷: {dl_config['cpu_parts']})")
+    print(f"  GPU 下载 URL: {dl_config['gpu_url']} (分卷: {dl_config['gpu_parts']})")
+
     # ===== 编译在线安装器（all 或 online 模式）=====
     if args.mode in ("all", "online"):
         print(f"\n  --- 在线安装器 ---")
-        # 从 download_config.ini 读取 Gitee Release 下载配置（URL + 分卷数）
-        dl_config = _read_download_config()
+        # URL 与分卷数来自 _resolve_download_config（步骤 5 已回写 ini）；
+        # 产品版本 define 同步安装器版本信息，应用内"检查更新"以 tag
+        # v{产品版本} 与 __version__ 比对
         online_defines: dict[str, str] = {
-            # 产品版本（version_manager 唯一定义处），同步安装器版本信息，
-            # 应用内"检查更新"以 tag v{产品版本} 与 __version__ 比对
             "MyAppVersion": vm.PRODUCT_VERSION,
+            "CPU_DOWNLOAD_URL": dl_config["cpu_url"],
+            "CPU_PARTS": str(dl_config["cpu_parts"]),
+            "GPU_DOWNLOAD_URL": dl_config["gpu_url"],
+            "GPU_PARTS": str(dl_config["gpu_parts"]),
         }
-        if dl_config["cpu_url"]:
-            online_defines["CPU_DOWNLOAD_URL"] = dl_config["cpu_url"]
-            online_defines["CPU_PARTS"] = str(dl_config["cpu_parts"])
-            print(f"  CPU 下载 URL: {dl_config['cpu_url']} (分卷: {dl_config['cpu_parts']})")
-        if dl_config["gpu_url"]:
-            online_defines["GPU_DOWNLOAD_URL"] = dl_config["gpu_url"]
-            online_defines["GPU_PARTS"] = str(dl_config["gpu_parts"])
-            print(f"  GPU 下载 URL: {dl_config['gpu_url']} (分卷: {dl_config['gpu_parts']})")
-        if not dl_config["cpu_url"] and not dl_config["gpu_url"]:
-            print("  [提示] 未配置实际下载 URL，将使用 installer_online.iss 中的占位符 URL")
-            print("         上传 zip 到 Gitee Release 后，编辑 download_config.ini 替换 URL，重新编译")
         online_setup = _compile_installer(
             iss_name="installer_online.iss",
             output_name="BrilliantAnnotator_OnlineSetup.exe",
@@ -1116,11 +1180,11 @@ def main() -> None:
             size_mb = setup.stat().st_size / 1024 / 1024
             print(f"    {setup.name} ({size_mb:.1f} MB)")
     print("\n  zip 分发包 (用于上传到 Gitee Release):")
-    # packages_dir = BUILD_DIR / "packages"
-    # if packages_dir.exists():
-    #     for zip_file in packages_dir.glob("*.zip"):
-    #         size_mb = zip_file.stat().st_size / 1024 / 1024
-    #         print(f"    {zip_file.name} ({size_mb:.1f} MB)")
+    packages_dir = BUILD_DIR / "packages"
+    if packages_dir.exists():
+        for zip_file in packages_dir.glob("*.zip"):
+            size_mb = zip_file.stat().st_size / 1024 / 1024
+            print(f"    {zip_file.name} ({size_mb:.1f} MB)")
     print("=" * 60)
 
 

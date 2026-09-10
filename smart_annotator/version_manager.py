@@ -4,7 +4,8 @@
 
 版本号策略:
     - 文件版本 (FileVersion): year.month.day.count（如 26.8.10.0），按日期+生成次数自动递增
-    - 产品版本 (ProductVersion): 固定为 1.2.0.0
+    - 产品版本 (ProductVersion): 唯一来源为 smart_annotator/__init__.py 的 __version__
+      （本模块直接引用，发版时仅需修改 __version__ 一处）
 
 文件版本格式说明:
     - year:  年份后两位（2026 → 26）
@@ -18,10 +19,17 @@
 创建日期: 2026-08-10
 更新: 2026-09-03 修复 PRODUCT_VERSION_TUPLE 为 4 元组（PyInstaller FixedFileInfo 要求，
       3 元组导致 prodvers[3] IndexError → VSVersionInfo 反序列化失败）
+更新: 2026-09-10 PRODUCT_VERSION 改为直接引用 __init__.py 的 __version__（版本号
+      单点维护），PRODUCT_VERSION_TUPLE 由 __version__ 自动解析补零生成
 """
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
+
+from smart_annotator import __version__
+
+# __version__ 解析为整数段（如 "2.1.0" → [2, 1, 0]），供四元组补零使用
+_VERSION_PARTS = [int(part) for part in __version__.split(".")]
 
 
 class VersionManager:
@@ -41,11 +49,14 @@ class VersionManager:
     PROGRAM_NAME = "BrilliantAnnotator"
     FILE_DESCRIPTION = "BrilliantAnnotator"
 
-    # 产品版本固定为 2.1.0（与 __version__ 一致）
-    PRODUCT_VERSION = "2.1.0"
+    # 产品版本直接引用 smart_annotator/__init__.py 的 __version__（版本号
+    # 唯一来源，发版时仅需修改该处，本模块与构建产物自动联动）
+    PRODUCT_VERSION = __version__
     # VS_FIXEDFILEINFO 四段式元组（major.minor.patch.0）；PyInstaller 的
-    # FixedFileInfo 要求 filevers/prodvers 必须为 4 元组，缺段会 IndexError
-    PRODUCT_VERSION_TUPLE = (2, 1, 0, 0)
+    # FixedFileInfo 要求 filevers/prodvers 必须为 4 元组，缺段会 IndexError。
+    # 由 __version__ 自动解析：不足四段补 0（如 "2.1.0" → (2, 1, 0, 0)），
+    # 超过四段截断取前四段
+    PRODUCT_VERSION_TUPLE = tuple((_VERSION_PARTS + [0, 0, 0, 0])[:4])
 
     def __init__(self, counter_file: str = "version_counter.txt"):
         """初始化版本管理器。
@@ -86,8 +97,8 @@ class VersionManager:
     def generate_version_info_text(self, file_version: str) -> str:
         """生成 PyInstaller Windows 版本信息文件内容。
 
-        文件版本 (filevers) 按日期+次数自动生成，产品版本 (prodvers)
-        固定为 PRODUCT_VERSION_TUPLE（2.1.0.0）。
+        文件版本 (filevers) 按日期+次数自动生成，产品版本 (prodvers) 取自
+        PRODUCT_VERSION_TUPLE（由 __version__ 解析补零生成）。
 
         Args:
             file_version: 文件版本号字符串，如 "26.8.10.0"。

@@ -10,7 +10,10 @@
 ; ============================================================================
 
 #define MyAppName          "BrilliantAnnotator"
-#define MyAppVersion       "1.2.0"
+; 产品版本：build.py 编译时经 /DMyAppVersion 传入（缺省占位 1.2.0）
+#ifndef MyAppVersion
+  #define MyAppVersion     "1.2.0"
+#endif
 #define MyAppPublisher     "BrilliantBirch"
 #define MyAppExeName       "BrilliantAnnotator.exe"
 #define MyAppDescription   "BrilliantAnnotator"
@@ -63,8 +66,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; 版本信息（与 version_manager.py 一致）
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName=BrilliantAnnotator
-VersionInfoProductVersion=1.2.0.0
-VersionInfoVersion=1.2.0.0
+; 四段式产品版本号（如 2.1.0 → 2.1.0.0）由 MyAppVersion 文本拼接
+VersionInfoProductVersion={#MyAppVersion}.0
+VersionInfoVersion={#MyAppVersion}.0
 
 [Languages]
 ; 中文语言文件未内置 Inno Setup 6.7.3，如需中文安装界面：
