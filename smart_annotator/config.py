@@ -45,6 +45,10 @@
 更新: 2026-09-10 新增 OCR 专属推理参数字段 ocr_thresh（概率图二值化阈值
       0.2）/ocr_box_thresh（检测框置信度阈值 0.45）/ocr_unclip_ratio（外扩
       比例 1.4），纳入 to_dict/from_dict（非数值容错回默认）
+更新: 2026-09-10 DEFAULT_SHORTCUTS 新增三个自动标注动作默认键：
+      annotate_single（标注当前图片 Ctrl+1）/annotate_all（标注所有图片
+      Ctrl+2）/clear_shapes（清空当前标注 Ctrl+Shift+C），旧 shortcuts.json
+      经白名单合并自动补齐默认绑定
 """
 
 from dataclasses import dataclass, field
@@ -448,6 +452,10 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "prev_image": "A",
     "next_image": "D",
     "fit_window": "Ctrl+0",
+    # 自动标注动作（OCR/检测等全模式通用；槽内自带防呆与确认框）
+    "annotate_single": "Ctrl+1",  # 标注当前图片
+    "annotate_all": "Ctrl+2",  # 标注所有图片
+    "clear_shapes": "Ctrl+Shift+C",  # 清空当前标注
 }
 
 

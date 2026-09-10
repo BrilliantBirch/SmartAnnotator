@@ -148,6 +148,12 @@
 更新: 2026-09-09 新增在线更新：帮助菜单"检查更新"+ 启动后静默检查
       （后台线程请求 Gitee Release 比对版本），发现新版本经确认后
       下载在线安装器并随主窗口关闭拉起静默安装（closeEvent 收尾）
+更新: 2026-09-10 快捷键体系新增三个自动标注动作：annotate_single（标注
+      当前图片 Ctrl+1）/annotate_all（标注所有图片 Ctrl+2）/clear_shapes
+      （清空当前标注 Ctrl+Shift+C），经 _apply_shortcuts 挂 QShortcut 复用
+      现有菜单槽函数（槽内自带防呆/确认框，全标注模式通用）；新增模块级
+      _RESERVED_SHORTCUTS 固定保留键表（画布 Esc），快捷键设置对话框
+      传入 reserved 增强冲突检测（与不可配置固定键冲突时阻止保存）
 """
 
 import json
@@ -243,6 +249,17 @@ _ACTION_DEFS: Dict[str, str] = {
     "prev_image": "上一张图片",
     "next_image": "下一张图片",
     "fit_window": "适应窗口",
+    "annotate_single": "标注当前图片",
+    "annotate_all": "标注所有图片",
+    "clear_shapes": "清空当前标注",
+}
+
+# 固定保留键（不可配置，QKeySequence PortableText → 固定功能描述）：
+# 画布 Esc 经 keyPressEvent 处理（取消绘制/框选/端点拖动），QShortcut
+# 会先于按键事件拦截同键，若分配给可配置动作将导致画布取消失效，
+# 故快捷键设置对话框必须阻止用户绑定该键
+_RESERVED_SHORTCUTS: Dict[str, str] = {
+    "Esc": "画布取消绘制/拖动",
 }
 
 # 标签惰性填充每批处理的标注 JSON 数（事件循环分批间让出 UI，万级目录不卡顿）
@@ -669,13 +686,17 @@ class MainWindow(QMainWindow):
             "fit_window": self.act_fit_window,
         }
         # ===== QShortcut 类动作映射（action_id -> 触发槽函数） =====
-        # context 保持默认 WindowShortcut，与原直连实现行为一致
+        # context 保持默认 WindowShortcut，与原直连实现行为一致；
+        # 自动标注三动作复用菜单槽函数（槽内自带防呆/确认框，全模式安全）
         qshortcut_slots = {
             "copy": self.canvas.copy_selected,
             "paste": self.canvas.paste_clipboard,
             "delete": self._on_delete_shortcut,
             "prev_image": self._prev_image,
             "next_image": self._next_image,
+            "annotate_single": self._on_annotate_single,
+            "annotate_all": self._on_annotate_all,
+            "clear_shapes": self._on_clear,
         }
         # 应用 QAction 类快捷键（非法键序列已在 _resolve_shortcut 中回退）
         for action_id, act in qaction_map.items():
@@ -691,8 +712,17 @@ class MainWindow(QMainWindow):
         self.left_toolbar.refresh_shortcut_hints(self._shortcuts_cfg.bindings, _ACTION_DEFS)
 
     def _on_shortcut_settings(self) -> None:
-        """打开自定义快捷键对话框，确定后应用并持久化。"""
-        new_bindings = ShortcutDialog.get_shortcuts(_ACTION_DEFS, self._shortcuts_cfg.bindings, self)
+        """打开自定义快捷键对话框，确定后应用并持久化。
+
+        对话框内检测两类冲突并阻止保存：可配置动作之间的键冲突、
+        与固定保留键（_RESERVED_SHORTCUTS，如画布 Esc）的冲突。
+        """
+        new_bindings = ShortcutDialog.get_shortcuts(
+            _ACTION_DEFS,
+            self._shortcuts_cfg.bindings,
+            self,
+            reserved=_RESERVED_SHORTCUTS,
+        )
         if new_bindings is None:
             return
         self._shortcuts_cfg.bindings = new_bindings

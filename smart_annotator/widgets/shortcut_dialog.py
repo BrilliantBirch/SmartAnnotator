@@ -4,7 +4,8 @@
 
 以表格列出全部可配置动作及当前绑定的快捷键，支持：
     - 选中行后在 QKeySequenceEdit 中录入新键序列，写回所选动作
-    - 冲突检测：任意两个动作绑定相同（非空）键序列时红字提示并禁用"确定"
+    - 冲突检测：任意两个动作绑定相同（非空）键序列时红字提示并禁用"确定"；
+      另检测与固定保留键（reserved，如画布 Esc）的冲突，同样阻止保存
     - 单个动作 / 全部动作恢复默认（取 config.DEFAULT_SHORTCUTS）
 
 三态语义：无冲突时点击"确定"返回编辑后的 bindings 字典（新字典，不污染调用方）；
@@ -12,6 +13,8 @@
 
 作者: BaiBinnan
 创建日期: 2026-09-07
+更新: 2026-09-10 新增保留键冲突检测：构造参数增加 reserved（键序列 →
+      固定功能描述），任一动作绑定命中保留键时红字提示并禁用"确定"
 """
 
 from typing import Dict, Optional
@@ -50,6 +53,7 @@ class ShortcutDialog(QDialog):
         action_defs: Dict[str, str],
         bindings: Dict[str, str],
         parent=None,
+        reserved: Optional[Dict[str, str]] = None,
     ):
         """初始化对话框，构建表格与录入控件并做首次冲突检测。
 
@@ -57,6 +61,9 @@ class ShortcutDialog(QDialog):
             action_defs: action_id → 中文描述（有序，按传入顺序显示）。
             bindings: action_id → 当前键序列字符串（如 "Ctrl+S"）。
             parent: 父控件。
+            reserved: 固定保留键表（PortableText 键序列 → 固定功能描述），
+                可选。命中的动作绑定视为冲突并阻止保存（如画布 Esc 的
+                取消绘制功能不可被可配置动作抢占）。
         """
         super().__init__(parent)
         self.setWindowTitle("自定义快捷键")
@@ -66,6 +73,16 @@ class ShortcutDialog(QDialog):
         self.bindings: Dict[str, str] = dict(bindings)
         # action_id → 中文描述（保存引用，冲突提示中据此显示动作名）
         self._action_defs: Dict[str, str] = dict(action_defs)
+        # 固定保留键：PortableText 归一后存储（键序列 → 功能描述）
+        self._reserved: Dict[str, str] = {
+            QKeySequence(str(seq)).toString(
+                QKeySequence.SequenceFormat.PortableText
+            ): desc
+            for seq, desc in (reserved or {}).items()
+            if QKeySequence(str(seq)).toString(
+                QKeySequence.SequenceFormat.PortableText
+            )
+        }
         # 表格行号 → action_id（按 action_defs 传入顺序）
         self._row_ids = list(action_defs.keys())
 
@@ -225,9 +242,12 @@ class ShortcutDialog(QDialog):
     def _check_conflicts(self) -> None:
         """检测键序列冲突并更新提示与确定按钮状态。
 
-        遍历 bindings，任意两个动作的键序列经 PortableText 归一化后相同
-        且非空即判定冲突：显示"快捷键冲突：{键} 已分配给 {A} 与 {B}"
-        并禁用确定按钮；无冲突时隐藏提示并启用确定按钮。
+        两类冲突任一命中即禁用确定按钮（必须消除后才能保存）：
+            1. 动作间冲突：任意两个动作的键序列经 PortableText 归一化后
+               相同且非空，提示"{键} 已分配给 {A} 与 {B}"；
+            2. 保留键冲突：任一动作绑定命中固定保留键（reserved，如画布
+               Esc），提示"{键} 为固定功能（{描述}）保留，无法分配"。
+        无冲突时隐藏提示并启用确定按钮。
         """
         # 归一化：action_id → PortableText 键序列（跳过空绑定）
         normalized: Dict[str, str] = {}
@@ -238,25 +258,36 @@ class ShortcutDialog(QDialog):
             if text:
                 normalized[action_id] = text
 
-        # 两两比对找第一处冲突
-        ids = list(normalized.keys())
-        conflict_pair: Optional[tuple] = None
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                if normalized[ids[i]] == normalized[ids[j]]:
-                    conflict_pair = (ids[i], ids[j])
-                    break
-            if conflict_pair:
+        conflict_text = ""
+        # 保留键冲突优先提示（固定功能不可抢占，必须先消除）
+        for action_id, text in normalized.items():
+            if text in self._reserved:
+                desc = self._action_defs.get(action_id, action_id)
+                conflict_text = (
+                    f"快捷键冲突：{text} 为固定功能"
+                    f"（{self._reserved[text]}）保留，无法分配给「{desc}」"
+                )
                 break
+        # 动作间两两比对找第一处冲突
+        if not conflict_text:
+            ids = list(normalized.keys())
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    if normalized[ids[i]] == normalized[ids[j]]:
+                        id_a, id_b = ids[i], ids[j]
+                        desc_a = self._action_defs.get(id_a, id_a)
+                        desc_b = self._action_defs.get(id_b, id_b)
+                        conflict_text = (
+                            f"快捷键冲突：{normalized[id_a]} "
+                            f"已分配给 {desc_a} 与 {desc_b}"
+                        )
+                        break
+                if conflict_text:
+                    break
 
-        if conflict_pair:
+        if conflict_text:
             # 冲突：红字提示 + 禁用确定
-            id_a, id_b = conflict_pair
-            desc_a = self._action_defs.get(id_a, id_a)
-            desc_b = self._action_defs.get(id_b, id_b)
-            self.conflict_label.setText(
-                f"快捷键冲突：{normalized[id_a]} 已分配给 {desc_a} 与 {desc_b}"
-            )
+            self.conflict_label.setText(conflict_text)
             self.conflict_label.show()
             self.ok_button.setEnabled(False)
         else:
@@ -278,6 +309,7 @@ class ShortcutDialog(QDialog):
         action_defs: Dict[str, str],
         bindings: Dict[str, str],
         parent=None,
+        reserved: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, str]]:
         """模态打开对话框，返回编辑结果或 None（取消时）。
 
@@ -285,11 +317,13 @@ class ShortcutDialog(QDialog):
             action_defs: action_id → 中文描述（有序，按传入顺序显示）。
             bindings: action_id → 当前键序列字符串。
             parent: 父控件。
+            reserved: 固定保留键表（键序列 → 固定功能描述），可选；
+                命中的绑定视为冲突并阻止保存。
 
         Returns:
             确定（无冲突）时返回编辑后的 bindings 字典副本；取消时返回 None。
         """
-        dialog = ShortcutDialog(action_defs, bindings, parent)
+        dialog = ShortcutDialog(action_defs, bindings, parent, reserved=reserved)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             return dialog.get_bindings()
         return None
