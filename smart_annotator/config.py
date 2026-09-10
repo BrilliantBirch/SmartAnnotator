@@ -38,6 +38,13 @@
       confirm_delete_file（旧 JSON 键由 from_dict 白名单静默忽略）：
       删除确认的"不再提醒"改为应用运行期会话级记忆，不落盘，
       重启恢复默认提醒状态
+更新: 2026-09-10 AnnotateConfig 新增 OCR 识别配置字段 rec_model_path（OCR
+      识别模型 .onnx 路径）与 rec_dict_path（OCR 字典 .txt 路径），仅 OCR
+      模式使用；纳入 to_dict 序列化与 from_dict 解析（None/非字符串容错
+      回空串）
+更新: 2026-09-10 新增 OCR 专属推理参数字段 ocr_thresh（概率图二值化阈值
+      0.2）/ocr_box_thresh（检测框置信度阈值 0.45）/ocr_unclip_ratio（外扩
+      比例 1.4），纳入 to_dict/from_dict（非数值容错回默认）
 """
 
 from dataclasses import dataclass, field
@@ -174,6 +181,8 @@ class AnnotateConfig:
     Attributes:
         device: 推理设备（CPU/GPU，GPU 走 onnxruntime CUDA EP）。
         model_path: 模型文件路径（.onnx）。
+        rec_model_path: OCR 识别模型路径（.onnx，仅 OCR 模式使用）。
+        rec_dict_path: OCR 识别字典路径（.txt，仅 OCR 模式使用）。
         image_path: 输入图片/视频目录。
         dataset_path: 标注输出目录。
         conf: BBox 置信度阈值（0-1）。
@@ -181,7 +190,7 @@ class AnnotateConfig:
         nms: NMS 阈值（0-1）。
         frame_interval: 视频抽帧间隔。
         diff_threshold: 帧间差异阈值。
-        task_type: 任务模式（DETECT/POSE/SEGMENT）。
+        task_type: 任务模式（DETECT/POSE/SEGMENT/OCR）。
         selected_classes: 用户选择检测的类别 id 列表；空列表表示不过滤（检测所有类别）。
         annotation_files: 运行期扫描到的图片文件（不序列化）。
         video_files: 运行期扫描到的视频文件（不序列化）。
@@ -189,6 +198,13 @@ class AnnotateConfig:
 
     device: DEVICE = DEVICE.GPU
     model_path: str = ""
+    # OCR 识别配置（仅 OCR 模式使用）：识别模型与字典路径，持久化序列化
+    rec_model_path: str = ""  # OCR 识别模型 .onnx 路径
+    rec_dict_path: str = ""  # OCR 识别字典 .txt 路径
+    # OCR 专属推理参数（仅 OCR 模式使用，对应 DB 文本检测后处理）
+    ocr_thresh: float = 0.2  # 检测概率图二值化阈值
+    ocr_box_thresh: float = 0.45  # 检测框置信度阈值（框内平均分过滤）
+    ocr_unclip_ratio: float = 1.4  # 检测框外扩比例（unclip）
     image_path: str = ""
     dataset_path: str = ""
     conf: float = 0.25
@@ -207,6 +223,11 @@ class AnnotateConfig:
         return {
             "device": self.device.name,
             "model_path": self.model_path,
+            "rec_model_path": self.rec_model_path,
+            "rec_dict_path": self.rec_dict_path,
+            "ocr_thresh": self.ocr_thresh,
+            "ocr_box_thresh": self.ocr_box_thresh,
+            "ocr_unclip_ratio": self.ocr_unclip_ratio,
             "image_path": self.image_path,
             "dataset_path": self.dataset_path,
             "conf": self.conf,
@@ -240,6 +261,24 @@ class AnnotateConfig:
         migrated = {}
         for k, v in d.items():
             migrated[legacy.get(k, k)] = v
+        # OCR 识别模型/字典路径：缺失或非字符串（如 null）容错回空串
+        for key in ("rec_model_path", "rec_dict_path"):
+            if not isinstance(migrated.get(key), str):
+                migrated[key] = ""
+        # OCR 专属推理参数：缺失或非数值容错回默认（dataclass 字段默认值）
+        for key, default in (
+            ("ocr_thresh", cls.__dataclass_fields__["ocr_thresh"].default),
+            ("ocr_box_thresh", cls.__dataclass_fields__["ocr_box_thresh"].default),
+            (
+                "ocr_unclip_ratio",
+                cls.__dataclass_fields__["ocr_unclip_ratio"].default,
+            ),
+        ):
+            v = migrated.get(key)
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                migrated[key] = default
+            else:
+                migrated[key] = float(v)
         if "device" in migrated:
             migrated["device"] = _coerce_device(migrated["device"])
         if "task_type" in migrated:

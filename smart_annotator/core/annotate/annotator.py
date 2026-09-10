@@ -13,6 +13,8 @@
     6. 2026-08-26 支持按用户选择的类别过滤推理结果（selected_classes）
     7. 2026-09-03 图片批次进度描述附带文件名；视频分支改为逐帧批次回调
        （帧级进度 + 可中断，中止时已生成帧保留、剩余帧停止处理）
+    8. 2026-09-10 注册 OCR 模式（OcrPredictor/OcrFormatter），批量/单张
+       输出通道兼容 OCR 直出 labelme 形状；视频标注增加断点续传跳过
 """
 
 import cv2
@@ -25,9 +27,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from smart_annotator.config import SysConfig, AnnotateConfig, MODE, LABELME_VERSION
 from smart_annotator.utils import LOGGER
 from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
+from .vision.ocr import OcrPredictor
 from .formatters import FormatterFactory, BaseFormatter
 from .video_processor import VideoProcessor
 from smart_annotator.utils import yolo_to_labelme, generate_labelme_file
+from smart_annotator.core.labelme_io import empty_document, save_document
 
 
 def _load_image(image_path: Path) -> np.ndarray:
@@ -90,6 +94,7 @@ class Annotator:
             MODE.DETECT: DetectionPredictor,
             MODE.POSE: PoseDetectionPredictor,
             MODE.SEGMENT: SegmentationPredictor,
+            MODE.OCR: OcrPredictor,
         }
 
         predictor_cls = predictor_map.get(self.mode)
@@ -202,8 +207,17 @@ class Annotator:
                             progress,
                         ):
                             return False
+                        # 断点续传：帧图对应标注 JSON 已存在时跳过该帧标注
+                        # （对所有任务模式生效），中断重跑只补标缺失帧
+                        pending_paths = [
+                            p
+                            for p in annotation_pathList
+                            if not (self.output / f"{p.stem}.json").exists()
+                        ]
+                        if not pending_paths:
+                            continue
                         try:
-                            self._label(annotation_pathList)
+                            self._label(pending_paths)
                         except Exception as e:
                             LOGGER.error(f"处理视频帧时出错: {e}")
 
@@ -243,11 +257,13 @@ class Annotator:
             return []
 
         pred = predictions[0]
-        if pred.get("bboxs") is None:
+        # OCR 预测结果无 bboxs 键（输出为文本行），仅检测类模式做空结果检查
+        if self.mode != MODE.OCR and pred.get("bboxs") is None:
             return []
 
         # 与批量标注保持一致：按用户选择的类别过滤
-        if self._selected_classes is not None:
+        # （OCR 结果无类别标签，跳过过滤）
+        if self._selected_classes is not None and self.mode != MODE.OCR:
             pred = self._filter_by_classes(pred, self._selected_classes)
 
         kpt_shape = self.model.kpt_shape[0] if self.mode == MODE.POSE else None
@@ -257,6 +273,11 @@ class Annotator:
             class_mapping=self.model.class_mapping,
             kpt_shape=kpt_shape,
         )
+        if self.mode == MODE.OCR:
+            # OCR 格式化器直出 labelme 形状字典列表（含 PPOCRLabel 兼容的
+            # score 字段），跳过 YOLO 行转换直接返回
+            return lines
+
         annotations = yolo_to_labelme(
             lines,
             img_w,
@@ -320,11 +341,13 @@ class Annotator:
 
         for idx, pred in enumerate(predictions):
             image_path, img_h, img_w = imgInfo[idx]
-            if pred.get("bboxs") is None:
+            # OCR 预测结果无 bboxs 键（输出为文本行），仅检测类模式做空结果检查
+            if self.mode != MODE.OCR and pred.get("bboxs") is None:
                 continue
 
-            # 按用户选择的类别过滤（同步过滤所有与检测框对齐的字段）
-            if self._selected_classes is not None:
+            # 按用户选择的类别过滤（同步过滤所有与检测框对齐的字段；
+            # OCR 结果无类别标签，跳过过滤）
+            if self._selected_classes is not None and self.mode != MODE.OCR:
                 pred = self._filter_by_classes(pred, self._selected_classes)
 
             # 使用策略模式格式化，根据任务类型自动选择对应的格式化器
@@ -338,24 +361,36 @@ class Annotator:
                 kpt_shape=kpt_shape,
             )
 
-            annotations = yolo_to_labelme(
-                lines,
-                img_w,
-                img_h,
-                self.model.class_mapping,
-                self.mode.value,
-                kpt_shape,
-            )
+            if self.mode == MODE.OCR:
+                # OCR 格式化器直出 labelme 形状字典（含 PPOCRLabel 兼容的
+                # score 字段与识别文本 description），无法经 yolo_to_labelme
+                # （其输入为 YOLO 文本行），直接经 labelme_io 写 JSON
+                # （与 generate_labelme_file 口径一致：空结果不写文件）
+                if lines:
+                    doc = empty_document(image_path.name, img_w, img_h)
+                    doc["shapes"] = lines
+                    save_document(
+                        doc, self.output / f"{image_path.stem}.json"
+                    )
+            else:
+                annotations = yolo_to_labelme(
+                    lines,
+                    img_w,
+                    img_h,
+                    self.model.class_mapping,
+                    self.mode.value,
+                    kpt_shape,
+                )
 
-            # 生成 labelme 格式文件
-            generate_labelme_file(
-                annotations,
-                LABELME_VERSION,
-                image_path.name,
-                img_w,
-                img_h,
-                self.output / f"{image_path.stem}.json",
-            )
+                # 生成 labelme 格式文件
+                generate_labelme_file(
+                    annotations,
+                    LABELME_VERSION,
+                    image_path.name,
+                    img_w,
+                    img_h,
+                    self.output / f"{image_path.stem}.json",
+                )
 
             # 复制原图到输出目录（避免重复复制）
             dest_path = self.output / image_path.name

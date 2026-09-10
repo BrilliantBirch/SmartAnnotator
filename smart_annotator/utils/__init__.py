@@ -38,6 +38,7 @@ from .files import (
     move_files,
     getModelClasses,
     getModelTaskType,
+    getOcrModelRole,
     resolve_dataset_dirs,
     scan_dataset_files,
 )
@@ -112,6 +113,7 @@ __all__ = [
     "move_files",
     "getModelClasses",
     "getModelTaskType",
+    "getOcrModelRole",
     "resolve_dataset_dirs",
     "scan_dataset_files",
     "is_point_in_box",

@@ -22,6 +22,18 @@
       get_available_providers 判定，模型选择移除 .engine 支持
 更新: 2026-09-07 CPU 构建版本跳过 CUDA 检测并禁用 GPU 选项（读
       build_mode.txt 构建标志，不受运行机 CUDA 环境干扰）
+更新: 2026-09-10 新增 OCR 任务支持：任务类型下拉增加 OCR 项；模型卡新增
+      "识别模型 (ONNX)"与"识别字典 (TXT)"两个路径字段（仅 OCR 模式显示）；
+      OCR 模式隐藏检测类别卡并跳过类别元数据告警；collect/apply_config
+      纳入 rec_model_path/rec_dict_path
+更新: 2026-09-10 模型加载逻辑优化：任务推导改"可信才锁定"（无证据模型
+      解锁手动选择）；模型路径标签 OCR 模式动态化为"检测模型"；识别模型
+      字段选反（det/rec 互换）时自动归位；新增 OCR 配置状态行统一展示
+      检测/识别/字典三要素齐全状态
+更新: 2026-09-10 推理参数卡新增 OCR 专属参数组（二值化阈值 0.2/检测框
+      置信度 0.45/外扩比例 1.4，对应 DB 检测后处理），OCR 模式显示该组
+      并隐藏 BBox 置信度/NMS/关键点置信度；collect/apply_config 纳入
+      ocr_thresh/ocr_box_thresh/ocr_unclip_ratio
 """
 
 from pathlib import Path
@@ -42,7 +54,7 @@ from ..widgets.cards import Card
 from ..widgets.class_selector import ClassSelectorWidget
 from ..widgets.fields import PathField, LabeledSpin, apply_click_to_focus
 from ..config import SysConfig, MODE, DEVICE
-from ..utils import LOGGER, getModelClasses, getModelTaskType
+from ..utils import LOGGER, getModelClasses, getModelTaskType, getOcrModelRole
 from ..utils.paths import get_build_mode
 
 
@@ -133,7 +145,7 @@ class AnnotatePage(BasePage):
         self.add_widget(self.device_card)
 
     def _build_model_card(self) -> None:
-        """构建模型加载卡：模型路径 + 任务类型（自动推导）。"""
+        """构建模型加载卡：模型路径 + 任务类型（自动推导）+ OCR 专属字段。"""
         self.model_card = Card("模型")
         self.model_field = PathField(
             browse_type="file",
@@ -142,7 +154,15 @@ class AnnotatePage(BasePage):
         )
         # 模型路径变化时自动读取类别并推导任务类型
         self.model_field.path_changed.connect(self._on_model_changed)
-        self.model_card.addWidget(self._labeled("模型路径", self.model_field))
+        # 模型路径行标签动态化：OCR 模式下切换为"检测模型"语义（保存引用）
+        self._model_path_label = QLabel("模型路径")
+        self._model_path_label.setMinimumWidth(72)
+        model_path_row = QWidget()
+        model_path_lay = QHBoxLayout(model_path_row)
+        model_path_lay.setContentsMargins(0, 0, 0, 0)
+        model_path_lay.addWidget(self._model_path_label)
+        model_path_lay.addWidget(self.model_field)
+        self.model_card.addWidget(model_path_row)
 
         # 任务类型：模型加载后自动推导（推导失败时可手动选择）
         task_row = QHBoxLayout()
@@ -153,6 +173,7 @@ class AnnotatePage(BasePage):
         self.task_combo.addItem("目标检测 (DETECT)", MODE.DETECT)
         self.task_combo.addItem("姿态估计 (POSE)", MODE.POSE)
         self.task_combo.addItem("实例分割 (SEGMENT)", MODE.SEGMENT)
+        self.task_combo.addItem("文字识别 (OCR)", MODE.OCR)
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
         task_row.addWidget(self.task_combo)
         self.task_hint = QLabel("")
@@ -160,6 +181,34 @@ class AnnotatePage(BasePage):
         task_row.addWidget(self.task_hint)
         task_row.addStretch()
         self.model_card.addLayout(task_row)
+
+        # OCR 专属字段：识别模型与字典（仅任务类型为 OCR 时显示）
+        self.rec_model_field = PathField(
+            browse_type="file",
+            file_filter="识别模型 (*.onnx)",
+            placeholder="选择 OCR 识别模型 ONNX",
+        )
+        self.rec_dict_field = PathField(
+            browse_type="file",
+            file_filter="字典文件 (*.txt)",
+            placeholder="选择 OCR 识别字典 TXT",
+        )
+        # 识别模型/字典变化：角色校验（防选反）与 OCR 配置状态刷新
+        self.rec_model_field.path_changed.connect(self._on_rec_model_changed)
+        self.rec_dict_field.path_changed.connect(self._update_ocr_status)
+        # 保存行容器引用，便于整体显隐切换
+        self._rec_model_row = self._labeled("识别模型 (ONNX)", self.rec_model_field)
+        self._rec_dict_row = self._labeled("识别字典 (TXT)", self.rec_dict_field)
+        self.model_card.addWidget(self._rec_model_row)
+        self.model_card.addWidget(self._rec_dict_row)
+        # 初始隐藏（默认任务类型为 DETECT）
+        self._rec_model_row.setVisible(False)
+        self._rec_dict_row.setVisible(False)
+        # OCR 配置状态行：统一展示检测/识别/字典三要素齐全状态（仅 OCR 显示）
+        self.ocr_status_hint = QLabel("")
+        self.ocr_status_hint.setStyleSheet("color: #b45309;")
+        self.ocr_status_hint.setVisible(False)
+        self.model_card.addWidget(self.ocr_status_hint)
         self.add_widget(self.model_card)
 
     def _build_class_card(self) -> None:
@@ -179,10 +228,18 @@ class AnnotatePage(BasePage):
         self.spin_conf = LabeledSpin("BBox 置信度", "double", 0, 1, 0.01, 0.25)
         self.spin_nms = LabeledSpin("NMS", "double", 0, 1, 0.05, 0.7)
         self.spin_kpt_conf = LabeledSpin("关键点置信度", "double", 0, 1, 0.01, 0.5)
+        # OCR 专属推理参数（仅 OCR 模式显示，对应 DB 文本检测后处理；
+        # 默认值与 PP-OCR 官方推理配置一致）
+        self.spin_ocr_thresh = LabeledSpin("二值化阈值", "double", 0, 1, 0.01, 0.2)
+        self.spin_ocr_box = LabeledSpin("检测框置信度", "double", 0, 1, 0.01, 0.45)
+        self.spin_ocr_unclip = LabeledSpin("外扩比例", "double", 1, 3, 0.05, 1.4)
 
         grid.addWidget(self.spin_conf, 0, 0)
         grid.addWidget(self.spin_nms, 0, 1)
         grid.addWidget(self.spin_kpt_conf, 1, 0)
+        grid.addWidget(self.spin_ocr_thresh, 0, 0)
+        grid.addWidget(self.spin_ocr_box, 0, 1)
+        grid.addWidget(self.spin_ocr_unclip, 1, 0)
         self.param_card.addLayout(grid)
         self.add_widget(self.param_card)
 
@@ -215,17 +272,40 @@ class AnnotatePage(BasePage):
             self.rb_cpu.setChecked(True)
 
     def _on_task_changed(self) -> None:
-        """任务类型变化时切换关键点置信度可见性。"""
-        is_pose = self.task_combo.currentData() == MODE.POSE
-        self.spin_kpt_conf.setVisible(is_pose)
-        self.spin_kpt_conf.label.setVisible(is_pose)
+        """任务类型变化时切换推理参数组与 OCR 专属字段的可见性。"""
+        mode = self.task_combo.currentData()
+        is_pose = mode == MODE.POSE
+        is_ocr = mode == MODE.OCR
+        # 检测/姿态参数组：OCR 模式隐藏（BBox 置信度/NMS 与关键点
+        # 置信度均属 YOLO 检测链路，OCR 的 DB 后处理不使用）
+        self.spin_conf.setVisible(not is_ocr)
+        self.spin_nms.setVisible(not is_ocr)
+        self.spin_kpt_conf.setVisible(is_pose and not is_ocr)
+        self.spin_kpt_conf.label.setVisible(is_pose and not is_ocr)
+        # OCR 专属推理参数组：仅 OCR 模式显示
+        self.spin_ocr_thresh.setVisible(is_ocr)
+        self.spin_ocr_box.setVisible(is_ocr)
+        self.spin_ocr_unclip.setVisible(is_ocr)
+        # OCR 专属字段（识别模型/字典）仅 OCR 模式显示
+        self._rec_model_row.setVisible(is_ocr)
+        self._rec_dict_row.setVisible(is_ocr)
+        # 检测类别卡：OCR 模式不做检测类别过滤，隐藏卡片
+        self.class_card.setVisible(not is_ocr)
+        # 模型路径行标签：OCR 模式下语义为检测模型（与识别模型字段配对）
+        self._model_path_label.setText("检测模型" if is_ocr else "模型路径")
+        # OCR 配置状态行仅 OCR 模式显示
+        self.ocr_status_hint.setVisible(is_ocr)
+        if is_ocr:
+            self._update_ocr_status()
 
     def _on_model_changed(self, path: str) -> None:
-        """模型路径变化：读取类别元数据并推导任务类型。
+        """模型路径变化：读取类别元数据、推导任务类型并做 OCR 角色引导。
 
-        任务类型优先从模型元数据/输出结构推导（getModelTaskType），
-        推导成功自动选中并锁定（提示"自动识别"）；无法推导时解锁
-        下拉框交由用户手动选择（提示"未能识别，请手动选择"）。
+        任务类型优先从模型元数据/输入输出结构推导（getModelTaskType，
+        "可信才锁定"）：推导成功自动选中并锁定（提示"自动识别"）；无法
+        可信推导时解锁下拉框交由用户手动选择。OCR 模式下进一步判定
+        模型角色（getOcrModelRole）：识别模型（rec）被选到模型路径时
+        自动归位到"识别模型"字段并引导继续选择检测模型。
 
         Args:
             path: 模型文件路径。
@@ -235,7 +315,10 @@ class AnnotatePage(BasePage):
             # 无有效模型：解锁任务类型交由用户选择（清空提示）
             self.task_combo.setEnabled(True)
             self.task_hint.setText("")
+            self._update_ocr_status()
             return
+        # 任务类型推导（先推导，供类别告警区分 OCR 模型场景）
+        task_name = getModelTaskType(path)
         # 类别元数据
         classes = getModelClasses(path)
         if classes:
@@ -243,11 +326,38 @@ class AnnotatePage(BasePage):
             LOGGER.info(f"已加载模型类别，共 {len(classes)} 个类别")
         else:
             self.class_selector.set_classes({})
-            LOGGER.warning(
-                f"未能从模型元数据读取类别信息: {path}（将检测所有类别）"
-            )
-        # 任务类型推导
-        task_name = getModelTaskType(path)
+            # OCR 模型无类别元数据属正常（不做检测类别过滤），降级为提示
+            if task_name == "OCR" or self.task_combo.currentData() == MODE.OCR:
+                LOGGER.info(f"OCR 模型无类别元数据，跳过类别过滤: {path}")
+            else:
+                LOGGER.warning(
+                    f"未能从模型元数据读取类别信息: {path}（将检测所有类别）"
+                )
+        # ===== OCR 模型角色引导：识别模型被选到模型路径时自动归位 =====
+        if task_name == "OCR":
+            role = getOcrModelRole(path)
+            if role == "rec":
+                # 识别模型选到了"检测模型"字段：自动转移到识别模型字段
+                self.model_field.set_path("")
+                self.rec_model_field.set_path(path)
+                idx = self.task_combo.findData(MODE.OCR)
+                if idx >= 0:
+                    self.task_combo.setCurrentIndex(idx)
+                # 文件即证据：锁定任务类型为 OCR
+                self.task_combo.setEnabled(False)
+                self.task_hint.setText("已识别为 OCR 识别模型（已自动归位）")
+                LOGGER.info(f"识别模型已自动归位到'识别模型'字段: {path}")
+                self._update_ocr_status()
+                return
+            # role 为 "det"（或无法判定但被推导为 OCR）：留在检测模型字段
+            idx = self.task_combo.findData(MODE.OCR)
+            if idx >= 0:
+                self.task_combo.setCurrentIndex(idx)
+            self.task_combo.setEnabled(False)
+            self.task_hint.setText("已按模型元数据自动识别")
+            self._update_ocr_status()
+            return
+        # ===== 非 OCR 任务（或无法推导）=====
         if task_name:
             mode = MODE[task_name]
             idx = self.task_combo.findData(mode)
@@ -256,11 +366,78 @@ class AnnotatePage(BasePage):
             # 推导成功：锁定下拉框（自动识别，无需用户干预）
             self.task_combo.setEnabled(False)
             self.task_hint.setText("已按模型元数据自动识别")
+        elif self.task_combo.currentData() == MODE.OCR:
+            # 用户已手动选 OCR，但该文件特征不足（如动态版 det 模型）：
+            # 保留用户选择，解锁下拉框并提示手动确认角色归位
+            self.task_combo.setEnabled(True)
+            self.task_hint.setText("未能自动识别该文件，请确认模型位置")
+            LOGGER.warning(f"无法从模型推导任务类型（保留 OCR 手动选择）: {path}")
         else:
             # 无法推导：解锁交由用户选择
             self.task_combo.setEnabled(True)
             self.task_hint.setText("未能识别，请手动选择")
             LOGGER.warning(f"无法从模型推导任务类型: {path}")
+        self._update_ocr_status()
+
+    def _on_rec_model_changed(self, path: str) -> None:
+        """识别模型字段变化：角色校验（防选反）并刷新 OCR 配置状态。
+
+        用户误将检测模型（det 特征）选入识别模型字段时自动归位到
+        检测模型字段；无法判定角色的文件保留原位（交由用户自查）。
+
+        Args:
+            path: 识别模型文件路径。
+        """
+        if not path or not Path(path).exists():
+            self._update_ocr_status()
+            return
+        if getOcrModelRole(path) == "det":
+            # 检测模型选到了识别模型字段：自动归位到检测模型字段
+            # （检测模型字段已有路径时不覆盖，仅提示用户手动处理）
+            self.rec_model_field.set_path("")
+            if not self.model_field.path():
+                self.model_field.set_path(path)
+                LOGGER.info(f"检测模型已自动归位到模型路径字段: {path}")
+            else:
+                LOGGER.warning(
+                    f"该文件为检测模型而非识别模型，且模型路径已有配置，"
+                    f"请手动调整: {path}"
+                )
+        self._update_ocr_status()
+
+    def _update_ocr_status(self) -> None:
+        """刷新 OCR 配置状态行（仅 OCR 模式显示）。
+
+        统一展示检测模型/识别模型/字典三要素的就绪状态：齐全时绿色
+        提示可用，缺项时橙色列出缺失项，引导用户补全配置。
+        """
+        if self.task_combo.currentData() != MODE.OCR:
+            self.ocr_status_hint.setVisible(False)
+            return
+        self.ocr_status_hint.setVisible(True)
+        # 三要素检查（路径非空且文件存在即视为就绪）
+        det_ok = bool(self.model_field.path()) and Path(self.model_field.path()).exists()
+        rec_ok = (
+            bool(self.rec_model_field.path())
+            and Path(self.rec_model_field.path()).exists()
+        )
+        dict_ok = (
+            bool(self.rec_dict_field.path())
+            and Path(self.rec_dict_field.path()).exists()
+        )
+        missing = []
+        if not det_ok:
+            missing.append("检测模型")
+        if not rec_ok:
+            missing.append("识别模型")
+        if not dict_ok:
+            missing.append("识别字典")
+        if missing:
+            self.ocr_status_hint.setStyleSheet("color: #b45309;")
+            self.ocr_status_hint.setText(f"OCR 配置缺少：{'、'.join(missing)}")
+        else:
+            self.ocr_status_hint.setStyleSheet("color: #16a34a;")
+            self.ocr_status_hint.setText("OCR 配置齐全（检测 / 识别 / 字典 已就绪）")
 
     # -------------------------- 配置读写 --------------------------
     def collect_config(self, sys_config: SysConfig) -> None:
@@ -273,9 +450,16 @@ class AnnotatePage(BasePage):
         ac = sys_config.annotate_config
         ac.device = DEVICE.GPU if self.rb_gpu.isChecked() else DEVICE.CPU
         ac.model_path = self.model_field.path()
+        # OCR 识别模型与字典路径（仅 OCR 模式使用）
+        ac.rec_model_path = self.rec_model_field.path()
+        ac.rec_dict_path = self.rec_dict_field.path()
         ac.conf = self.spin_conf.value()
         ac.kpt_conf = self.spin_kpt_conf.value()
         ac.nms = self.spin_nms.value()
+        # OCR 专属推理参数（仅 OCR 模式使用，对应 DB 检测后处理）
+        ac.ocr_thresh = self.spin_ocr_thresh.value()
+        ac.ocr_box_thresh = self.spin_ocr_box.value()
+        ac.ocr_unclip_ratio = self.spin_ocr_unclip.value()
         ac.task_type = sys_config.task_type
         # 用户选择的检测类别（空 = 不过滤全部检测）
         ac.selected_classes = self.class_selector.selected_ids()
@@ -304,6 +488,9 @@ class AnnotatePage(BasePage):
         self._on_task_changed()
         # 模型路径（set_path 不触发信号，需手动读取类别并推导任务类型）
         self.model_field.set_path(ac.model_path)
+        # OCR 识别模型与字典路径回填（仅 OCR 模式显示的字段）
+        self.rec_model_field.set_path(ac.rec_model_path)
+        self.rec_dict_field.set_path(ac.rec_dict_path)
         if ac.model_path:
             self._on_model_changed(ac.model_path)
         if ac.selected_classes:
@@ -312,6 +499,12 @@ class AnnotatePage(BasePage):
         self.spin_conf.set_value(ac.conf)
         self.spin_kpt_conf.set_value(ac.kpt_conf)
         self.spin_nms.set_value(ac.nms)
+        # OCR 专属推理参数回填（仅 OCR 模式显示的参数组）
+        self.spin_ocr_thresh.set_value(ac.ocr_thresh)
+        self.spin_ocr_box.set_value(ac.ocr_box_thresh)
+        self.spin_ocr_unclip.set_value(ac.ocr_unclip_ratio)
+        # OCR 配置状态行刷新（set_path 不触发信号，需手动刷新）
+        self._update_ocr_status()
 
     def title(self) -> str:
         """返回页面标题。"""

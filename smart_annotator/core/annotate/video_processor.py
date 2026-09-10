@@ -8,6 +8,8 @@
 更新: 2026-09-03 抽帧文件命名改为"视频名+帧Id"（帧在视频中的原始序号，
       同一视频不同间隔重跑不冲突）；增加损坏视频防护（ret 恒为 True
       但帧位不前进/空帧时强制终止，避免死循环）
+更新: 2026-09-10 断点续传：帧图文件已存在时跳过重新写盘（保留已有抽帧
+      结果，配合标注侧"JSON 已存在跳过标注"实现视频任务中断续跑）
 """
 
 import cv2
@@ -108,7 +110,10 @@ class VideoProcessor:
                     # 命名规则：视频名 + 帧Id（帧在视频中的原始序号）
                     frame_filename = f"{video_name}_frame{frame_index:06d}.jpg"
                     frame_path = output_dir / frame_filename
-                    cv2.imwrite(str(frame_path), frame)
+                    # 断点续传：帧图文件已存在时跳过重新写盘（帧选择逻辑
+                    # 保持确定性，重跑选中的帧与首次运行一致）
+                    if not frame_path.exists():
+                        cv2.imwrite(str(frame_path), frame)
                     prev_frame_gray = gray
                     self.extracted_count += 1
 

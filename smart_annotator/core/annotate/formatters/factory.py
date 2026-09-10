@@ -4,12 +4,14 @@
 
 作者: BaiBinnan
 创建日期: 2026-08-10
+更新: 2026-09-10 注册 OCR 模式格式化器（OcrFormatter，直出 labelme 形状）
 """
 
 from smart_annotator.config import MODE
 from smart_annotator.utils import LOGGER
 from .base import BaseFormatter
 from .detect import DetectFormatter
+from .ocr import OcrFormatter
 from .pose import PoseFormatter
 from .segment import SegmentFormatter
 
@@ -21,6 +23,7 @@ class FormatterFactory:
         MODE.DETECT: DetectFormatter,
         MODE.POSE: PoseFormatter,
         MODE.SEGMENT: SegmentFormatter,
+        MODE.OCR: OcrFormatter,
     }
 
     @classmethod
