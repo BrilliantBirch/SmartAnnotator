@@ -145,9 +145,15 @@
       恢复默认提醒）；补齐画布右键删除与 Delete 快捷键对象列表分支/
       默认画布分支的确认链路（统一收敛到 _confirm_destructive）；
       "关键点大小"档位最小值下调至 1px 并新增 2px
+更新: 2026-09-09 新增在线更新：帮助菜单"检查更新"+ 启动后静默检查
+      （后台线程请求 Gitee Release 比对版本），发现新版本经确认后
+      下载在线安装器并随主窗口关闭拉起静默安装（closeEvent 收尾）
 """
 
 import json
+import sys
+import tempfile
+import webbrowser
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict
@@ -169,12 +175,19 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QDockWidget,
+    QProgressDialog,
 )
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
 from .config import SysConfig, RenderConfig, DEFAULT_SHORTCUTS
 from .core import labelme_io
+from .core.updater import (
+    RELEASE_PAGE_URL,
+    UpdaterError,
+    detect_install_mode,
+    run_installer,
+)
 from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir, getVideoFilesInDir
 from .utils.render_store import load_render_config, save_render_config, load_shortcuts, save_shortcuts
 from .widgets.dialogs import chooseDir, showMessageBox
@@ -199,6 +212,7 @@ from .workers.annotate_worker import AnnotationWorker
 from .workers.convert_worker import ConvertWorker
 from .workers.single_annotate_worker import SingleAnnotateWorker
 from .workers.label_scan_worker import LabelScanWorker
+from .workers.update_worker import UpdateCheckWorker, UpdateDownloadWorker
 
 # 工具名 -> 显示文案
 _TOOL_LABELS = {
@@ -298,6 +312,17 @@ class MainWindow(QMainWindow):
         self.convert_worker = ConvertWorker()
         self.label_scan_worker = LabelScanWorker()
         self.single_annotate_worker = SingleAnnotateWorker()
+        # 在线更新线程（常驻复用：检查更新 / 下载安装器，低频任务）
+        self._update_check_worker = UpdateCheckWorker()
+        self._update_download_worker = UpdateDownloadWorker()
+        # 在线更新运行期状态：
+        # _update_quiet：本次检查是否静默（启动检查=True，菜单检查=False）
+        # _update_dlg：下载进度对话框（下载期间存在，非模态）
+        # _pending_update_installer：待拉起的安装器路径（确认关闭后由
+        #   closeEvent 收尾启动，复用其脏数据确认与 worker 清理链路）
+        self._update_quiet: bool = False
+        self._update_dlg: "QProgressDialog | None" = None
+        self._pending_update_installer: "Path | None" = None
 
         # 构建界面
         self._build_menubar()
@@ -533,6 +558,12 @@ class MainWindow(QMainWindow):
 
         # ===== 帮助 =====
         menu_help = menu_bar.addMenu("帮助(&H)")
+        self.act_check_update = QAction("检查更新", self)
+        # lambda 固定 quiet=False（菜单手动检查），避免 triggered 的 checked
+        # 参数误传给槽的 quiet 形参
+        self.act_check_update.triggered.connect(lambda: self._on_check_update(quiet=False))
+        menu_help.addAction(self.act_check_update)
+
         self.act_manual = QAction("使用说明书", self)
         self.act_manual.triggered.connect(self._on_manual)
         menu_help.addAction(self.act_manual)
@@ -839,6 +870,23 @@ class MainWindow(QMainWindow):
         self.single_annotate_worker.error_occurred.connect(self._on_annotate_error)
         self.single_annotate_worker.task_finished.connect(self._on_annotate_task_finished)
         self.single_annotate_worker.shapes_ready.connect(self._on_single_shapes_ready)
+
+        # 在线更新 worker：检查结果 / 下载进度 / 下载完成（quiet 标志存
+        # 成员变量，连接一次避免重复触发）
+        self._update_check_worker.update_found.connect(self._on_update_found)
+        self._update_check_worker.up_to_date.connect(self._on_update_up_to_date)
+        self._update_check_worker.error_occurred.connect(self._on_update_check_error)
+        self._update_download_worker.progress_updated.connect(self._on_update_download_progress)
+        self._update_download_worker.error_occurred.connect(self._on_update_download_error)
+        self._update_download_worker.download_done.connect(self._on_installer_downloaded)
+
+        # 启动后延时静默检查更新（窗口不可见时跳过，避免关闭竞态）
+        QTimer.singleShot(5000, self._startup_check_update)
+
+    def _startup_check_update(self) -> None:
+        """启动后 5 秒的静默更新检查入口：仅窗口可见时执行。"""
+        if self.isVisible():
+            self._on_check_update(quiet=True)
 
     # -------------------------- 文件操作 --------------------------
     def _on_open_folder(self) -> None:
@@ -2285,6 +2333,180 @@ class MainWindow(QMainWindow):
             "可在 工具 → 自定义快捷键... 中按个人习惯修改",
         )
 
+    # -------------------------- 在线更新 --------------------------
+    def _on_check_update(self, quiet: bool = False) -> None:
+        """发起检查更新（后台线程），结果经信号回传。
+
+        Args:
+            quiet: 静默模式（启动自动检查=True）：无更新/失败仅记日志
+                不弹窗；菜单手动检查=False 时全程弹窗反馈。
+        """
+        # 防重入：检查已在进行时提示（静默模式直接忽略）
+        if self._update_check_worker.isRunning():
+            if not quiet:
+                showMessageBox(QMessageBox.Icon.Warning, "正在检查更新，请稍候")
+            return
+        self._update_quiet = quiet
+        if not quiet:
+            self.statusBar().showMessage("正在检查更新...", 3000)
+        self._update_check_worker.start()
+
+    def _on_update_up_to_date(self) -> None:
+        """检查结果：当前已是最新版本。"""
+        if self._update_quiet:
+            LOGGER.info(f"检查更新：当前版本 v{__version__} 已是最新")
+        else:
+            showMessageBox(
+                QMessageBox.Icon.Information,
+                f"当前已是最新版本（v{__version__}）",
+            )
+
+    def _on_update_check_error(self, message: str) -> None:
+        """检查结果：网络失败或响应异常。
+
+        Args:
+            message: 错误描述。
+        """
+        # 静默模式仅记日志（worker 内已记 warning），不打扰用户
+        if self._update_quiet:
+            return
+        showMessageBox(
+            QMessageBox.Icon.Warning,
+            f"检查更新失败：\n{message}\n\n请检查网络连接后重试",
+        )
+
+    def _on_update_found(self, info) -> None:
+        """检查结果：发现新版本，弹窗询问是否更新。
+
+        Args:
+            info: ReleaseInfo（远端最新版本与安装器下载信息）。
+        """
+        LOGGER.info(f"发现新版本: {info.tag_name}（当前 v{__version__}）")
+        # 三选弹窗：立即更新 / 查看发布页 / 取消（静默检查同样弹窗，仅在有更新时打扰）
+        msg = QMessageBox(
+            QMessageBox.Icon.Information,
+            "发现新版本",
+            f"发现新版本 {info.tag_name}（当前 v{__version__}）。\n\n"
+            "是否立即更新？更新将通过在线安装器自动完成，\n"
+            "下载完成后程序将关闭并启动安装程序。",
+            QMessageBox.StandardButton.NoButton,
+            self,
+        )
+        update_btn = msg.addButton("立即更新", QMessageBox.ButtonRole.AcceptRole)
+        page_btn = msg.addButton("查看发布页", QMessageBox.ButtonRole.ActionRole)
+        msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked is update_btn:
+            self._start_installer_download(info)
+        elif clicked is page_btn:
+            # 打开浏览器前往 Release 发布页（标准库 webbrowser，无 Qt 依赖）
+            webbrowser.open(RELEASE_PAGE_URL)
+
+    def _start_installer_download(self, info) -> None:
+        """开始下载在线安装器到临时目录（后台线程 + 进度对话框）。
+
+        Args:
+            info: ReleaseInfo（安装器下载 URL 与大小）。
+        """
+        # 防重入：下载已在进行时提示
+        if self._update_download_worker.isRunning():
+            showMessageBox(QMessageBox.Icon.Warning, "更新安装器正在下载中，请稍候")
+            return
+        # 保存路径：系统临时目录（带版本标签避免多版本残留混淆）
+        dest = Path(tempfile.gettempdir()) / f"BrilliantAnnotator_OnlineSetup_{info.tag_name}.exe"
+        self._update_download_worker.set_task(info.setup_url, dest)
+        # 进度对话框：不确定进度模式（0,0 显示滚动动画），禁用取消
+        dlg = QProgressDialog("正在下载更新安装器...", None, 0, 0, self)
+        dlg.setWindowTitle("在线更新")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(320)
+        dlg.show()
+        self._update_dlg = dlg
+        self._update_download_worker.start()
+
+    def _on_update_download_progress(self, ratio: float) -> None:
+        """下载进度回调：更新进度对话框文本（未知大小时仅显示滚动动画）。
+
+        Args:
+            ratio: 已下载比例（0-1，总大小未知时为 0）。
+        """
+        if self._update_dlg is not None and ratio > 0:
+            self._update_dlg.setLabelText(f"正在下载更新安装器... {ratio * 100:.0f}%")
+
+    def _on_update_download_error(self, message: str) -> None:
+        """下载失败：关闭进度对话框并提示。
+
+        Args:
+            message: 错误描述。
+        """
+        self._close_update_progress_dlg()
+        showMessageBox(
+            QMessageBox.Icon.Critical,
+            f"下载更新安装器失败：\n{message}",
+        )
+
+    def _on_installer_downloaded(self, path_str: str) -> None:
+        """下载完成：关闭进度框，确认后登记待安装器并关闭主程序。
+
+        主窗口经 closeEvent 正常走脏数据确认/配置落盘/worker 清理，
+        确认关闭后（event.accept）由 closeEvent 收尾拉起静默安装器。
+
+        Args:
+            path_str: 已下载的安装器本地路径。
+        """
+        self._close_update_progress_dlg()
+        # 二次确认：更新将关闭程序
+        msg = QMessageBox(
+            QMessageBox.Icon.Question,
+            "下载完成",
+            "更新安装器已下载完成。\n\n"
+            "立即安装将关闭程序并启动安装程序（安装完成后可重新启动）。\n"
+            "是否继续？",
+            QMessageBox.StandardButton.NoButton,
+            self,
+        )
+        install_btn = msg.addButton("立即安装", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() is not install_btn:
+            return
+        # 登记待安装路径，走正常关闭流程（closeEvent 收尾拉起安装器）
+        self._pending_update_installer = Path(path_str)
+        self.close()
+        # 关闭被用户取消（脏数据确认选取消等）时清除登记，避免残留状态
+        if self.isVisible():
+            self._pending_update_installer = None
+
+    def _close_update_progress_dlg(self) -> None:
+        """关闭并释放下载进度对话框（若存在）。"""
+        if self._update_dlg is not None:
+            self._update_dlg.close()
+            self._update_dlg = None
+
+    def _launch_pending_installer(self) -> None:
+        """closeEvent 收尾：拉起待安装的静默安装器（进程退出前启动）。
+
+        安装模式按当前安装目录检测（install_mode.txt 标记优先，回退
+        TensorRT 运行库启发式）；启动失败弹窗提示但不阻塞退出。
+        """
+        installer_path = self._pending_update_installer
+        self._pending_update_installer = None
+        if installer_path is None:
+            return
+        # 安装目录：打包环境取 exe 所在目录；源码运行时取工作目录（仅调试用）
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).parent
+        else:
+            exe_dir = Path.cwd()
+        mode = detect_install_mode(exe_dir)
+        try:
+            run_installer(installer_path, mode)
+        except UpdaterError as e:
+            showMessageBox(QMessageBox.Icon.Critical, str(e))
+
     # -------------------------- 关闭处理 --------------------------
     def closeEvent(self, event) -> None:
         """关闭窗口时确认未保存修改、落盘渲染配置并停止运行中的 worker。"""
@@ -2303,11 +2525,15 @@ class MainWindow(QMainWindow):
         if self._scan_progress_dlg is not None:
             self._scan_progress_dlg.close()
             self._scan_progress_dlg = None
+        # 关闭更新下载进度对话框（若存在）
+        self._close_update_progress_dlg()
         for worker in (
             self.annotate_worker,
             self.convert_worker,
             self.label_scan_worker,
             self.single_annotate_worker,
+            self._update_check_worker,
+            self._update_download_worker,
         ):
             if worker.isRunning():
                 worker.stop()
@@ -2315,7 +2541,13 @@ class MainWindow(QMainWindow):
         self.convert_worker.wait(3000)
         self.label_scan_worker.wait(1500)
         self.single_annotate_worker.wait(3000)
+        # 更新线程停止请求后短等待（网络请求阻塞时由超时自然结束，不阻塞退出）
+        self._update_check_worker.wait(1000)
+        self._update_download_worker.wait(1000)
         event.accept()
+        # 在线更新收尾：主窗口确认关闭后拉起静默安装器（必须在进程
+        # 退出前启动，故放在 event.accept 之后、返回事件循环之前）
+        self._launch_pending_installer()
 
     # -------------------------- 图标 --------------------------
     def set_window_icon(self, icon: QIcon) -> None:

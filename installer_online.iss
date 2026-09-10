@@ -4,16 +4,30 @@
 ;
 ; 用途: 生成轻量级在线安装器（约 3 MB），安装时从 Gitee Release 下载
 ;       CPU 版或 GPU 版压缩包并自动解压安装。
+;       同时支持静默安装（/SILENT /MODE=CPU|GPU），供应用内"检查更新"
+;       下载后静默拉起完成在线升级。
 ;
 ; 编译: ISCC.exe installer_online.iss
 ; 自定义 URL: ISCC.exe /DCPU_DOWNLOAD_URL="https://..." /DGPU_DOWNLOAD_URL="https://..." installer_online.iss
+; 自定义版本: ISCC.exe /DMyAppVersion="2.1.1" installer_online.iss
+;             （build.py 编译时传入 version_manager 的 PRODUCT_VERSION）
+;
+; 静默安装: BrilliantAnnotator_OnlineSetup.exe /SILENT /MODE=CPU
+;           （/MODE 缺省 CPU；应用内更新由客户端自动检测当前模式传入）
 ;
 ; 作者: BaiBinnan
 ; 日期: 2026-08-11
+; 更新: 2026-09-09 版本号 define 化（/DMyAppVersion 传入，消除硬编码）；
+;       新增静默安装支持（/MODE 参数 + PrepareToInstall 阶段补下载）；
+;       解压前 taskkill 关闭运行中的旧版本（在线更新覆盖安装）；
+;       安装完成写入 install_mode.txt 模式标记（客户端更新检测用）
 ; ============================================================================
 
 #define MyAppName          "BrilliantAnnotator"
-#define MyAppVersion       "1.2.0"
+; 产品版本：build.py 编译时经 /DMyAppVersion 传入（缺省占位 1.2.0）
+#ifndef MyAppVersion
+  #define MyAppVersion     "1.2.0"
+#endif
 #define MyAppPublisher     "BrilliantBirch"
 #define MyAppExeName       "BrilliantAnnotator.exe"
 #define MyAppDescription   "BrilliantAnnotator"
@@ -23,10 +37,10 @@
 ; 格式: https://gitee.com/{用户}/{仓库}/releases/download/{版本}/{文件名}
 ; 分卷: parts>1 时 URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
 #ifndef CPU_DOWNLOAD_URL
-  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/brilliantannotator/releases/download/v1.2.0/BrilliantAnnotator_CPU_1.2.0.zip"
+  #define CPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v2.1.0/BrilliantAnnotator_CPU_2.1.0.zip"
 #endif
 #ifndef GPU_DOWNLOAD_URL
-  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/brilliantannotator/releases/download/v1.2.0/BrilliantAnnotator_GPU_1.2.0.zip.part"
+  #define GPU_DOWNLOAD_URL "https://gitee.com/baibinnan/vai_-e_-smart-annotator/releases/download/v2.1.0/BrilliantAnnotator_GPU_2.1.0.zip.part"
 #endif
 #ifndef CPU_PARTS
   #define CPU_PARTS "1"
@@ -69,8 +83,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppDescription} Online Setup
 VersionInfoProductName=BrilliantAnnotator
-VersionInfoProductVersion=1.2.0.0
-VersionInfoVersion=1.2.0.0
+; 将四段式产品版本号（如 2.1.1 → 2.1.1.0）拼给 VersionInfoProductVersion
+VersionInfoProductVersion={#MyAppVersion}.0
+VersionInfoVersion={#MyAppVersion}.0
 
 [Languages]
 ; 中文语言文件未内置 Inno Setup 6.7.3，如需中文安装界面：
@@ -121,6 +136,12 @@ var
   DownloadedZipPath: String;
   // 用户选择的模式（'CPU' 或 'GPU'）
   SelectedMode: String;
+  // 下载阶段错误信息（空字符串 = 下载成功）；由 DownloadAndMerge 填写，
+  // 调用方（交互 NextButtonClick / 静默 PrepareToInstall）负责展示
+  DownloadError: String;
+  // 下载+合并是否已完成（交互模式在 NextButtonClick 完成；静默模式
+  // 跳过向导页，需在 PrepareToInstall 补做）
+  DownloadCompleted: Boolean;
 
 // ============================================================================
 // 初始化向导：创建 CPU/GPU 版本选择页面 + 下载页面
@@ -149,9 +170,10 @@ begin
 end;
 
 // ============================================================================
-// 版本选择页面的"下一步"按钮：触发下载（支持分卷下载与合并）
+// 下载 + 分卷合并公共过程（交互模式：版本选择页下一步触发；
+// 静默模式：PrepareToInstall 阶段补做），错误写入全局 DownloadError
 // ============================================================================
-function NextButtonClick(CurPageID: Integer): Boolean;
+procedure DownloadAndMerge();
 var
   DownloadUrl: String;
   FileName: String;
@@ -163,98 +185,111 @@ var
   PowerShellCmd: String;
   TmpDir: String;
 begin
+  DownloadError := '';
+
+  // 根据已选模式确定下载 URL 和分卷数
+  if SelectedMode = 'CPU' then
+  begin
+    DownloadUrl := '{#CPU_DOWNLOAD_URL}';
+    PartCount := StrToInt('{#CPU_PARTS}');
+  end
+  else
+  begin
+    DownloadUrl := '{#GPU_DOWNLOAD_URL}';
+    PartCount := StrToInt('{#GPU_PARTS}');
+  end;
+
+  TmpDir := ExpandConstant('{tmp}');
+  DownloadPage.Clear;
+
+  if PartCount = 1 then
+  begin
+    // 单文件下载（CPU 版或小体积包）
+    FileName := ExtractFileName(DownloadUrl);
+    DownloadedZipPath := TmpDir + '\' + FileName;
+    DownloadPage.Add(DownloadUrl, FileName, '');
+  end
+  else
+  begin
+    // 分卷下载：URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
+    // 下载后合并为单个 zip 文件
+    MergeZipName := 'BrilliantAnnotator_' + SelectedMode + '.zip';
+    DownloadedZipPath := TmpDir + '\' + MergeZipName;
+    for PartIndex := 1 to PartCount do
+    begin
+      PartSuffix := Format('%.3d', [PartIndex]);
+      // URL: 基础URL + 001/002/...，保存文件名: xxx.zip.part001
+      DownloadPage.Add(DownloadUrl + PartSuffix, MergeZipName + '.part' + PartSuffix, '');
+    end;
+  end;
+
+  // 显示下载页面并执行下载（阻塞直到完成或取消）
+  DownloadPage.Show;
+  try
+    try
+      DownloadPage.Download;  // 下载失败会抛出异常
+    except
+      // 下载失败时记录详细错误信息（由调用方展示）
+      DownloadError := '下载失败！请检查网络连接后重试。' + #13#10 + #13#10 +
+        '错误信息: ' + GetExceptionMessage;
+      Exit;
+    end;
+  finally
+    DownloadPage.Hide;
+  end;
+
+  // 分卷合并（仅 PartCount > 1 时）
+  if PartCount > 1 then
+  begin
+    WizardForm.StatusLabel.Caption := '正在合并 ' + IntToStr(PartCount) + ' 个分卷文件...';
+    WizardForm.ProgressGauge.Style := npbstMarquee;
+    // PowerShell: 按文件名排序读取所有分卷，合并为单个 zip
+    PowerShellCmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
+      '$parts = Get-ChildItem -Path ''' + TmpDir + '\' + MergeZipName + '.part*'' | Sort-Object Name; ' +
+      '$out = [System.IO.File]::Create(''' + DownloadedZipPath + '''); ' +
+      'foreach ($p in $parts) { $in = [System.IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }; ' +
+      '$out.Close()' +
+      '"';
+    if not ShellExec('open', 'powershell.exe', PowerShellCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      DownloadError :=
+        '分卷合并失败！PowerShell 退出码: ' + IntToStr(ResultCode) + #13#10 +
+        '请确保系统已安装 PowerShell 且磁盘空间充足。';
+      Exit;
+    end;
+  end;
+
+  // 验证合并后的 zip 文件存在
+  if not FileExists(DownloadedZipPath) then
+  begin
+    DownloadError :=
+      '下载文件未找到: ' + DownloadedZipPath + #13#10 +
+      '可能是 URL 配置错误或网络中断。';
+    Exit;
+  end;
+
+  // 全部成功：标记下载完成
+  DownloadCompleted := True;
+end;
+
+// ============================================================================
+// 版本选择页面的"下一步"按钮：记录所选模式并触发下载（仅交互模式）
+// ============================================================================
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
   // 仅在版本选择页面点击下一步时触发下载
   if CurPageID = ModePage.ID then
   begin
-    // 根据用户选择确定下载 URL 和分卷数
+    // 根据用户选择确定模式（下载逻辑统一走 DownloadAndMerge）
     if ModePage.SelectedValueIndex = 0 then
-    begin
-      SelectedMode := 'CPU';
-      DownloadUrl := '{#CPU_DOWNLOAD_URL}';
-      PartCount := StrToInt('{#CPU_PARTS}');
-    end
+      SelectedMode := 'CPU'
     else
-    begin
       SelectedMode := 'GPU';
-      DownloadUrl := '{#GPU_DOWNLOAD_URL}';
-      PartCount := StrToInt('{#GPU_PARTS}');
-    end;
 
-    TmpDir := ExpandConstant('{tmp}');
-    DownloadPage.Clear;
-
-    if PartCount = 1 then
+    DownloadAndMerge();
+    if DownloadError <> '' then
     begin
-      // 单文件下载（CPU 版或小体积包）
-      FileName := ExtractFileName(DownloadUrl);
-      DownloadedZipPath := TmpDir + '\' + FileName;
-      DownloadPage.Add(DownloadUrl, FileName, '');
-    end
-    else
-    begin
-      // 分卷下载：URL 为基础 URL（以 .part 结尾），追加 001/002/... 下载各分卷
-      // 下载后合并为单个 zip 文件
-      MergeZipName := 'BrilliantAnnotator_' + SelectedMode + '.zip';
-      DownloadedZipPath := TmpDir + '\' + MergeZipName;
-      for PartIndex := 1 to PartCount do
-      begin
-        PartSuffix := Format('%.3d', [PartIndex]);
-        // URL: 基础URL + 001/002/...，保存文件名: xxx.zip.part001
-        DownloadPage.Add(DownloadUrl + PartSuffix, MergeZipName + '.part' + PartSuffix, '');
-      end;
-    end;
-
-    // 显示下载页面并执行下载（阻塞直到完成或取消）
-    DownloadPage.Show;
-    try
-      try
-        DownloadPage.Download;  // 下载失败会抛出异常
-      except
-        // 下载失败时显示详细错误信息
-        SuppressibleMsgBox(
-          '下载失败！请检查网络连接后重试。' + #13#10 + #13#10 +
-          '错误信息: ' + GetExceptionMessage,
-          mbError, MB_OK, IDOK
-        );
-        Result := False;
-        Exit;
-      end;
-    finally
-      DownloadPage.Hide;
-    end;
-
-    // 分卷合并（仅 PartCount > 1 时）
-    if PartCount > 1 then
-    begin
-      WizardForm.StatusLabel.Caption := '正在合并 ' + IntToStr(PartCount) + ' 个分卷文件...';
-      WizardForm.ProgressGauge.Style := npbstMarquee;
-      // PowerShell: 按文件名排序读取所有分卷，合并为单个 zip
-      PowerShellCmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
-        '$parts = Get-ChildItem -Path ''' + TmpDir + '\' + MergeZipName + '.part*'' | Sort-Object Name; ' +
-        '$out = [System.IO.File]::Create(''' + DownloadedZipPath + '''); ' +
-        'foreach ($p in $parts) { $in = [System.IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }; ' +
-        '$out.Close()' +
-        '"';
-      if not ShellExec('open', 'powershell.exe', PowerShellCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-      begin
-        SuppressibleMsgBox(
-          '分卷合并失败！PowerShell 退出码: ' + IntToStr(ResultCode) + #13#10 +
-          '请确保系统已安装 PowerShell 且磁盘空间充足。',
-          mbError, MB_OK, IDOK
-        );
-        Result := False;
-        Exit;
-      end;
-    end;
-
-    // 验证合并后的 zip 文件存在
-    if not FileExists(DownloadedZipPath) then
-    begin
-      SuppressibleMsgBox(
-        '下载文件未找到: ' + DownloadedZipPath + #13#10 +
-        '可能是 URL 配置错误或网络中断。',
-        mbError, MB_OK, IDOK
-      );
+      SuppressibleMsgBox(DownloadError, mbError, MB_OK, IDOK);
       Result := False;
       Exit;
     end;
@@ -264,15 +299,38 @@ begin
 end;
 
 // ============================================================================
-// 准备安装：在正式安装步骤前解压下载的 zip 文件
+// 准备安装：静默模式补下载 → 关闭运行中的旧版本 → 解压 → 写模式标记
 // ============================================================================
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   DestDir: String;
   ResultCode: Integer;
   PowerShellCmd: String;
+  Mode: String;
 begin
+  Result := '';  // 空字符串表示成功
+
+  // ===== 静默模式补下载（/SILENT 下向导页被跳过，NextButtonClick 不会触发）=====
+  if (not DownloadCompleted) and WizardSilent() then
+  begin
+    // /MODE=CPU|GPU 命令行参数（应用内更新传入检测到的模式），缺省 CPU
+    Mode := Uppercase(ExpandConstant('{param:MODE}'));
+    if (Mode <> 'CPU') and (Mode <> 'GPU') then
+      Mode := 'CPU';
+    SelectedMode := Mode;
+    DownloadAndMerge();
+    if DownloadError <> '' then
+    begin
+      Result := DownloadError;
+      Exit;
+    end;
+  end;
+
   DestDir := ExpandConstant('{app}');
+
+  // ===== 在线更新场景：先关闭运行中的旧版本并等待句柄释放 =====
+  ShellExec('open', 'taskkill', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1500);
 
   // 创建安装目录
   if not DirExists(DestDir) then
@@ -307,8 +365,10 @@ begin
     Exit;
   end;
 
+  // ===== 写安装模式标记（供应用内"检查更新"识别 CPU/GPU 版本） =====
+  SaveStringToFile(DestDir + '\install_mode.txt', SelectedMode, False);
+
   WizardForm.StatusLabel.Caption := '解压完成，正在配置...';
-  Result := '';  // 空字符串表示成功
 end;
 
 // ============================================================================

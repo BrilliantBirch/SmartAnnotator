@@ -41,6 +41,9 @@
       隔离 PyInstaller 子进程 PATH/CUDA 环境变量（从源头避免 CUDA DLL
       混入），CPU 清理模式补 nvidia/nvml DLL 前缀兜底；产物写入
       build_mode.txt 构建标志（运行时 CPU 版跳过 CUDA 检测并禁用 GPU 选项）
+更新: 2026-09-09 在线安装器版本 define 化：编译时传 /DMyAppVersion=
+      PRODUCT_VERSION（version_manager 唯一定义处），配合应用内
+      "检查更新"（Gitee Release tag v{产品版本} 比对）与静默更新安装
 """
 import argparse
 import configparser
@@ -1014,7 +1017,7 @@ def main() -> None:
     parser.add_argument(
         "--mode",
         choices=["cpu", "gpu", "all", "online"],
-        default="cpu",
+        default="all",
         help="打包模式: cpu=仅CPU版, gpu=仅GPU版, all=CPU+GPU+在线安装器, online=仅在线安装器 (默认: all)",
     )
     args = parser.parse_args()
@@ -1076,7 +1079,11 @@ def main() -> None:
         print(f"\n  --- 在线安装器 ---")
         # 从 download_config.ini 读取 Gitee Release 下载配置（URL + 分卷数）
         dl_config = _read_download_config()
-        online_defines: dict[str, str] = {}
+        online_defines: dict[str, str] = {
+            # 产品版本（version_manager 唯一定义处），同步安装器版本信息，
+            # 应用内"检查更新"以 tag v{产品版本} 与 __version__ 比对
+            "MyAppVersion": vm.PRODUCT_VERSION,
+        }
         if dl_config["cpu_url"]:
             online_defines["CPU_DOWNLOAD_URL"] = dl_config["cpu_url"]
             online_defines["CPU_PARTS"] = str(dl_config["cpu_parts"])
@@ -1085,13 +1092,13 @@ def main() -> None:
             online_defines["GPU_DOWNLOAD_URL"] = dl_config["gpu_url"]
             online_defines["GPU_PARTS"] = str(dl_config["gpu_parts"])
             print(f"  GPU 下载 URL: {dl_config['gpu_url']} (分卷: {dl_config['gpu_parts']})")
-        if not online_defines:
+        if not dl_config["cpu_url"] and not dl_config["gpu_url"]:
             print("  [提示] 未配置实际下载 URL，将使用 installer_online.iss 中的占位符 URL")
             print("         上传 zip 到 Gitee Release 后，编辑 download_config.ini 替换 URL，重新编译")
         online_setup = _compile_installer(
             iss_name="installer_online.iss",
             output_name="BrilliantAnnotator_OnlineSetup.exe",
-            defines=online_defines if online_defines else None,
+            defines=online_defines,
         )
         if online_setup:
             setup_exes.append(online_setup)
@@ -1109,11 +1116,11 @@ def main() -> None:
             size_mb = setup.stat().st_size / 1024 / 1024
             print(f"    {setup.name} ({size_mb:.1f} MB)")
     print("\n  zip 分发包 (用于上传到 Gitee Release):")
-    packages_dir = BUILD_DIR / "packages"
-    if packages_dir.exists():
-        for zip_file in packages_dir.glob("*.zip"):
-            size_mb = zip_file.stat().st_size / 1024 / 1024
-            print(f"    {zip_file.name} ({size_mb:.1f} MB)")
+    # packages_dir = BUILD_DIR / "packages"
+    # if packages_dir.exists():
+    #     for zip_file in packages_dir.glob("*.zip"):
+    #         size_mb = zip_file.stat().st_size / 1024 / 1024
+    #         print(f"    {zip_file.name} ({size_mb:.1f} MB)")
     print("=" * 60)
 
 
