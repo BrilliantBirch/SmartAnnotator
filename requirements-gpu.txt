@@ -1,9 +1,15 @@
-# GPU额外依赖（仅使用GPU推理时需要安装）
+# GPU额外依赖（仅构建/源码运行 GPU 推理时需要安装）
 # GPU 推理走 onnxruntime CUDA Execution Provider（2026-09-04 起，
 # 不再依赖 TensorRT / cuda-python，无需模型 engine 转换）
 # 使用方式：卸载 onnxruntime 后安装 onnxruntime-gpu（两者互斥，均提供 onnxruntime 模块）
-# nvidia-*-cu12 提供 CUDA EP 依赖的运行库 DLL（cuDNN/cuBLAS/cuFFT/cudart），
-# 程序启动时自动注册（onnxbackend._ensure_cuda_dlls），无需 PATH 含 CUDA Toolkit
+#
+# 【构建机】nvidia-*-cu12 提供源码运行时的 CUDA EP 运行库（cuDNN/cuBLAS/
+# cuFFT/cudart，onnxbackend._ensure_cuda_dlls 自动注册）；打包产物**不携带**
+# 这些运行库（2026-09-10 起移除内置 CUDA 依赖，构建期隔离 + 事后清理兜底）
+#
+# 【打包产物用户】GPU 版运行前提：自备 CUDA 运行库，二选一：
+#   1. 安装 CUDA Toolkit 12.9 + cuDNN 9.x（cuDNN bin 目录加入 PATH）
+#   2. conda 安装 nvidia 组件（conda Library\bin 在 PATH 时自动生效）
 # 当前环境: CUDA 12.9
 onnxruntime-gpu==1.28.0
 nvidia-cudnn-cu12==9.10.2.21

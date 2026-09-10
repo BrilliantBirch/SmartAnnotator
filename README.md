@@ -77,14 +77,17 @@ conda activate BrilliantAnnotator
 # 安装依赖
 pip install -r requirements.txt
 
-# GPU 推理需额外安装（onnxruntime-gpu + nvidia 运行库，无需系统级 CUDA Toolkit）
+# GPU 推理需额外安装（onnxruntime-gpu + nvidia 运行库，源码运行用）
 pip install -r requirements-gpu.txt
 ```
 
-> GPU 模式说明：推理走 onnxruntime CUDA Execution Provider，程序启动时自动注册
-> pip 包内的 CUDA 运行库 DLL（cuDNN/cuBLAS/cuFFT/cudart，见
-> `smart_annotator/core/annotate/vision/onnxbackend.py` 的 `_ensure_cuda_dlls`），
-> 用户机器只需 NVIDIA 显卡驱动，无需安装 CUDA Toolkit。
+> GPU 模式说明：推理走 onnxruntime CUDA Execution Provider。
+> - **源码运行**：requirements-gpu.txt 内的 nvidia-*-cu12 pip 包提供 CUDA 运行库，
+>   程序启动时自动注册（见 `smart_annotator/core/annotate/vision/onnxbackend.py`
+>   的 `_ensure_cuda_dlls`），无需系统级 CUDA Toolkit。
+> - **打包 GPU 版**：安装包**不携带** CUDA 运行库（2026-09-10 起采用 X-AnyLabeling
+>   同款瘦身策略，体积约 650 MB），用户需自备 **CUDA Toolkit 12.9 + cuDNN 9.x**
+>   （cuDNN 的 bin 目录需在 PATH 中，或通过 conda 安装 nvidia 组件）。
 
 ### 4.2 运行
 
@@ -158,23 +161,25 @@ python build.py --mode online   # 仅编译在线安装器（上传 zip 到 Gite
 
 构建系统按 `--mode` 参数严格区分 CPU/GPU 配置，**不受构建机本机 CUDA 安装状态干扰**：
 
-| 模式                                    | 环境隔离                                                                                                                               | 产物内容                                                                                                                                  | 运行时行为                                                                                                                           |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `--mode cpu`                            | 剔除 PyInstaller 子进程的 `CUDA_PATH` 等环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`），从源头阻止 CUDA DLL 混入 | 零 CUDA 组件（清理模式含 `nvidia/nvml` 前缀兜底），exe 目录写入 `build_mode.txt = cpu` 标志                                               | 启动时读取标志，**跳过 CUDA 检测并禁用 GPU 选项**（提示"CPU 版本：仅支持 CPU 推理"），即使运行在带 NVIDIA 显卡的机器上也不会推荐 GPU |
-| `--mode gpu`                            | 继承构建环境不裁剪                                                                                                                     | 保留 CUDA EP 运行库（cuDNN/cuBLAS/cuFFT/cudart 复制到 exe 目录），清理 TensorRT 残留（nvinfer/nvonnxparser），写入 `build_mode.txt = gpu` | 按 CUDA 可用性正常联动（无 N 卡自动回退 CPU 推理）                                                                                   |
-| 开发模式（`python -m smart_annotator`） | —                                                                                                                                      | —                                                                                                                                         | 无标志文件，按 CUDA 可用性正常联动                                                                                                   |
+| 模式                                    | 环境隔离                                                                                                                               | 产物内容                                                                                                                                                                                           | 运行时行为                                                                                                                           |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `--mode cpu`                            | 剔除 PyInstaller 子进程的 `CUDA_PATH` 等环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`），从源头阻止 CUDA DLL 混入 | 零 CUDA 组件（清理模式含 `nvidia/nvml` 前缀兜底），exe 目录写入 `build_mode.txt = cpu` 标志                                                                                                        | 启动时读取标志，**跳过 CUDA 检测并禁用 GPU 选项**（提示"CPU 版本：仅支持 CPU 推理"），即使运行在带 NVIDIA 显卡的机器上也不会推荐 GPU |
+| `--mode gpu`                            | 同样剔除 PyInstaller 子进程的 CUDA 环境变量与 PATH 中 CUDA Toolkit/nvidia 目录（`_build_isolated_env`，与 CPU 一致）                   | **移除内置 CUDA 运行库**（2026-09-10 起）：仅携带 onnxruntime_providers_cuda 本体（约 650 MB），清理 TensorRT 残留（nvinfer/nvonnxparser）与 cuDNN/cuBLAS/cuFFT/nvrtc，写入 `build_mode.txt = gpu` | 用户环境自备 CUDA Toolkit 12.9 + cuDNN 9.x（PATH 生效）后正常 GPU 推理；无 N 卡或未装 CUDA 时自动回退 CPU 推理                       |
+| 开发模式（`python -m smart_annotator`） | —                                                                                                                                      | —                                                                                                                                                                                                  | 无标志文件，按 CUDA 可用性正常联动                                                                                                   |
 
 因此：在已安装 CUDA 的机器上构建 CPU 版本，产物同样纯净（仅 CPU 组件、体积最小）；
 CPU 版本分发到任何机器都不会出现"检测到 CUDA，推荐使用 GPU"的误导提示。
 
-GPU 模式构建说明（2026-09-04 起）：
+GPU 模式构建说明（2026-09-10 起，X-AnyLabeling 式瘦身）：
 - GPU 推理走 onnxruntime CUDA Execution Provider（TensorRT / cuda-python 链路已移除）
-- 构建时自动将 pip 包 `nvidia-*-cu12` 的运行库 DLL 复制到 exe 目录（cuDNN/cuBLAS/cuFFT/cudart）
+- 构建时**移除**内置 CUDA 运行库（cuDNN/cuBLAS/cuFFT/nvrtc 约 2.2 GB），GPU 包仅
+  携带 onnxruntime_providers_cuda 本体，体积约 650 MB（可进 Gitee 附件额度）
+- **终端用户需自备 CUDA 运行库**：安装 CUDA Toolkit 12.9 + cuDNN 9.x（bin 入 PATH）
 - 清理构建机混入的冗余 TensorRT DLL（nvinfer/nvonnxparser 等）
 
 版本号策略：
 - 文件版本：`年.月.日.构建次数`（如 `26.8.10.0`），自动递增
-- 产品版本：`1.2.0.0`（固定）
+- 产品版本：`2.1.0`（唯一来源 `smart_annotator/__init__.py` 的 `__version__`，发版时仅改此一处）
 
 ## 7. 架构设计
 

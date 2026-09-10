@@ -53,6 +53,12 @@
       contents 目录内与 exe 根目录重复的 CUDA 运行库（PyInstaller
       bindepend 收集副本约 1.0 GB，运行期加载根目录优先），
       离线 installer.iss 版本同样参数化（MyAppVersion）
+更新: 2026-09-10 GPU 包改用 X-AnyLabeling 式分发：移除内置 CUDA 运行库
+      （_copy_cudnn_dlls 废弃，_cleanup_gpu_duplicate_dlls 升级为
+      _cleanup_gpu_cuda_runtime_dlls 递归清除 cuDNN/cuBLAS/cuFFT/nvrtc
+      约 2.2 GB），GPU 包仅携带 providers_cuda（约 650 MB）；
+      _build_isolated_env 扩展到 GPU 模式（构建期隔离 CUDA 环境加速
+      依赖分析）；用户需自备 CUDA Toolkit 12.9 + cuDNN 9.x（README 同步）
 """
 import argparse
 import configparser
@@ -213,13 +219,18 @@ GPU_EXTRA_HIDDEN_IMPORTS = [
     "pynvml",
 ]
 
-# ===== GPU 模式需要删除的冗余 CUDA DLL（前缀匹配，递归遍历整个打包目录）=====
-# GPU 推理走 onnxruntime CUDA Execution Provider，以下 DLL 均为 TensorRT 链路
-# 专属，切换后不再使用（构建机装有 tensorrt 时 PyInstaller 会收集）：
-# - nvinfer_10.dll (414 MB), nvinfer_plugin_10.dll (52 MB) 等: TensorRT 推理引擎
-# - onnxruntime_providers_tensorrt.dll: onnxruntime TRT 后端（直接用 tensorrt 包）
-# 注意：onnxruntime_providers_cuda / cudnn / cublas / cufft / cudart 为 CUDA EP
-# 推理必需，不得删除
+# ===== GPU 模式需要删除的冗余 DLL（前缀匹配，递归遍历整个打包目录）=====
+# 分两步清理（均递归全目录，模式匹配大小写不敏感）：
+# 1. GPU_REDUNDANT_DLL_PATTERNS：TensorRT 链路专属 DLL（构建机装有 tensorrt
+#    时 PyInstaller 会收集）：nvinfer_10.dll (414 MB) / nvinfer_plugin_10.dll /
+#    nvonnxparser / onnxruntime_providers_tensorrt 等
+# 2. GPU_CUDA_RUNTIME_DLL_PATTERNS：CUDA 运行库（cuDNN 9 / cuBLAS / cuFFT /
+#    nvrtc 等，约 2.2 GB）。采用 X-AnyLabeling 同款分发策略：GPU 包仅携带
+#    onnxruntime_providers_cuda.dll，CUDA 运行库由用户环境自备（安装 CUDA
+#    Toolkit 12.9 + cuDNN 9.x，或 conda 安装后 PATH 生效），使 GPU 包体积
+#    可控（约 650 MB，可进 Gitee 附件额度）。
+#    注意：onnxruntime_providers_cuda 本体不匹配任何模式（模式表无此前缀），
+#    不会被误删
 GPU_REDUNDANT_DLL_PATTERNS = [
     "nvinfer",
     "nvonnxparser",
@@ -228,14 +239,9 @@ GPU_REDUNDANT_DLL_PATTERNS = [
     "onnxruntime_providers_tensorrt",
 ]
 
-# ===== GPU 模式 contents 目录去重模式表（前缀匹配，仅限 PACKAGES_DIR_NAME 子目录）=====
-# PyInstaller 的 bindepend 会把 onnxruntime_providers_cuda 的 CUDA 传递依赖
-#（nvidia pip 包运行库）收集进 contents 目录，而 _copy_cudnn_dlls 又会将相同
-# （或更新版本）运行库复制到 exe 根目录；运行期 _ensure_cuda_dlls 注册 exe
-# 根目录优先，contents 内副本为死重（实测 cublasLt/cufft/cublas/cudart/cudnn
-# 双份约 1.0 GB）。仅清理 contents 目录（exe 根目录副本为运行必需，必须保留）；
-# 不含 onnxruntime_providers_cuda（仅存在于 capi 目录，无根目录副本，不得删）。
-GPU_PACKAGES_REDUNDANT_DLL_PATTERNS = [
+# GPU 包需移除的 CUDA 运行库前缀（cuDNN 9 全家 + cuBLAS + cuFFT + nvrtc 等；
+# 与 CPU_REDUNDANT_DLL_PATTERNS 的差异仅为不含 onnxruntime_providers_cuda）
+GPU_CUDA_RUNTIME_DLL_PATTERNS = [
     "cudnn",
     "cublas",
     "cufft",
@@ -245,6 +251,9 @@ GPU_PACKAGES_REDUNDANT_DLL_PATTERNS = [
     "nvrtc",
     "nvjit",
     "nvvm",
+    "cupti",
+    "nvidia",
+    "nvml",
 ]
 
 # ===== CPU 模式需要删除的冗余 CUDA DLL（前缀匹配，递归遍历整个打包目录）=====
@@ -282,17 +291,17 @@ CUDA_ENV_VARS_TO_REMOVE = [
     "NVIDIA_GPU_TIMING",
 ]
 
-# CUDA Toolkit / nvidia 运行库的 PATH 目录关键词（CPU 模式从 PATH 剔除）
+# CUDA Toolkit / nvidia 运行库的 PATH 目录关键词（构建时从 PATH 剔除，CPU/GPU 均隔离）
 CUDA_PATH_KEYWORDS = ["CUDA", "nvidia"]
 
 
 def _build_isolated_env(mode: str) -> dict:
     """构建 PyInstaller 子进程的隔离环境变量（按构建模式裁剪 CUDA 痕迹）。
 
-    CPU 模式：剔除 CUDA 环境变量与 PATH 中的 CUDA Toolkit / nvidia 目录，
-    使 PyInstaller 的 DLL 依赖分析无法发现本机 CUDA 组件，从源头避免
-    CUDA DLL 混入 CPU 产物（不再依赖事后清理的完备性）。
-    GPU 模式：继承当前环境不裁剪（CUDA EP 运行库需保留以供复制）。
+    CPU/GPU 模式均剔除 CUDA 环境变量与 PATH 中的 CUDA Toolkit / nvidia
+    目录：CPU 产物要求零 CUDA 组件；GPU 产物仅携带 providers_cuda 本体
+    （CUDA 运行库由用户环境自备，混入的部分由事后清理兜底）。从源头避免
+    CUDA DLL 混入，同时显著缩短依赖分析耗时。
 
     Args:
         mode: 构建模式（"cpu" / "gpu"）。
@@ -301,8 +310,6 @@ def _build_isolated_env(mode: str) -> dict:
         裁剪后的环境变量字典（用于 subprocess.run 的 env 参数）。
     """
     env = os.environ.copy()
-    if mode != "cpu":
-        return env
 
     # 1) 剔除 CUDA 相关环境变量
     removed_vars = [k for k in CUDA_ENV_VARS_TO_REMOVE if k in env]
@@ -323,13 +330,13 @@ def _build_isolated_env(mode: str) -> dict:
     env["PATH"] = os.pathsep.join(kept)
 
     if removed_vars or removed_paths:
-        print(f"  [CPU] 已隔离构建环境 CUDA 痕迹（不受本机 CUDA 安装干扰）：")
+        print(f"  [{mode.upper()}] 已隔离构建环境 CUDA 痕迹（不受本机 CUDA 安装干扰）：")
         for k in removed_vars:
             print(f"    - 环境变量: {k}")
         for p in removed_paths:
             print(f"    - PATH: {p}")
     else:
-        print("  [CPU] 构建环境无 CUDA 痕迹（PATH/环境变量干净）")
+        print(f"  [{mode.upper()}] 构建环境无 CUDA 痕迹（PATH/环境变量干净）")
     return env
 
 
@@ -528,49 +535,17 @@ def _cleanup_gpu_redundant_dlls(exe_dir: Path) -> int:
     return _remove_dlls_by_patterns(exe_dir, GPU_REDUNDANT_DLL_PATTERNS)
 
 
-def _copy_cudnn_dlls(exe_dir: Path) -> int:
-    """GPU 模式专用：将 CUDA EP 依赖的 pip 包运行库 DLL 复制到 exe 目录。
+def _cleanup_gpu_cuda_runtime_dlls(exe_dir: Path) -> int:
+    """GPU 模式专用：移除打包目录内全部 CUDA 运行库（X-AnyLabeling 式分发）。
 
-    onnxruntime_providers_cuda.dll 依赖 cudnn64_9.dll（cuDNN 9）、
-    cublas64_12/cublasLt64_12（cuBLAS）、cufft64_11（cuFFT）、
-    cudart64_12（CUDA Runtime）。这些 DLL 不随 onnxruntime-gpu 安装，
-    仅存在于 pip 包 nvidia-*-cu12 的 nvidia/<组件>/bin 目录；复制到 exe
-    根目录后运行期由 onnxbackend._ensure_cuda_dlls 注册 exe 目录完成加载
-    （PyInstaller bindepend 也会收集一份进 contents 目录，由
-    _cleanup_gpu_duplicate_dlls 去重，根目录副本保证为当前 pip 版本）。
+    GPU 包仅携带 onnxruntime_providers_cuda.dll（CUDA EP 本体）；cuDNN 9 /
+    cuBLAS / cuFFT / nvrtc 等运行库（约 2.2 GB）不由安装包携带，改由用户
+    环境自备（安装 CUDA Toolkit 12.9 + cuDNN 9.x 并确保 PATH 生效，或
+    conda 安装 nvidia 组件），使 GPU 包体积可控。
 
-    Args:
-        exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
-
-    Returns:
-        复制的文件总字节数；未找到 nvidia 包时返回 0 并打印告警。
-    """
-    import sysconfig
-
-    nvidia_root = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
-    if not nvidia_root.is_dir():
-        print(
-            f"  [警告] 未找到 nvidia pip 包（{nvidia_root}），GPU 版 CUDA EP 将回退 CPU。"
-            f"请先 pip install nvidia-cudnn/cublas/cufft/cuda-runtime-cu12 再构建。"
-        )
-        return 0
-
-    copied_size = 0
-    for dll_dir in sorted(nvidia_root.glob("*/bin")):
-        for dll in dll_dir.glob("*.dll"):
-            shutil.copy2(dll, exe_dir / dll.name)
-            copied_size += dll.stat().st_size
-    return copied_size
-
-
-def _cleanup_gpu_duplicate_dlls(exe_dir: Path) -> int:
-    """GPU 模式专用：删除 contents 目录中与 exe 根目录重复的 CUDA 运行库。
-
-    PyInstaller bindepend 会把 onnxruntime_providers_cuda 的 CUDA 传递依赖
-    收集进 contents 目录，而 _copy_cudnn_dlls 又将相同（或更新版本）运行库
-    复制到 exe 根目录；运行期 _ensure_cuda_dlls 注册 exe 根目录优先，contents
-    内副本为死重（实测约 1.0 GB）。仅遍历 contents 子目录（exe 根目录副本为
-    运行必需必须保留），且模式表不含 onnxruntime_providers_cuda（无重复，不得删）。
+    无论构建环境是否混入（PyInstaller bindepend 自动收集 / pip nvidia 包），
+    均以 exe 目录为根递归清除；模式表不含 onnxruntime_providers_cuda，
+    CUDA EP 本体不受影响。
 
     Args:
         exe_dir: 打包输出目录路径（dist_{mode}/BrilliantAnnotator）。
@@ -578,9 +553,7 @@ def _cleanup_gpu_duplicate_dlls(exe_dir: Path) -> int:
     Returns:
         已删除文件的总字节数。
     """
-    return _remove_dlls_by_patterns(
-        exe_dir / PACKAGES_DIR_NAME, GPU_PACKAGES_REDUNDANT_DLL_PATTERNS
-    )
+    return _remove_dlls_by_patterns(exe_dir, GPU_CUDA_RUNTIME_DLL_PATTERNS)
 
 
 def _cleanup_cpu_redundant_dlls(exe_dir: Path) -> int:
@@ -1022,19 +995,16 @@ def _build_package(
         removed_cuda = _cleanup_cpu_redundant_dlls(exe_dir)
         print(f"  已清理 CUDA 冗余 DLL，释放 {removed_cuda / 1024 / 1024:.1f} MB")
 
-    # ===== GPU 模式清理冗余 TensorRT DLL（推理走 onnxruntime CUDA EP）=====
+    # ===== GPU 模式清理（推理走 onnxruntime CUDA EP，X-AnyLabeling 式分发）=====
     if mode == "gpu":
         print(f"\n  [GPU] 清理冗余 TensorRT DLL（nvinfer/nvonnxparser 等）...")
         removed_redundant = _cleanup_gpu_redundant_dlls(exe_dir)
         print(f"  已清理冗余 TensorRT DLL，释放 {removed_redundant / 1024 / 1024:.1f} MB")
-        print(f"\n  [GPU] 复制 cuDNN DLL 到 exe 目录（CUDA EP 运行时依赖）...")
-        copied_cudnn = _copy_cudnn_dlls(exe_dir)
-        print(f"  已复制 cuDNN DLL，共 {copied_cudnn / 1024 / 1024:.1f} MB")
-        # 删除 contents 目录内与 exe 根目录重复的 CUDA 运行库（PyInstaller
-        # bindepend 自动收集的一份为死重，运行期加载 exe 根目录优先）
-        print(f"\n  [GPU] 删除 contents 目录内重复的 CUDA 运行库...")
-        removed_dup = _cleanup_gpu_duplicate_dlls(exe_dir)
-        print(f"  已删除重复 CUDA DLL，释放 {removed_dup / 1024 / 1024:.1f} MB")
+        # 移除内置 CUDA 运行库（cuDNN/cuBLAS/cuFFT/nvrtc 约 2.2 GB），GPU 包
+        # 仅携带 onnxruntime_providers_cuda；运行库由用户环境自备（README GPU 说明）
+        print(f"\n  [GPU] 移除内置 CUDA 运行库（cuDNN/cuBLAS/cuFFT/nvrtc，用户环境自备）...")
+        removed_cuda = _cleanup_gpu_cuda_runtime_dlls(exe_dir)
+        print(f"  已移除 CUDA 运行库，释放 {removed_cuda / 1024 / 1024:.1f} MB")
 
     # ===== 生成 py_packages_list.txt =====
     print(f"\n  [{mode_upper}] 生成 py_packages_list.txt...")
