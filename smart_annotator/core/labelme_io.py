@@ -39,6 +39,9 @@ LabelMe JSON 格式读写模块
 更新: 2026-09-08 冗余清理：删除全库零引用的死函数 document_labels
       （文档标签提取，与 collect_labels_from_files 的扫描链路功能重复）
       与未使用 import Path
+更新: 2026-09-10 document_shapes 新增四点矩形归一：PPOCRLabel 等第三方
+      工具写出的 rectangle 为四角点表示，统一取包围盒转为本项目画布的
+      两点式语义（[左上, 右下]），修复外部 OCR 标注显示被压扁的问题
 """
 
 import json
@@ -147,8 +150,36 @@ def save_document(doc: Dict[str, Any], path) -> None:
         json.dump(doc, f, indent=2, ensure_ascii=False)
 
 
+def _normalize_rectangle_shape(shape: Dict[str, Any]) -> Dict[str, Any]:
+    """将非两点式矩形形状归一为本项目画布的两点式语义（[左上, 右下]）。
+
+    PPOCRLabel 等第三方标注工具写出的 rectangle 为四角点表示，而本编辑器
+    的渲染/编辑/保存链路统一按 labelme 标准两点语义处理（points[0]=左上、
+    points[1]=右下）。读取文档时对矩形全部顶点取包围盒，输出
+    [[minx, miny], [maxx, maxy]]，轴对齐显示下与原四角点完全等价。
+
+    Args:
+        shape: 形状字典。
+
+    Returns:
+        归一后的新形状字典；两点式矩形与非矩形形状原样返回。
+    """
+    points = shape.get("points") or []
+    if shape.get("shape_type") != SHAPE_RECTANGLE or len(points) <= 2:
+        return shape
+    # 对全部顶点取包围盒（容忍顶点顺序任意/重复），重构为左上+右下两点
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    normalized = dict(shape)
+    normalized["points"] = [[min(xs), min(ys)], [max(xs), max(ys)]]
+    return normalized
+
+
 def document_shapes(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     """返回文档中的形状列表（缺失字段时安全返回空列表）。
+
+    矩形形状统一经 _normalize_rectangle_shape 归一为两点式（四点矩形
+    取包围盒），保证画布渲染/编辑端点/hover 掩码等链路的一致语义。
 
     Args:
         doc: labelme 文档字典。
@@ -156,7 +187,10 @@ def document_shapes(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     Returns:
         形状字典列表。
     """
-    return list(doc.get("shapes", []) or [])
+    return [
+        _normalize_rectangle_shape(shape)
+        for shape in list(doc.get("shapes", []) or [])
+    ]
 
 
 def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> None:
