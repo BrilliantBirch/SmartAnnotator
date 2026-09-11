@@ -15,7 +15,7 @@ import numpy as np
 import ast
 import cv2
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional, Union
+from typing import Callable, List, Dict, Any, Tuple, Optional, Union
 
 from ..utils import (
     resize_image,
@@ -158,11 +158,29 @@ class BasePredictor:
         output /= 255
         return output
 
-    def warm_up(self) -> None:
+    def refresh_params(self, config: AnnotateConfig) -> None:
+        """缓存复用时刷新推理参数（模型不重载）。
+
+        预测器实例经 predictor_cache 复用时，用户在界面调整的推理阈值
+        需同步到实例（模型路径/设备变化由缓存 key 变化重建，不在此处理）。
+
+        Args:
+            config: 最新的标注配置对象。
+        """
+        self.conf = config.conf
+        self.iou = config.nms
+
+    def warm_up(
+        self, progress_cb: Optional[Callable[[str, float], None]] = None
+    ) -> None:
         """模型预热，减少首次推理延迟。
 
         仅需 2 轮即可达到稳定状态，避免不必要的预热开销。
         使用与模型批次大小一致的数量创建 dummy 图像。
+
+        Args:
+            progress_cb: 预热进度回调 (描述, 0-1 进度)，可选
+                （经 predictor_cache 传播到预加载进度弹窗）。
         """
         imgSize = self.imgSize
         # 直接创建 batch 张 dummy 图像，避免 extend 导致列表翻倍
@@ -170,8 +188,14 @@ class BasePredictor:
             np.ones((imgSize[0], imgSize[1], 3), dtype=np.float32)
             for _ in range(self.batch)
         ]
-        for _ in range(2):
+        for round_idx in range(2):
             self.predict(img)
+            if progress_cb is not None:
+                # 2 轮预热映射到 0.4-0.9 区间（0.1-0.4 为加载阶段）
+                progress_cb(
+                    f"正在预热模型（第 {round_idx + 1}/2 轮）...",
+                    0.4 + 0.25 * (round_idx + 1),
+                )
 
 
 # region 目标检测

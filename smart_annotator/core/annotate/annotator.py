@@ -21,6 +21,16 @@
         生成器改经 contextlib.closing 显式确定性关闭（中止 return 时受控
         抛出而非依赖 GC 随机触发；关闭链传播至帧迭代器 finally 释放
         VideoCapture），视频中止补记"已抽取帧数（保留）"日志
+    11. 2026-09-11 模型缓存接入：预测器创建与 warmup 移交
+        predictor_cache（首次加载预热、后续任务复用，模型/设备/字典
+        变化自动重建），构造函数新增 progress_cb 透传加载进度
+    12. 2026-09-11 OCR 仅识别模式：批量读输出目录已有 JSON 标注回写
+        识别文本（_label_rec_only），单张回填画布现有标注文本
+        （annotate_image 分支），跳过 det 检测阶段
+    13. 2026-09-11 修复单张仅识别与画布状态脱节：annotate_image 改参数
+        驱动（rec_only + existing_shapes 由调用方传入画布实时形状深拷贝，
+        不再读磁盘 JSON——未保存的删除/新增不再被磁盘旧状态覆盖）；
+        无可识别形状返回 None 哨兵（调用侧不回填画布，防止清空标注）
 """
 
 import cv2
@@ -33,12 +43,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from smart_annotator.config import SysConfig, AnnotateConfig, MODE, LABELME_VERSION
 from smart_annotator.utils import LOGGER
-from .vision import DetectionPredictor, PoseDetectionPredictor, SegmentationPredictor
-from .vision.ocr import OcrPredictor
+from smart_annotator.core.labelme_io import (
+    empty_document,
+    save_document,
+    load_document,
+    document_shapes,
+)
+from .predictor_cache import get_predictor
 from .formatters import FormatterFactory, BaseFormatter
 from .video_processor import VideoProcessor
 from smart_annotator.utils import yolo_to_labelme, generate_labelme_file
-from smart_annotator.core.labelme_io import empty_document, save_document
 
 
 def _load_image(image_path: Path) -> np.ndarray:
@@ -57,11 +71,20 @@ def _load_image(image_path: Path) -> np.ndarray:
 class Annotator:
     """自动标注器，负责加载模型、预测结果并输出 LabelMe 格式标注文件。"""
 
-    def __init__(self, config: SysConfig):
+    def __init__(
+        self,
+        config: SysConfig,
+        progress_cb: Optional[Callable[[str, float], None]] = None,
+    ):
         """初始化自动标注器。
+
+        预测器经 predictor_cache 获取：首次使用该模型时执行加载与
+        warmup（进度经 progress_cb 上报），后续任务复用缓存实例
+        （仅刷新推理参数），不再重复加载。
 
         Args:
             config: 系统配置对象。
+            progress_cb: 模型加载/预热进度回调 (描述, 0-1 进度)，可选。
 
         Raises:
             ValueError: 当任务类型不支持时抛出。
@@ -70,8 +93,8 @@ class Annotator:
         self.mode = config.task_type
         self.config = config.annotate_config
 
-        # 使用策略模式，根据任务类型创建预测器
-        model = self._create_predictor()
+        # 经缓存获取预测器（首次创建+warmup，命中复用并刷新参数）
+        model = get_predictor(self.config, progress_cb)
         if model is None:
             raise RuntimeError(f"模型加载失败: {self.config.model_path}")
 
@@ -84,38 +107,6 @@ class Annotator:
             LOGGER.info(
                 f"按选定类别过滤检测: {sorted(self._selected_classes)}"
             )
-
-        # 模型预热
-        self.model.warm_up()
-
-    def _create_predictor(self) -> Optional[Any]:
-        """根据任务模式创建对应的预测器。
-
-        Returns:
-            预测器实例，失败时返回 None。
-
-        Raises:
-            ValueError: 当任务类型不支持时抛出。
-        """
-        predictor_map = {
-            MODE.DETECT: DetectionPredictor,
-            MODE.POSE: PoseDetectionPredictor,
-            MODE.SEGMENT: SegmentationPredictor,
-            MODE.OCR: OcrPredictor,
-        }
-
-        predictor_cls = predictor_map.get(self.mode)
-        if predictor_cls is None:
-            LOGGER.warning(f"任务类型:{self.mode.name}暂不支持")
-            raise ValueError(f"任务类型:{self.mode.name}暂不支持")
-
-        predictor = predictor_cls(self.config)
-        # 检查预测器是否成功初始化（模型是否加载成功）
-        if not hasattr(predictor, "model") or predictor.model is None:
-            LOGGER.error(f"模型初始化失败: {self.config.model_path}")
-            return None
-
-        return predictor
 
     def run(self, callback: Callable[[str, float], bool]) -> bool:
         """运行自动标注任务。
@@ -251,7 +242,12 @@ class Annotator:
 
         return success
 
-    def annotate_image(self, image_path) -> List[Dict[str, Any]]:
+    def annotate_image(
+        self,
+        image_path,
+        rec_only: bool = False,
+        existing_shapes: Optional[List[Dict[str, Any]]] = None,
+    ):
         """对单张图片推理并返回 labelme 形状字典列表（不写文件）。
 
         复用与批量标注完全相同的预测器/格式化器/类别过滤链路，
@@ -259,14 +255,28 @@ class Annotator:
 
         Args:
             image_path: 图片文件路径（字符串或 Path）。
+            rec_only: OCR 仅识别模式（跳过检测，对 existing_shapes 区域
+                识别回写文本）。调用方传入画布实时形状，与磁盘 JSON
+                无关——避免未保存的删除/新增被磁盘旧状态覆盖。
+            existing_shapes: 仅识别的输入形状列表（画布实时状态深拷贝）。
 
         Returns:
-            labelme 形状字典列表；无检测结果或失败时返回空列表。
+            普通模式：labelme 形状字典列表（无检测结果为空列表）；
+            仅识别模式：更新识别文本后的形状列表；无可识别内容
+            （existing_shapes 为空）时返回 None（调用侧不回填画布）。
         """
         path = Path(image_path)
         img = _load_image(path)
         if img is None:
             return []
+
+        # ===== OCR 仅识别：对画布实时形状区域识别回写（不读磁盘 JSON）=====
+        if rec_only:
+            if not existing_shapes:
+                LOGGER.warning("仅识别：当前图片无已标注 shape，跳过识别")
+                return None
+            return self.model.recognize_shapes(img, existing_shapes)
+
         img_h, img_w = img.shape[:2]
 
         predictions = self.model.predict([img])
@@ -320,12 +330,47 @@ class Annotator:
             )
         return shapes
 
+    def _label_rec_only(self, image_pathList: List[Path]) -> None:
+        """OCR 仅识别批量标注：读输出目录已有 JSON，识别文本就地回写。
+
+        跳过 det 检测与原图复制；未标注图片跳过（记日志），标注文件
+        读取失败不拖垮整批。
+
+        Args:
+            image_pathList: 图像路径列表（JSON 取输出目录同名 .json）。
+        """
+        for path in image_pathList:
+            json_path = self.output / f"{path.stem}.json"
+            if not json_path.exists():
+                LOGGER.warning(f"仅识别跳过未标注图片: {path.name}")
+                continue
+            try:
+                doc = load_document(json_path)
+                shapes = document_shapes(doc)
+                if not shapes:
+                    LOGGER.warning(f"仅识别跳过无标注图片: {path.name}")
+                    continue
+                img = _load_image(path)
+                if img is None:
+                    LOGGER.warning(f"图片解码失败，已跳过: {path}")
+                    continue
+                # rec 会话识别并回写 description/score（label/points 不变）
+                doc["shapes"] = self.model.recognize_shapes(img, shapes)
+                save_document(doc, json_path)
+            except Exception as e:
+                LOGGER.error(f"仅识别处理失败: {path.name}，{e}")
+
     def _label(self, image_pathList: List[Path]) -> None:
         """对图像列表进行批处理标注。
 
         Args:
             image_pathList: 图像路径列表。
         """
+        # OCR 仅识别模式：跳过检测，对已有标注区域回写识别文本
+        if self.mode == MODE.OCR and self.config.ocr_rec_only:
+            self._label_rec_only(image_pathList)
+            return
+
         batch_size = len(image_pathList)
 
         # 使用线程池并行图片解码，I/O 密集型任务线程池可提升吞吐量

@@ -9,4 +9,4 @@ BrilliantAnnotator — 基于 PySide6 的智能标注工具
 """
 
 __appname__ = "BrilliantAnnotator"
-__version__ = "2.1.0"
+__version__ = "2.2.1"

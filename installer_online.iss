@@ -21,6 +21,19 @@
 ;       新增静默安装支持（/MODE 参数 + PrepareToInstall 阶段补下载）；
 ;       解压前 taskkill 关闭运行中的旧版本（在线更新覆盖安装）；
 ;       安装完成写入 install_mode.txt 模式标记（客户端更新检测用）
+; 更新: 2026-09-11 静默更新体验闭环：PrepareToInstall 错误改经代码
+;       MsgBox 显示（/SUPPRESSMSGBOXES 会抑制 Inno 内置错误框，原实现
+;       静默失败无任何提示）；静默安装完成后自动启动新版本（原 [Run]
+;       skipifsilent 导致更新完成后无任何反馈）
+; 更新: 2026-09-11 解压与磁盘清理重构：zip 解压改用 Inno 原生
+;       [Files] extractarchive（ArchiveExtraction=full，is7z.dll 引擎），
+;       进度条按 zip 条目真实推进（修复原 PowerShell Expand-Archive
+;       走马灯"卡 10% 后瞬间 100%"观感）；分卷合并后立即删除分卷、
+;       安装完成后删除合并 zip，降低用户磁盘占用
+; 更新: 2026-09-11 修复静默更新模式失效 bug：Inno 静默安装仍会依页
+;       触发 NextButtonClick，ModePage 默认选中 CPU 抢先下载并置
+;       DownloadCompleted，短路 /MODE=GPU 补下载分支（GPU 版静默更新
+;       会装成 CPU 包）；修复后静默下载统一由 PrepareToInstall 完成
 ; ============================================================================
 
 #define MyAppName          "BrilliantAnnotator"
@@ -63,7 +76,8 @@ DefaultDirName={autopf}\{#MyAppPublisher}\{#MyAppName}
 DefaultGroupName={#MyAppPublisher}\{#MyAppName}
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
-PrivilegesRequiredOverridesAllowed=dialog
+; 允许向导页与命令行（/ALLUSERS|/CURRENTUSER）覆盖安装权限模式
+PrivilegesRequiredOverridesAllowed=dialog commandline
 
 ; 卸载信息
 UninstallDisplayName={#MyAppName}
@@ -87,6 +101,10 @@ VersionInfoProductName=BrilliantAnnotator
 VersionInfoProductVersion={#MyAppVersion}.0
 VersionInfoVersion={#MyAppVersion}.0
 
+; 归档解压引擎：full 使用 is7z.dll（7-Zip 全格式引擎），支持 .zip
+; （basic/enhanced 仅支持 .7z）；编译器自动将 DLL 打包进安装器
+ArchiveExtraction=full
+
 [Languages]
 ; 中文语言文件未内置 Inno Setup 6.7.3，如需中文安装界面：
 ; 1. 从 https://github.com/jrsoftware/issrc 下载 ChineseSimplified.isl
@@ -99,8 +117,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项:"; Flags: checkedonce
 Name: "quicklaunchicon"; Description: "创建快速启动栏快捷方式"; GroupDescription: "附加选项:"; Flags: checkedonce
 
-; 注意: 在线安装器没有 [Files] 段，文件在运行时下载并解压
-; [Icons] 段在 PrepareToInstall（解压）之后执行，因此文件已存在
+; 运行时下载的 zip 经 Inno 原生解压引擎安装到 {app}：
+; external 指向 {code:GetZipSource}（下载合并后的临时 zip），
+; extractarchive 由安装引擎按 zip 条目解压并驱动真实进度条，
+; 失败自动中止并回滚安装
+[Files]
+Source: "{code:GetZipSource}"; DestDir: "{app}"; Flags: external extractarchive recursesubdirs createallsubdirs ignoreversion
+
+; [Icons] 段在安装（解压）之后执行，因此文件已存在
 
 [Icons]
 ; 开始菜单快捷方式
@@ -268,6 +292,14 @@ begin
     Exit;
   end;
 
+  // 分卷已合并为完整 zip，立即删除分卷释放磁盘
+  // （GPU 版 6 分卷约 550MB，与合并 zip 并存时占用峰值减半）
+  if PartCount > 1 then
+  begin
+    for PartIndex := 1 to PartCount do
+      DeleteFile(TmpDir + '\' + MergeZipName + '.part' + Format('%.3d', [PartIndex]));
+  end;
+
   // 全部成功：标记下载完成
   DownloadCompleted := True;
 end;
@@ -277,6 +309,16 @@ end;
 // ============================================================================
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
+  // 静默模式下 Inno 仍会依页序触发 NextButtonClick：ModePage 默认选中
+  // CPU 会抢先下载 CPU 包、令 DownloadCompleted 置 True，进而短路
+  // PrepareToInstall 的 /MODE 补下载分支——静默更新永远装成 CPU 版。
+  // 故静默时此处置空，下载统一由 PrepareToInstall 的 /MODE 分支完成
+  if WizardSilent() then
+  begin
+    Result := True;
+    Exit;
+  end;
+
   // 仅在版本选择页面点击下一步时触发下载
   if CurPageID = ModePage.ID then
   begin
@@ -289,7 +331,9 @@ begin
     DownloadAndMerge();
     if DownloadError <> '' then
     begin
-      SuppressibleMsgBox(DownloadError, mbError, MB_OK, IDOK);
+      // 统一用代码 MsgBox（交互模式与 SuppressibleMsgBox 等效，且不被
+      // /SUPPRESSMSGBOXES 抑制，静默场景错误始终可见）
+      MsgBox(DownloadError, mbError, MB_OK);
       Result := False;
       Exit;
     end;
@@ -299,16 +343,18 @@ begin
 end;
 
 // ============================================================================
-// 准备安装：静默模式补下载 → 关闭运行中的旧版本 → 解压 → 写模式标记
+// 准备安装实际逻辑：静默模式补下载 → 关闭运行中的旧版本 → 创建目录
+// zip 解压由 [Files] 的 extractarchive 条目承担（真实进度条，失败回滚），
+// install_mode.txt 模式标记与 zip 清理在 CurStepChanged(ssPostInstall) 完成
+// 错误写入 Err（空字符串 = 成功），由包装函数 PrepareToInstall 统一展示
 // ============================================================================
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+procedure DoPrepareToInstall(var Err: String);
 var
   DestDir: String;
   ResultCode: Integer;
-  PowerShellCmd: String;
   Mode: String;
 begin
-  Result := '';  // 空字符串表示成功
+  Err := '';  // 空字符串表示成功
 
   // ===== 静默模式补下载（/SILENT 下向导页被跳过，NextButtonClick 不会触发）=====
   if (not DownloadCompleted) and WizardSilent() then
@@ -321,54 +367,40 @@ begin
     DownloadAndMerge();
     if DownloadError <> '' then
     begin
-      Result := DownloadError;
+      Err := DownloadError;
       Exit;
     end;
   end;
 
-  DestDir := ExpandConstant('{app}');
-
   // ===== 在线更新场景：先关闭运行中的旧版本并等待句柄释放 =====
+  DestDir := ExpandConstant('{app}');
   ShellExec('open', 'taskkill', '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(1500);
 
-  // 创建安装目录
+  // 创建安装目录（{app} 尚不存在时 [Files] 也会创建，此处显式创建保目录语义）
   if not DirExists(DestDir) then
     CreateDir(DestDir);
+end;
 
-  // 使用 PowerShell 解压 zip 文件
-  // Expand-Archive 是 Windows 10+ 内置的 PowerShell 命令
-  PowerShellCmd := '-NoProfile -ExecutionPolicy Bypass -Command "' +
-    'Expand-Archive -Path ''' + DownloadedZipPath + ''' -DestinationPath ''' + DestDir + ''' -Force' +
-    '"';
-
-  WizardForm.StatusLabel.Caption := '正在解压 ' + SelectedMode + ' 版安装包...';
-  WizardForm.ProgressGauge.Style := npbstMarquee;
-
-  if not ShellExec('open', 'powershell.exe', PowerShellCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+// ============================================================================
+// 准备安装（Inno 回调）：委托 DoPrepareToInstall，失败原因经代码 MsgBox
+// 展示——/SUPPRESSMSGBOXES 只抑制 Inno 内置错误框，代码 MsgBox 不受抑制，
+// 确保应用内静默更新失败时用户能看到原因（而非安装器无声退出）
+// ============================================================================
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Err: String;
+begin
+  Err := '';
+  DoPrepareToInstall(Err);
+  if Err <> '' then
   begin
-    Result := '无法启动 PowerShell 进行解压。请确保系统已安装 PowerShell。';
-    Exit;
-  end;
-
-  if ResultCode <> 0 then
-  begin
-    Result := '解压失败（PowerShell 退出码: ' + IntToStr(ResultCode) + '）。' +
-      '可能原因: 磁盘空间不足或 zip 文件损坏。';
-    Exit;
-  end;
-
-  // 验证主程序文件是否存在
-  if not FileExists(DestDir + '\{#MyAppExeName}') then
-  begin
-    Result := '解压后未找到主程序文件 {#MyAppExeName}。zip 文件可能已损坏。';
-    Exit;
-  end;
-
-  // ===== 写安装模式标记（供应用内"检查更新"识别 CPU/GPU 版本） =====
-  SaveStringToFile(DestDir + '\install_mode.txt', SelectedMode, False);
-
-  WizardForm.StatusLabel.Caption := '解压完成，正在配置...';
+    if WizardSilent() then
+      MsgBox(Err, mbCriticalError, MB_OK);
+    Result := Err;
+  end
+  else
+    Result := '';
 end;
 
 // ============================================================================
@@ -377,6 +409,43 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+end;
+
+// ============================================================================
+// 安装步骤回调：写模式标记 + 清理 zip + 静默安装完成后自动启动新版本
+// ============================================================================
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // ===== 写安装模式标记（供应用内"检查更新"识别 CPU/GPU 版本） =====
+    // 解压已由 [Files] 完成（失败会在该阶段自动中止），此处主程序必在
+    SaveStringToFile(ExpandConstant('{app}\install_mode.txt'), SelectedMode, False);
+
+    // ===== 清理合并 zip：解压完成后压缩包已无用，立即释放磁盘 =====
+    // （CPU 约 94MB / GPU 约 550MB；{tmp} 在安装器退出时本会自动清空，
+    //  此处显式删除可提前释放并在异常退出时兜底）
+    if DownloadCompleted then
+      DeleteFile(DownloadedZipPath);
+
+    // [Run] 的"立即启动"带 skipifsilent，静默更新完成后安装器直接退出，
+    // 用户感知不到更新结果；此处补启动新版本形成更新闭环（交互安装仍
+    // 由 [Run] 复选框决定，WizardSilent 判断保证不重复启动）
+    if WizardSilent() then
+      ShellExec('open', ExpandConstant('{app}\{#MyAppExeName}'), '', '',
+        SW_SHOW, ewNoWait, ResultCode);
+  end;
+end;
+
+// ============================================================================
+// [Files] external 条目回调：返回待解压 zip 的本地路径
+// 调用发生在安装（解压）阶段，此时下载/合并必然已完成
+// ============================================================================
+function GetZipSource(Param: String): String;
+begin
+  Result := DownloadedZipPath;
 end;
 
 // ============================================================================

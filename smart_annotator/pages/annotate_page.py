@@ -34,6 +34,8 @@
       置信度 0.45/外扩比例 1.4，对应 DB 检测后处理），OCR 模式显示该组
       并隐藏 BBox 置信度/NMS/关键点置信度；collect/apply_config 纳入
       ocr_thresh/ocr_box_thresh/ocr_unclip_ratio
+更新: 2026-09-11 OCR 推理参数卡新增"仅识别"复选框（跳过检测，对已标注
+      shape 区域识别文本；collect/apply_config 纳入 ocr_rec_only）
 """
 
 from pathlib import Path
@@ -45,6 +47,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QRadioButton,
     QButtonGroup,
+    QCheckBox,
     QWidget,
 )
 from PySide6.QtCore import Signal
@@ -233,6 +236,14 @@ class AnnotatePage(BasePage):
         self.spin_ocr_thresh = LabeledSpin("二值化阈值", "double", 0, 1, 0.01, 0.2)
         self.spin_ocr_box = LabeledSpin("检测框置信度", "double", 0, 1, 0.01, 0.45)
         self.spin_ocr_unclip = LabeledSpin("外扩比例", "double", 1, 3, 0.05, 1.4)
+        # OCR 仅识别开关：跳过检测阶段，对已标注 shape 区域执行文本识别
+        # （需图片已有标注；批量回写输出目录 JSON，单张回填画布）
+        self.chk_ocr_rec_only = QCheckBox("仅识别（跳过检测，识别已标注区域）")
+        self.chk_ocr_rec_only.setToolTip(
+            "启用后不执行文本框检测，仅对已有标注的 shape 区域识别文本并\n"
+            "回写描述（批量模式写回 JSON，单张模式回填画布）。未标注的\n"
+            "图片将被跳过。"
+        )
 
         grid.addWidget(self.spin_conf, 0, 0)
         grid.addWidget(self.spin_nms, 0, 1)
@@ -240,6 +251,7 @@ class AnnotatePage(BasePage):
         grid.addWidget(self.spin_ocr_thresh, 0, 0)
         grid.addWidget(self.spin_ocr_box, 0, 1)
         grid.addWidget(self.spin_ocr_unclip, 1, 0)
+        grid.addWidget(self.chk_ocr_rec_only, 1, 1)
         self.param_card.addLayout(grid)
         self.add_widget(self.param_card)
 
@@ -286,6 +298,7 @@ class AnnotatePage(BasePage):
         self.spin_ocr_thresh.setVisible(is_ocr)
         self.spin_ocr_box.setVisible(is_ocr)
         self.spin_ocr_unclip.setVisible(is_ocr)
+        self.chk_ocr_rec_only.setVisible(is_ocr)
         # OCR 专属字段（识别模型/字典）仅 OCR 模式显示
         self._rec_model_row.setVisible(is_ocr)
         self._rec_dict_row.setVisible(is_ocr)
@@ -460,6 +473,8 @@ class AnnotatePage(BasePage):
         ac.ocr_thresh = self.spin_ocr_thresh.value()
         ac.ocr_box_thresh = self.spin_ocr_box.value()
         ac.ocr_unclip_ratio = self.spin_ocr_unclip.value()
+        # OCR 仅识别开关（跳过检测，对已标注区域识别）
+        ac.ocr_rec_only = self.chk_ocr_rec_only.isChecked()
         ac.task_type = sys_config.task_type
         # 用户选择的检测类别（空 = 不过滤全部检测）
         ac.selected_classes = self.class_selector.selected_ids()
@@ -503,6 +518,7 @@ class AnnotatePage(BasePage):
         self.spin_ocr_thresh.set_value(ac.ocr_thresh)
         self.spin_ocr_box.set_value(ac.ocr_box_thresh)
         self.spin_ocr_unclip.set_value(ac.ocr_unclip_ratio)
+        self.chk_ocr_rec_only.setChecked(ac.ocr_rec_only)
         # OCR 配置状态行刷新（set_path 不触发信号，需手动刷新）
         self._update_ocr_status()
 

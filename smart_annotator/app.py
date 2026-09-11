@@ -168,6 +168,18 @@
       resume 原语，run_callback 阻塞挂起任务不中断），单张/批量/视频
       三入口均支持；视频标注窗口新增会话级配置记忆（last_cfg 参数，
       不落盘），中断后再次进入恢复上次输入/输出路径、抽帧间隔与勾选视频
+更新: 2026-09-11 更新空白期提示：确认"立即安装"后先显示置顶"正在准备
+      更新"提示窗口（Splash 独立顶层，覆盖主窗口关闭到安装器进度窗口
+      出现之间的空白期），closeEvent 拉起安装器后显式退出事件循环防
+      提示窗口阻止进程退出
+更新: 2026-09-11 模型预加载：模型设置对话框确认后经 ModelLoadWorker
+      后台加载+warmup（predictor_cache 缓存命中静默跳过），弹模态进度
+      窗实时显示加载/预热阶段，后续标注任务复用缓存实例不再重复加载
+更新: 2026-09-11 OCR 仅识别增强：单张链路改传画布实时形状深拷贝
+      （_run_single_annotate 统一入口，修复未保存删除/新增被磁盘旧
+      标注覆盖与空结果清空画布两处缺陷）；新增 ocr_rec_only 快捷键
+      动作（Ctrl+R，默认键，接入自定义快捷键体系持久化）；工具栏新增
+      "仅识别"checkable 按钮（仅 OCR 任务显示，与配置复选框双向同步）
 """
 
 import json
@@ -196,11 +208,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QDockWidget,
     QProgressDialog,
+    QWidget,
 )
 
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
-from .config import SysConfig, RenderConfig, DEFAULT_SHORTCUTS
+from .config import SysConfig, RenderConfig, DEFAULT_SHORTCUTS, MODE
 from .core import labelme_io
 from .core.updater import (
     RELEASE_PAGE_URL,
@@ -208,6 +221,7 @@ from .core.updater import (
     detect_install_mode,
     run_installer,
 )
+from .core.annotate.predictor_cache import has_predictor
 from .utils import LOGGER, getImageFilesInDir, getJsonFilesInDir, getVideoFilesInDir
 from .utils.render_store import load_render_config, save_render_config, load_shortcuts, save_shortcuts
 from .widgets.dialogs import chooseDir, showMessageBox
@@ -232,6 +246,7 @@ from .workers.annotate_worker import AnnotationWorker
 from .workers.convert_worker import ConvertWorker
 from .workers.single_annotate_worker import SingleAnnotateWorker
 from .workers.label_scan_worker import LabelScanWorker
+from .workers.model_load_worker import ModelLoadWorker
 from .workers.update_worker import UpdateCheckWorker, UpdateDownloadWorker
 
 # 工具名 -> 显示文案
@@ -266,6 +281,7 @@ _ACTION_DEFS: Dict[str, str] = {
     "annotate_single": "标注当前图片",
     "annotate_all": "标注所有图片",
     "clear_shapes": "清空当前标注",
+    "ocr_rec_only": "OCR 仅识别（当前图片已标注区域）",
 }
 
 # 固定保留键（不可配置，QKeySequence PortableText → 固定功能描述）：
@@ -348,6 +364,8 @@ class MainWindow(QMainWindow):
         # 在线更新线程（常驻复用：检查更新 / 下载安装器，低频任务）
         self._update_check_worker = UpdateCheckWorker()
         self._update_download_worker = UpdateDownloadWorker()
+        # 模型预加载线程（模型设置确认后后台加载+warmup，弹进度窗）
+        self._model_load_worker = ModelLoadWorker()
         # 在线更新运行期状态：
         # _update_quiet：本次检查是否静默（启动检查=True，菜单检查=False）
         # _update_dlg：下载进度对话框（下载期间存在，非模态）
@@ -356,6 +374,11 @@ class MainWindow(QMainWindow):
         self._update_quiet: bool = False
         self._update_dlg: "QProgressDialog | None" = None
         self._pending_update_installer: "Path | None" = None
+        # _update_hint：更新过渡提示窗口（确认"立即安装"后显示，独立
+        #   顶层覆盖主窗口关闭到安装器进度窗口出现的空白期，随进程退出销毁）
+        self._update_hint: "QWidget | None" = None
+        # _model_load_dlg：模型预加载进度弹窗（模型设置确认后加载期间存在）
+        self._model_load_dlg: "QProgressDialog | None" = None
 
         # 构建界面
         self._build_menubar()
@@ -713,6 +736,7 @@ class MainWindow(QMainWindow):
             "annotate_single": self._on_annotate_single,
             "annotate_all": self._on_annotate_all,
             "clear_shapes": self._on_clear,
+            "ocr_rec_only": self._on_ocr_rec_only,
         }
         # 应用 QAction 类快捷键（非法键序列已在 _resolve_shortcut 中回退）
         for action_id, act in qaction_map.items():
@@ -916,6 +940,16 @@ class MainWindow(QMainWindow):
         self.single_annotate_worker.error_occurred.connect(self._on_annotate_error)
         self.single_annotate_worker.task_finished.connect(self._on_annotate_task_finished)
         self.single_annotate_worker.shapes_ready.connect(self._on_single_shapes_ready)
+
+        # 模型预加载 worker：阶段进度驱动弹窗 / 完成 / 错误
+        self._model_load_worker.progress_desc.connect(self._on_model_load_desc)
+        self._model_load_worker.progress_updated.connect(self._on_model_load_progress)
+        self._model_load_worker.error_occurred.connect(self._on_model_load_error)
+        self._model_load_worker.load_done.connect(self._on_model_load_done)
+
+        # 工具栏"OCR 仅识别"开关按钮：切换写回标注配置（模型设置对话框
+        # 打开时经 apply_config 回填复选框，形成双向同步）
+        self.left_toolbar.rec_only_toggled.connect(self._on_rec_only_toggled)
 
         # 在线更新 worker：检查结果 / 下载进度 / 下载完成（quiet 标志存
         # 成员变量，连接一次避免重复触发）
@@ -1519,6 +1553,113 @@ class MainWindow(QMainWindow):
         for act in self._annotate_actions:
             act.setEnabled(has_model)
         LOGGER.info("已保存自动标注配置")
+        # 模型确认后立即后台预加载（首次加载+warmup 弹进度窗；已缓存静默
+        # 跳过），后续标注任务直接复用缓存实例，不再重复加载
+        self._preload_model(cfg)
+        # 工具栏"OCR 仅识别"按钮显隐与选中态随新配置同步（OCR 任务显示）
+        self._update_rec_only_button()
+
+    # -------------------------- OCR 仅识别开关 --------------------------
+    def _on_rec_only_toggled(self, checked: bool) -> None:
+        """工具栏"仅识别"按钮切换：写回标注配置（单张/批量标注消费）。
+
+        Args:
+            checked: True 启用仅识别模式（批量跳过检测/快捷键无需开关）。
+        """
+        if self.annotate_config is not None:
+            self.annotate_config.annotate_config.ocr_rec_only = checked
+        state = "已启用" if checked else "已关闭"
+        self.statusBar().showMessage(f"OCR 仅识别模式{state}（对已标注区域识别）", 3000)
+        # tooltip 状态提示随选中态刷新
+        self.left_toolbar.refresh_shortcut_hints(
+            self._shortcuts_cfg.bindings, _ACTION_DEFS
+        )
+
+    def _update_rec_only_button(self) -> None:
+        """按当前配置同步工具栏"仅识别"按钮（显隐 + 选中态）。
+
+        仅 OCR 任务显示；选中态与 ocr_rec_only 配置一致（模型设置对话框
+        复选框确认后经此同步到工具栏，形成双向同步的另一半）。
+        """
+        is_ocr = (
+            self.annotate_config is not None
+            and self.annotate_config.task_type == MODE.OCR
+        )
+        self.left_toolbar.set_rec_only_visible(is_ocr)
+        if is_ocr:
+            self.left_toolbar.set_rec_only_checked(
+                self.annotate_config.annotate_config.ocr_rec_only
+            )
+        # 显隐/选中变化后刷新 tooltip（快捷键提示 + 启用状态文案）
+        self.left_toolbar.refresh_shortcut_hints(
+            self._shortcuts_cfg.bindings, _ACTION_DEFS
+        )
+
+    # -------------------------- 模型预加载 --------------------------
+    def _preload_model(self, cfg: SysConfig) -> None:
+        """模型设置确认后后台预加载模型（缓存命中静默返回）。
+
+        首次确认某模型时启动后台线程执行加载与 warmup，并弹出模态进度
+        弹窗实时显示阶段进度，避免首次启动标注时界面长时间无响应；
+        后续标注任务经 predictor_cache 复用模型实例，秒级启动。
+
+        Args:
+            cfg: 模型设置对话框确认后的系统配置对象。
+        """
+        # 模型路径为空（仅保存其他设置）：跳过预加载
+        if not cfg.annotate_config.model_path:
+            return
+        # 已在缓存（模型加载过）：静默返回，不弹窗
+        if has_predictor(cfg.annotate_config):
+            LOGGER.info("模型已缓存，跳过预加载")
+            return
+        # 防重入：上次预加载仍在进行时忽略本次请求
+        if self._model_load_worker.isRunning():
+            LOGGER.warning("模型预加载进行中，忽略重复请求")
+            return
+        self._model_load_worker.set_task(cfg)
+        self._show_model_load_dlg()
+        self._model_load_worker.start()
+
+    def _show_model_load_dlg(self) -> None:
+        """创建并显示模型预加载进度弹窗（模态、无取消按钮）。"""
+        dlg = QProgressDialog("正在准备模型...", None, 0, 100, self)
+        dlg.setWindowTitle("模型加载")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        # 加载过程不可中断（隐藏取消按钮）；窗口仅展示进度
+        dlg.setCancelButton(None)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        dlg.show()
+        self._model_load_dlg = dlg
+
+    def _on_model_load_desc(self, desc: str) -> None:
+        """预加载阶段描述更新（加载模型/预热各轮次）。"""
+        if self._model_load_dlg is not None:
+            self._model_load_dlg.setLabelText(desc)
+
+    def _on_model_load_progress(self, progress: float) -> None:
+        """预加载进度更新（0-1 浮点转 0-100 弹窗值）。"""
+        if self._model_load_dlg is not None:
+            self._model_load_dlg.setValue(min(int(progress * 100), 100))
+
+    def _on_model_load_done(self) -> None:
+        """预加载完成：关闭弹窗并状态栏提示。"""
+        self._close_model_load_dlg()
+        self.statusBar().showMessage("模型加载完成，可开始自动标注", 3000)
+
+    def _on_model_load_error(self, msg: str) -> None:
+        """预加载失败：关闭弹窗并弹错误提示（早失败早反馈）。"""
+        self._close_model_load_dlg()
+        showMessageBox(QMessageBox.Icon.Critical, msg)
+
+    def _close_model_load_dlg(self) -> None:
+        """关闭并释放模型预加载进度弹窗（若存在）。"""
+        if self._model_load_dlg is not None:
+            self._model_load_dlg.close()
+            self._model_load_dlg = None
 
     # -------------------------- 自动标注（统一入口） --------------------------
     def _precheck_annotate(
@@ -1628,16 +1769,43 @@ class MainWindow(QMainWindow):
 
     def _on_annotate_single(self) -> None:
         """对当前画布图片执行单张自动标注（模态进度窗口，结果回填画布）。"""
+        self._run_single_annotate(rec_only=False)
+
+    def _on_ocr_rec_only(self) -> None:
+        """快捷键/菜单动作：对当前画布图片执行一次 OCR 仅识别。
+
+        与仅识别开关（rec_only 配置）无关，快捷键强制按仅识别语义执行：
+        识别画布实时已标注 shape 区域的文本并回填（未保存的删除/新增
+        均以画布当前状态为准）。非 OCR 任务时提示。
+        """
+        self._run_single_annotate(rec_only=True)
+
+    def _run_single_annotate(self, rec_only: bool) -> None:
+        """单张标注统一入口（普通推理 / OCR 仅识别共用）。
+
+        Args:
+            rec_only: True 执行 OCR 仅识别（画布实时形状为识别输入）；
+                False 执行普通自动标注推理。
+        """
         if not self._precheck_annotate(need_current=True):
             return
         if self._annotate_worker_busy():
             return
+        ac = self.annotate_config.annotate_config
+        if rec_only and ac.task_type != MODE.OCR:
+            showMessageBox(QMessageBox.Icon.Warning, "仅识别仅支持 OCR 任务，请先加载 OCR 模型")
+            return
         img = self._current_image_path()
-        self.single_annotate_worker.set_task(self.annotate_config, img)
+        # 画布实时形状深拷贝传入（仅识别输入）：与磁盘 JSON 无关，
+        # 未保存的删除/新增以画布当前状态为准
+        canvas_shapes = deepcopy(self.canvas.shapes())
+        self.single_annotate_worker.set_task(
+            self.annotate_config, img, canvas_shapes=canvas_shapes, rec_only=rec_only
+        )
         self._run_annotate_with_dialog(
             self.single_annotate_worker,
             "single",
-            "自动标注 - 当前图片",
+            "OCR 仅识别 - 当前图片" if rec_only else "自动标注 - 当前图片",
             f"目标: {Path(img).name}",
         )
 
@@ -2566,10 +2734,59 @@ class MainWindow(QMainWindow):
             return
         # 登记待安装路径，走正常关闭流程（closeEvent 收尾拉起安装器）
         self._pending_update_installer = Path(path_str)
+        # 先显示置顶过渡提示：主窗口关闭到安装器进度窗口出现之间
+        # （进程退出 + 安装器冷启动 + UAC 提权等待）桌面无任何反馈
+        self._show_update_hint()
         self.close()
-        # 关闭被用户取消（脏数据确认选取消等）时清除登记，避免残留状态
+        # 关闭被用户取消（脏数据确认选取消等）时清除登记与过渡提示，
+        # 避免残留状态
         if self.isVisible():
             self._pending_update_installer = None
+            if self._update_hint is not None:
+                self._update_hint.close()
+                self._update_hint = None
+
+    def _show_update_hint(self) -> None:
+        """显示"正在准备更新"置顶过渡提示窗口（独立顶层 Splash）。
+
+        覆盖用户确认"立即安装"到安装器进度窗口出现之间的视觉空白期
+        （主窗口关闭 + 进程退出 + 安装器冷启动 + UAC 提权等待）；窗口
+        不随主窗口关闭，随进程退出自动销毁（closeEvent 拉起安装器后
+        显式退出事件循环）。
+        """
+        hint = QWidget(
+            None,
+            Qt.WindowType.SplashScreen | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        hint.setWindowTitle("正在更新")
+        # 居中布局：标题加粗 + 说明文本（独立顶层不继承全局 QSS，自带样式）
+        layout = QVBoxLayout(hint)
+        layout.setContentsMargins(40, 28, 40, 28)
+        label = QLabel(
+            "<b style='font-size:15px'>正在准备更新...</b><br><br>"
+            "程序将自动关闭并启动安装程序，<br>"
+            "安装完成后新版本将自动启动，请稍候。"
+        )
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(
+            "color: #303133; font-size: 13px; background: transparent;"
+        )
+        layout.addWidget(label)
+        hint.setStyleSheet("QWidget { background: #FFFFFF; }")
+        hint.adjustSize()
+        # 屏幕可用区域居中显示
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            hint.move(
+                geo.center().x() - hint.width() // 2,
+                geo.center().y() - hint.height() // 2,
+            )
+        hint.show()
+        # 立即处理渲染事件，确保主窗口关闭前提示已经上屏
+        QApplication.processEvents()
+        self._update_hint = hint
 
     def _close_update_progress_dlg(self) -> None:
         """关闭并释放下载进度对话框（若存在）。"""
@@ -2633,6 +2850,8 @@ class MainWindow(QMainWindow):
             self._scan_progress_dlg = None
         # 关闭更新下载进度对话框（若存在）
         self._close_update_progress_dlg()
+        # 关闭模型预加载进度弹窗（若存在）
+        self._close_model_load_dlg()
         for worker in (
             self.annotate_worker,
             self.convert_worker,
@@ -2640,6 +2859,7 @@ class MainWindow(QMainWindow):
             self.single_annotate_worker,
             self._update_check_worker,
             self._update_download_worker,
+            self._model_load_worker,
         ):
             if worker.isRunning():
                 worker.stop()
@@ -2650,6 +2870,7 @@ class MainWindow(QMainWindow):
         # 更新线程停止请求后短等待（网络请求阻塞时由超时自然结束，不阻塞退出）
         self._update_check_worker.wait(1000)
         self._update_download_worker.wait(1000)
+        self._model_load_worker.wait(1000)
         # 兜底：协作停止超时仍运行的线程强制 terminate（仅退出路径），
         # 防止网络阻塞等场景下线程随窗口销毁引发闪退
         for worker in (
@@ -2659,12 +2880,18 @@ class MainWindow(QMainWindow):
             self.single_annotate_worker,
             self._update_check_worker,
             self._update_download_worker,
+            self._model_load_worker,
         ):
             self._terminate_worker_if_running(worker)
         event.accept()
         # 在线更新收尾：主窗口确认关闭后拉起静默安装器（必须在进程
         # 退出前启动，故放在 event.accept 之后、返回事件循环之前）
         self._launch_pending_installer()
+        # 更新场景：过渡提示窗口成为最后可见窗口会阻止 lastWindowClosed
+        # 触发、事件循环不退出，显式 quit 结束进程（安装器为分离进程
+        # 不受影响，提示窗口随进程退出销毁）
+        if self._update_hint is not None:
+            QApplication.quit()
 
     # -------------------------- 图标 --------------------------
     def set_window_icon(self, icon: QIcon) -> None:

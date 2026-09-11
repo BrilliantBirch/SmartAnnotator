@@ -29,10 +29,14 @@ OCR 自动标注预测器 - PP-OCR 文本检测(det) + 文本识别(rec) 端到�
 更新: 2026-09-11 修复 static 固定批 rec 模型（N<8）分块越界：predict 阶段
       3 分块步长改为对齐 rec 固定批 N（动态模型仍用 self.batch）；阶段 2
       跳过退化框产出的 0 尺寸空裁剪（防下游宽高比除零整批静默失败）
+更新: 2026-09-11 新增仅识别支持：refresh_params 缓存复用时刷新 OCR 阈值
+      （DB 后处理器重建）；warm_up 增加阶段进度回调；新增
+      recognize_shapes——跳过检测，对已标注 shape 区域（polygon 四点/
+      rectangle 两点）透视裁剪后批量识别并回写 description/score
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -510,16 +514,46 @@ class OcrPredictor(BasePredictor):
             f"{len(self.character)}"
         )
 
-    def warm_up(self) -> None:
-        """模型预热：det/rec 各用小尺寸零数组推理一次，消除首次推理初始化开销。"""
+    def refresh_params(self, config: AnnotateConfig) -> None:
+        """缓存复用时刷新推理参数（det/rec 会话不重载）。
+
+        重建 DB 后处理器（用户调整的 OCR 阈值即时生效）并同步配置引用
+        （识别模型/字典路径变化由缓存 key 变化重建，不在此处理）。
+
+        Args:
+            config: 最新的标注配置对象。
+        """
+        super().refresh_params(config)
+        self.config = config
+        self.postprocess = DBPostProcess(
+            thresh=float(config.ocr_thresh),
+            box_thresh=float(config.ocr_box_thresh),
+            unclip_ratio=float(config.ocr_unclip_ratio),
+            min_size=3,
+            max_candidates=3000,
+        )
+
+    def warm_up(
+        self, progress_cb: Optional[Callable[[str, float], None]] = None
+    ) -> None:
+        """模型预热：det/rec 各用小尺寸零数组推理一次，消除首次推理初始化开销。
+
+        Args:
+            progress_cb: 预热进度回调 (描述, 0-1 进度)，可选
+                （经 predictor_cache 传播到预加载进度弹窗）。
+        """
         # det 预热：小图预处理后直接送 det 会话
         dummy_img = np.zeros((320, 320, 3), dtype=np.uint8)
         det_tensor = self._preprocess_det(dummy_img)
         self.det.predict(det_tensor)
+        if progress_cb is not None:
+            progress_cb("正在预热检测模型...", 0.5)
         # rec 预热：单行文本图预处理后直接送 rec 会话
         dummy_line = np.zeros((_REC_IMG_H, 320, 3), dtype=np.uint8)
         rec_tensor = self._preprocess_rec([dummy_line])
         self.rec.predict(rec_tensor)
+        if progress_cb is not None:
+            progress_cb("正在预热识别模型...", 0.9)
         LOGGER.info("OCR 模型预热完成")
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:
@@ -599,6 +633,71 @@ class OcrPredictor(BasePredictor):
         except Exception as ex:
             LOGGER.error(f"OCR 预测过程出错: {ex}")
             return None
+
+    def recognize_shapes(
+        self, img: np.ndarray, shapes: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """仅识别模式：对已标注 shape 区域执行文本识别并回写结果。
+
+        跳过 det 检测阶段，直接把每个已标注 shape 的区域裁剪为文本行图
+        （polygon 四点直接透视裁剪；rectangle 两点 [左上, 右下] 重构为
+        四点），批量送 rec 识别后更新形状的 description（识别文本）与
+        score（识别置信度）。label/points 等其余字段原样保留。
+
+        Args:
+            img: 原图 (H, W, 3) BGR。
+            shapes: 已标注的 labelme 形状字典列表（仅处理 polygon 与
+                rectangle 两类形状，其余跳过）。
+
+        Returns:
+            更新后的形状字典列表（就地更新并返回同一列表引用）。
+        """
+        # ===== 逐形状构造四点框并裁剪文本行图 =====
+        crops: List[np.ndarray] = []
+        valid_shapes: List[Dict[str, Any]] = []
+        for shape in shapes:
+            shape_type = shape.get("shape_type")
+            points = shape.get("points") or []
+            if shape_type == "polygon" and len(points) >= 4:
+                # polygon：取前四个顶点（OCR 标注均为四点多边形）
+                box = np.float32(points[:4])
+            elif shape_type == "rectangle" and len(points) == 2:
+                # rectangle 两点式 [左上, 右下] -> 顺时针四点框
+                (x1, y1), (x2, y2) = points
+                box = np.float32(
+                    [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                )
+            else:
+                LOGGER.warning(
+                    f"仅识别跳过不支持的形状: {shape_type}（{len(points)} 点）"
+                )
+                continue
+            crop = get_rotate_crop_image(img, box)
+            if crop is None or crop.size == 0 or min(crop.shape[0], crop.shape[1]) < 1:
+                LOGGER.warning("仅识别跳过退化形状区域（裁剪为空）")
+                continue
+            crops.append(crop)
+            valid_shapes.append(shape)
+
+        if not crops:
+            LOGGER.info("仅识别：无有效标注区域，跳过识别")
+            return shapes
+
+        # ===== 分块批量识别（与 predict 阶段 3 相同的分块口径）=====
+        chunk_size = (
+            self._rec_fixed[0] if self._rec_fixed is not None else self.batch
+        )
+        rec_results: List[Dict[str, Any]] = []
+        for start in range(0, len(crops), chunk_size):
+            chunk = crops[start : start + chunk_size]
+            rec_results.extend(self._recognize_chunk(chunk))
+
+        # ===== 回写识别文本与置信度 =====
+        for shape, rec in zip(valid_shapes, rec_results):
+            shape["description"] = str(rec["text"])
+            shape["score"] = float(rec["score"])
+        LOGGER.info(f"仅识别完成: {len(valid_shapes)} 个标注区域")
+        return shapes
 
     def _detect_one(self, img: np.ndarray) -> Tuple[List[np.ndarray], List[float]]:
         """对单张图执行文本检测（预处理 -> det 推理 -> DB 后处理）。

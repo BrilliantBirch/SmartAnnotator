@@ -58,6 +58,10 @@
       迁移至 __init__.py 的 __version__）；删除零引用的
       AnnotateConfig.from_dict 类方法与 _coerce_device 辅助函数
       （_coerce_mode 保留，仍被转换页引用）
+更新: 2026-09-11 AnnotateConfig 新增 ocr_rec_only（OCR 仅识别开关，跳过
+      检测对已标注区域识别，纳入 to_dict 序列化）；DEFAULT_SHORTCUTS
+      新增 ocr_rec_only 默认键 Ctrl+R（旧 shortcuts.json 经白名单合并
+      自动补齐默认绑定）
 """
 
 from dataclasses import dataclass, field
@@ -232,6 +236,9 @@ class AnnotateConfig:
     ocr_thresh: float = 0.2  # 检测概率图二值化阈值
     ocr_box_thresh: float = 0.45  # 检测框置信度阈值（框内平均分过滤）
     ocr_unclip_ratio: float = 1.4  # 检测框外扩比例（unclip）
+    # OCR 仅识别模式：跳过文本检测，对已有标注 shape 区域执行文本识别
+    # （批量=读输出目录 JSON 回写识别文本；单张=回填画布现有标注的文本）
+    ocr_rec_only: bool = False
     image_path: str = ""
     dataset_path: str = ""
     conf: float = 0.25
@@ -255,6 +262,7 @@ class AnnotateConfig:
             "ocr_thresh": self.ocr_thresh,
             "ocr_box_thresh": self.ocr_box_thresh,
             "ocr_unclip_ratio": self.ocr_unclip_ratio,
+            "ocr_rec_only": self.ocr_rec_only,
             "image_path": self.image_path,
             "dataset_path": self.dataset_path,
             "conf": self.conf,
@@ -429,6 +437,7 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "annotate_single": "Ctrl+1",  # 标注当前图片
     "annotate_all": "Ctrl+2",  # 标注所有图片
     "clear_shapes": "Ctrl+Shift+C",  # 清空当前标注
+    "ocr_rec_only": "Ctrl+R",  # OCR 仅识别（当前图片已标注区域）
 }
 
 

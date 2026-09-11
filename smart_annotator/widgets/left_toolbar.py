@@ -41,6 +41,10 @@
       fit_requested 信号，置于文件操作组末尾），并新增
       refresh_shortcut_hints 方法：主窗口快捷键应用/自定义改键后调用，
       同步各按钮 tooltip 的快捷键提示（覆盖 Ctrl+0 等默认占位提示）
+更新: 2026-09-11 新增"OCR 仅识别"checkable 开关按钮（rec_only 图标虚线
+      框 + A 字，独立于绘制互斥组，默认隐藏由主窗口按任务类型显隐）；
+      新增 rec_only_toggled 信号与 set_rec_only_visible/
+      set_rec_only_checked 同步方法；tooltip 随快捷键绑定与启用状态刷新
 """
 
 from typing import Dict
@@ -276,6 +280,25 @@ def _paint_fit(p: QPainter, color: QColor) -> None:
     p.drawRect(QRectF(9, 9, 6, 6))
 
 
+def _paint_rec_only(p: QPainter, color: QColor) -> None:
+    """绘制"OCR 仅识别"图标：文本框 + "A" 字（示意对标注区域文本识别）。"""
+
+    p.setPen(_pen(color))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # 虚线文本框（示意已有标注区域）
+    pen = _pen(color, 1.6)
+    pen.setDashPattern([3, 2])
+    p.setPen(pen)
+    p.drawRect(QRectF(3, 4, 18, 16))
+    # 框内 "A" 字（示意识别出的文本）
+    p.setPen(_pen(color, 2.0))
+    f = p.font()
+    f.setPixelSize(11)
+    f.setBold(True)
+    p.setFont(f)
+    p.drawText(QRectF(3, 4, 18, 16), Qt.AlignmentFlag.AlignCenter, "A")
+
+
 # 图标名 -> 绘制函数（按钮构造处按名取用）
 _ICON_PAINTERS = {
     "folder": _paint_folder,
@@ -289,6 +312,7 @@ _ICON_PAINTERS = {
     "point": _paint_point,
     "polygon": _paint_polygon,
     "fit": _paint_fit,
+    "rec_only": _paint_rec_only,
 }
 
 
@@ -418,6 +442,7 @@ class LeftToolbar(QToolBar):
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
         fit_requested: 请求适应窗口（缩放视图以完整显示当前图片）。
         tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
+        rec_only_toggled(bool): OCR 仅识别开关切换（True=启用仅识别模式）。
     """
 
     open_requested = Signal()
@@ -428,6 +453,7 @@ class LeftToolbar(QToolBar):
     delete_image_requested = Signal()
     fit_requested = Signal()
     tool_selected = Signal(str)
+    rec_only_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         """初始化水平工具栏布局与按钮。"""
@@ -508,6 +534,16 @@ class LeftToolbar(QToolBar):
         # 默认选中"编辑"工具（编辑模式：拖拽/端点缩放/多选）
         self._tool_buttons[TOOL_SELECT].setChecked(True)
 
+        # ===== OCR 仅识别开关（独立 checkable 按钮，非绘制互斥组）=====
+        # 仅加载 OCR 模型时由主窗口显示（set_rec_only_visible）；
+        # checked 状态与模型设置对话框的"仅识别"复选框双向同步
+        self.btn_rec_only = _ToolBarButton("OCR 仅识别", "", "rec_only")
+        self.btn_rec_only.setCheckable(True)
+        self.btn_rec_only.setVisible(False)  # 默认隐藏（未加载模型）
+        self.btn_rec_only.clicked.connect(self.rec_only_toggled.emit)
+        self.addWidget(self._separator("标注工具 | OCR 仅识别"))
+        self.addWidget(self.btn_rec_only)
+
         # 记录各按钮原始语义文本（refresh_shortcut_hints 刷新 tooltip 的描述基准）
         self._button_texts: Dict[QPushButton, str] = {
             self.btn_open: self.btn_open.accessibleName(),
@@ -517,6 +553,7 @@ class LeftToolbar(QToolBar):
             self.btn_delete: self.btn_delete.accessibleName(),
             self.btn_delete_image: self.btn_delete_image.accessibleName(),
             self.btn_fit: self.btn_fit.accessibleName(),
+            self.btn_rec_only: self.btn_rec_only.accessibleName(),
         }
         for btn in self._tool_buttons.values():
             self._button_texts[btn] = btn.accessibleName()
@@ -587,6 +624,31 @@ class LeftToolbar(QToolBar):
         """
         self.btn_delete_image.setEnabled(enabled)
 
+    def set_rec_only_visible(self, visible: bool) -> None:
+        """显示/隐藏"OCR 仅识别"按钮（加载 OCR 模型时显示）。
+
+        隐藏时同步取消选中状态，避免下次显示时残留旧开关状态。
+
+        Args:
+            visible: 是否显示。
+        """
+        self.btn_rec_only.setVisible(visible)
+        if not visible:
+            self.set_rec_only_checked(False)
+
+    def set_rec_only_checked(self, checked: bool) -> None:
+        """程序化设置"仅识别"按钮选中状态（与配置复选框同步）。
+
+        阻塞 clicked 信号（setChecked 不触发 clicked，但显式阻断以防
+        未来改为 QActions 等 toggle 型信号引入循环触发）。
+
+        Args:
+            checked: 是否选中（启用仅识别模式）。
+        """
+        self.btn_rec_only.blockSignals(True)
+        self.btn_rec_only.setChecked(checked)
+        self.btn_rec_only.blockSignals(False)
+
     def refresh_shortcut_hints(
         self, bindings: Dict[str, str], action_defs: Dict[str, str]
     ) -> None:
@@ -615,6 +677,16 @@ class LeftToolbar(QToolBar):
             seq = bindings.get(action_id, "")
             # 有绑定显示"描述（快捷键）"，否则仅显示描述
             btn.setToolTip(f"{text}（{seq}）" if seq else text)
+        # ===== OCR 仅识别按钮：tooltip 同步绑定与开关状态 =====
+        rec_text = self._button_texts.get(self.btn_rec_only) or action_defs.get(
+            "ocr_rec_only", "OCR 仅识别"
+        )
+        rec_seq = bindings.get("ocr_rec_only", "")
+        state_tip = "已启用" if self.btn_rec_only.isChecked() else "未启用"
+        rec_tip = f"{rec_text}（{rec_seq}，{state_tip}）" if rec_seq else (
+            f"{rec_text}（{state_tip}）"
+        )
+        self.btn_rec_only.setToolTip(rec_tip)
         # ===== 工具按钮：双提示"工具快捷键 / 编辑模式快捷键" =====
         for tool, btn in self._tool_buttons.items():
             text = self._button_texts.get(btn) or btn.accessibleName()
