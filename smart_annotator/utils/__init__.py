@@ -41,6 +41,7 @@ from .files import (
     getOcrModelRole,
     resolve_dataset_dirs,
     scan_dataset_files,
+    PPOCR_STRUCTURE_MARK,
 )
 from .tool import (
     is_point_in_box,
@@ -114,6 +115,7 @@ __all__ = [
     "getModelClasses",
     "getModelTaskType",
     "getOcrModelRole",
+    "PPOCR_STRUCTURE_MARK",
     "resolve_dataset_dirs",
     "scan_dataset_files",
     "is_point_in_box",

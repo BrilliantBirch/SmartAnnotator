@@ -14,6 +14,9 @@
 
 作者: BaiBinnan
 创建日期: 2026-09-04
+更新: 2026-09-10 批量校验入口新增 Format.PPOCR 源直通分支（PPOCR det 标注
+      为行级自由格式且 det_gt/rec_gt/dict 共存目录，文件级 YOLO 行校验
+      不适用；行级容错由转换器内部逐行处理），支撑 PPOCR→LabelMe 导入
 """
 
 import json
@@ -285,14 +288,24 @@ def validate_annotation_files(
             if not progress_cb("格式校验中", ratio):
                 break
         # 按源格式分派到单文件校验
-        if source_format == Format.LABELME:
+        if source_format == Format.PPOCR:
+            # OCR 校验接口预留：PPOCR det 标注为行级自由格式，且 det_gt/
+            # rec_gt/dict 共存于同一目录，文件级 YOLO 行校验不适用；
+            # 行级容错（分隔符缺失/JSON 解析失败）由转换器内部逐行处理
+            valid_files.append(file_path)
+        elif source_format == Format.LABELME:
             ok, msg = validate_labelme_json(file_path, task_type, kpt_count)
+            # 汇总结果（无效报告以文件名定位）
+            if ok:
+                valid_files.append(file_path)
+            else:
+                invalid_reports.append(f"{os.path.basename(str(file_path))}: {msg}")
         else:
             ok, msg = validate_yolo_txt(file_path, task_type, kpt_count)
-        # 汇总结果（无效报告以文件名定位）
-        if ok:
-            valid_files.append(file_path)
-        else:
-            invalid_reports.append(f"{os.path.basename(str(file_path))}: {msg}")
+            # 汇总结果（无效报告以文件名定位）
+            if ok:
+                valid_files.append(file_path)
+            else:
+                invalid_reports.append(f"{os.path.basename(str(file_path))}: {msg}")
 
     return valid_files, invalid_reports

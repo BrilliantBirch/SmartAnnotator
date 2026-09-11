@@ -14,17 +14,27 @@ labelme 文件转到 txt 格式的标签
       dataset 目录层级，原实现要求 JSON 与图片同目录同名）
 更新: 2026-09-04 复制图片前校验源与目标是否同一文件（输出目录与输入目录
       一致时 shutil.copy 抛 SameFileError 导致任务中断），复用 _safe_copy
+更新: 2026-09-10 PPOCRConverter 重写为 LabelMe→PaddleOCR 标注导出：
+      输出 images/ + det_gt.txt + rec_images/ + rec_gt.txt + dict.txt
+      （+ visualize/），自带 run 编排（不走基类 YOLO 行语义），裁剪
+      复用 core.annotate.vision.ocr.get_rotate_crop_image，可视化改用
+      PIL 中文多边形描边与文本绘制
 """
 
 from smart_annotator.config import RANDOM_SEED, ConvertConfig, MODE
 from smart_annotator.utils import LOGGER, COLORS, is_point_in_box, export
 from smart_annotator.core.convert.json_converter import _safe_copy
+from smart_annotator.core.annotate.vision.ocr import (
+    get_rotate_crop_image,
+    DBPostProcess,
+)
 
 
 from typing import List, Tuple, Set
 from pathlib import Path
 import random
 import json
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -823,54 +833,302 @@ class YoloSegConverter(TxtConverter):
 
 # region ToPPOCR
 class PPOCRConverter(TxtConverter):
-    """LabelMe JSON → PPOCR TXT 转换器（OCR 标注，未来开发）。"""
+    """LabelMe JSON → PaddleOCR 标注格式导出（OCR 任务专用）。
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    输出目录结构（不走基类 run 的 YOLO 行语义，自带编排）：
+        {output}/images/        复制源图（文件名主干匹配基类 run 的 path/imagePath 链路）
+        {output}/det_gt.txt     检测标注：每行 {图片相对路径}\t{JSON数组}
+        {output}/rec_gt.txt     识别标注：每行 {裁剪图相对路径}\t{transcription}
+        {output}/rec_images/    裁剪文本行图（{stem}_{序号}.jpg）
+        {output}/dict.txt       字符字典：字符首次出现顺序去重 + use_space_char 尾追加空格行
+        {output}/visualize/     可视化结果（config.visualize 时）
+
+    PaddleOCR det 标注规范：
+        数组元素 {"transcription": 文本, "points": [[x1,y1],...,[x4,y4]], "difficult": bool}；
+        无文本（description 空）的框保留 det（transcription 空串）跳过 rec；
+        空标注文件（无有效框）不写该图行（记录日志），与现有链路口径一致。
+
+    Args:
+        config: 转换配置对象。
+    """
+
+    def __init__(self, config: ConvertConfig):
+        """初始化转换器（保存 OCR 专属开关）。
+
+        Args:
+            config: 转换配置对象（ocr_gen_rec/ocr_use_space_char 仅 OCR 使用）。
+        """
+        super().__init__(config)
         self.mode = MODE.OCR
+        # OCR 专属开关：是否生成 rec 识别数据集 / 字典尾是否追加空格字符
+        self.gen_rec = config.ocr_gen_rec
+        self.use_space_char = config.ocr_use_space_char
 
-    def process(self, path):
+    def _process_shapes(self, path: Path) -> List[dict]:
+        """解析单个 JSON 的 shapes，转 PaddleOCR det 元素列表。
+
+        polygon/quadrilateral 4 点直取（其余点数经最小外接四边形归一）；
+        rectangle 两点转四角点（兼容 PPOCRLabel 四角点矩形）。
+        兼容老 JSON 无 difficult 字段（取 False）。无文本的框保留 det 但
+        transcription 为空串（由 run 决定是否参与 rec/dict）。
+
+        Args:
+            path: JSON 文件路径。
+
+        Returns:
+            PaddleOCR det 元素列表（每个含 transcription/points/difficult）；
+            解析失败返回空列表。
+        """
         ppocr_annotations = []
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for shape in data["shapes"]:
-            label = shape["label"].lower()
-            if label not in self.class_mapping:
-                continue
-            points = shape["points"]
-            # 多边形标注框
-            if shape["shape_type"] == "polygon":
-                ppocrPoints = [(round(x), round(y)) for x, y in points]
-            # 矩形标注框
-            elif shape["shape_type"] == "rectangle":
-                x_coords = [p[0] for p in points]
-                y_coords = [p[1] for p in points]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as ex:
+            LOGGER.error(f"PPOCR 导出解析 JSON 失败 {path}: {ex}")
+            return ppocr_annotations
+        for shape in data.get("shapes", []):
+            points = shape.get("points") or []
+            shape_type = shape.get("shape_type", "")
+            # 多边形/四边形：4 点直接取；其余点数经最小外接四边形归一为 4 点
+            # （PaddleOCR det 格式要求严格四点框）
+            if shape_type in ("polygon", "quadrilateral"):
+                if len(points) < 3:
+                    continue
+                if len(points) == 4:
+                    ppocr_points = [[round(float(p[0])), round(float(p[1]))] for p in points]
+                else:
+                    quad = self._min_area_quad(points)
+                    if quad is None:
+                        LOGGER.warning(
+                            f"{path} 多边形点数({len(points)})无法归一为四点框，跳过"
+                        )
+                        continue
+                    ppocr_points = quad
+            # 矩形：两点转四角点（轴对齐，取全部顶点包围盒，兼容 PPOCRLabel 四角点矩形）
+            elif shape_type == "rectangle":
+                if len(points) < 2:
+                    continue
+                x_coords = [float(p[0]) for p in points]
+                y_coords = [float(p[1]) for p in points]
                 left = round(min(x_coords))
                 right = round(max(x_coords))
                 top = round(min(y_coords))
                 bottom = round(max(y_coords))
-                p1 = [left, top]
-                p2 = [right, top]
-                p3 = [right, bottom]
-                p4 = [left, bottom]
-                ppocrPoints = [p1, p2, p3, p4]
+                ppocr_points = [
+                    [left, top],
+                    [right, top],
+                    [right, bottom],
+                    [left, bottom],
+                ]
             else:
                 continue
-            text = shape["description"]
-            if text is None:
-                continue
+            # transcription：取 description，缺失/None 视为空串
+            text = shape.get("description") or ""
             text = text.strip()
-            ppocr_data = {
-                "transcription": text,
-                "points": ppocrPoints,
-                "difficult": False,
-            }
-            ppocr_annotations.append(ppocr_data)
-        return ppocr_annotations, False, set()
+            difficult = bool(shape.get("difficult", False))
+            ppocr_annotations.append(
+                {
+                    "transcription": text,
+                    "points": ppocr_points,
+                    "difficult": difficult,
+                }
+            )
+        return ppocr_annotations
 
-    def visualize(self, imgPath, outputFileName, yololines, infos):
-        """PPOCR 暂不支持可视化，可使用 PPOCRLabel 查看转换结果。"""
-        LOGGER.warning(f"PPOCR标注格式暂不支持可视化，可使用PPOCRLabel查看转换结果")
+    @staticmethod
+    def _min_area_quad(points) -> List[List[int]]:
+        """任意多边形点集归一为 左上/右上/右下/左下 顺序的四点框。
+
+        复用 DBPostProcess._get_mini_boxes（最小外接四边形 + 顶点排序），
+        用于把非 4 点的多边形归一为 PaddleOCR det 要求的严格四点框。
+
+        Args:
+            points: 点列表 [[x, y], ...]（点数 >= 3）。
+
+        Returns:
+            四点整数坐标列表；归一失败（退化/异常）返回 None。
+        """
+        try:
+            contour = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+            box, _ = DBPostProcess._get_mini_boxes(contour)
+            return [[int(round(float(p[0]))), int(round(float(p[1])))] for p in box]
+        except Exception:
+            return None
+
+    def _load_font(self, size: int = 18):
+        """加载中文 TrueType 字体，失败回退 PIL 默认字体。
+
+        参考 YoloPoseConverter.visualize 的 PIL 用法；中文字体优先
+        simhei.ttf / msyh.ttc，失败时回退 ImageFont.load_default()。
+
+        Args:
+            size: 字体字号（磅）。
+
+        Returns:
+            PIL ImageFont 实例。
+        """
+        for name in ("simhei.ttf", "msyh.ttc", "msyhbd.ttc", "simsun.ttc"):
+            try:
+                return ImageFont.truetype(name, size=size)
+            except Exception:
+                continue
+        LOGGER.warning("未找到中文字体，可视化文本回退默认字体（中文可能乱码）")
+        return ImageFont.load_default()
+
+    def _visualize(self, img_path: Path, out_path: Path, items: List[dict]) -> None:
+        """可视化 PaddleOCR det 标注（红色 2px 多边形描边 + transcription 文本）。
+
+        Args:
+            img_path: 源图路径。
+            out_path: 输出图路径。
+            items: det 元素列表（含 points/transcription）。
+        """
+        try:
+            image = Image.open(img_path).convert("RGB")
+            draw = ImageDraw.Draw(image)
+            font = self._load_font(18)
+            for it in items:
+                pts = [(int(p[0]), int(p[1])) for p in it["points"]]
+                if len(pts) < 2:
+                    continue
+                # 多边形描边（红色 2px）
+                if pts[0] != pts[-1]:
+                    pts_closed = pts + [pts[0]]
+                else:
+                    pts_closed = pts
+                draw.line(pts_closed, fill=(255, 0, 0), width=2)
+                # transcription 文本（框顶部）
+                text = it.get("transcription", "")
+                if text:
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    tx = min(xs)
+                    ty = max(0, min(ys) - 20)
+                    draw.text((tx, ty), text, font=font, fill=(255, 0, 0))
+            image.save(out_path)
+        except Exception as ex:
+            LOGGER.error(f"PPOCR 可视化失败 {img_path}: {ex}")
+
+    def run(self, progress_callback=None) -> bool:
+        """执行 LabelMe→PaddleOCR 标注导出（不走基类 YOLO 行语义）。
+
+        Args:
+            progress_callback: 进度回调 callback(desc, progress) -> bool；
+                返回 False 时中断返回 False。
+
+        Returns:
+            任务是否成功完成。
+        """
+        try:
+            # 输出目录结构创建
+            img_folder = self.output / "images"
+            img_folder.mkdir(parents=True, exist_ok=True)
+            rec_folder = self.output / "rec_images"
+            if self.gen_rec:
+                rec_folder.mkdir(parents=True, exist_ok=True)
+            vis_folder = None
+            if self.visualized:
+                vis_folder = self.output / "visualize"
+                vis_folder.mkdir(parents=True, exist_ok=True)
+            # det_gt.txt / rec_gt.txt / dict.txt 累积写入
+            det_lines: List[str] = []
+            rec_lines: List[str] = []
+            dict_chars: List[str] = []  # 字符首次出现顺序（未去重前累积）
+            seen_chars: Set[str] = set()
+            # 图片按文件名主干建索引（与基类 run 一致）
+            image_map = {Path(img).stem: img for img in self.imageFiles}
+            total = len(self.annotationFiles)
+            for idx, json_path in enumerate(self.annotationFiles):
+                if not progress_callback("PPOCR 标注导出中", (idx + 1) / total):
+                    return False
+                json_path = Path(json_path)
+                img_path = image_map.get(json_path.stem)
+                if img_path is None:
+                    LOGGER.warning(f"{json_path} 未找到对应图片，跳过")
+                    continue
+                # 解析 shapes
+                items = self._process_shapes(json_path)
+                if not items:
+                    LOGGER.info(f"{json_path} 无有效 OCR 框，跳过 det 行")
+                    continue
+                # 复制源图到 images/
+                dst_img = img_folder / img_path.name
+                try:
+                    _safe_copy(Path(img_path), dst_img)
+                except Exception as e:
+                    LOGGER.error(f"复制图片 {img_path} 失败: {e}")
+                # det_gt 行：相对路径（正斜杠）+ JSON 数组
+                rel_path = f"images/{img_path.name}"
+                det_lines.append(f"{rel_path}\t{json.dumps(items, ensure_ascii=False)}")
+                # rec 数据集：裁剪文本行图 + rec_gt 行（无文本跳过）
+                if self.gen_rec:
+                    # 读图（cv2.imdecode 支持中文路径）
+                    img_data = np.fromfile(str(img_path), dtype=np.uint8)
+                    img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
+                    if img is None:
+                        LOGGER.warning(f"读取图片失败 {img_path}，跳过 rec 裁剪")
+                    else:
+                        for seq, it in enumerate(items):
+                            text = it.get("transcription", "")
+                            if not text:
+                                # 无文本框跳过 rec（保留 det）
+                                continue
+                            pts = np.array(it["points"], dtype=np.float32)
+                            try:
+                                crop = get_rotate_crop_image(img, pts)
+                            except Exception as ex:
+                                LOGGER.warning(
+                                    f"裁剪文本行失败 {json_path.name}#{seq}: {ex}"
+                                )
+                                continue
+                            rec_name = f"{json_path.stem}_{seq}.jpg"
+                            rec_dst = rec_folder / rec_name
+                            # cv2.imwrite 不支持中文路径，用 imencode 写盘
+                            ok, buf = cv2.imencode(".jpg", crop)
+                            if ok:
+                                buf.tofile(str(rec_dst))
+                            else:
+                                LOGGER.warning(f"保存裁剪图失败 {rec_dst}")
+                                continue
+                            rec_lines.append(f"rec_images/{rec_name}\t{text}")
+                            # 字典字符累积（首次出现顺序去重）
+                            for ch in text:
+                                if ch not in seen_chars:
+                                    seen_chars.add(ch)
+                                    dict_chars.append(ch)
+                else:
+                    # 不生成 rec 时仍按全部 det transcription 累积字典字符
+                    for it in items:
+                        for ch in it.get("transcription", ""):
+                            if ch not in seen_chars:
+                                seen_chars.add(ch)
+                                dict_chars.append(ch)
+                # 可视化
+                if self.visualized and vis_folder is not None:
+                    self._visualize(
+                        Path(img_path), vis_folder / img_path.name, items
+                    )
+            # 写 det_gt.txt
+            with open(self.output / "det_gt.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(det_lines))
+            # 写 rec_gt.txt（ocr_gen_rec 时）
+            if self.gen_rec:
+                with open(self.output / "rec_gt.txt", "w", encoding="utf-8") as f:
+                    f.write("\n".join(rec_lines))
+            # 写 dict.txt（字符首次出现顺序去重 + use_space_char 尾追加空格行）
+            dict_lines = list(dict_chars)
+            if self.use_space_char:
+                dict_lines.append(" ")
+            with open(self.output / "dict.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(dict_lines))
+            LOGGER.info(
+                f"PPOCR 导出完成: det={len(det_lines)} 行, rec={len(rec_lines)} 行, "
+                f"dict={len(dict_chars)} 字符"
+            )
+            return True
+        except Exception as ex:
+            LOGGER.error(f"PPOCR 标注导出错误：{str(ex)}")
+            return False
 
 
 # endregion

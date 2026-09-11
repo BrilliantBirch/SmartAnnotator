@@ -75,6 +75,11 @@ class QtLogHandler(QObject, logging.Handler):
         try:
             msg = self.format(record)
             self.log_signal.emit(msg)
+        except RuntimeError:
+            # 信号源 QObject 已被删除（如日志对话框关闭后后台分析/转换
+            # 线程仍在运行并写日志）：日志无处投递，静默丢弃——handleError
+            # 会向 stderr 打印无意义的调用堆栈，干扰用户排查
+            return
         except Exception:
             self.handleError(record)
 

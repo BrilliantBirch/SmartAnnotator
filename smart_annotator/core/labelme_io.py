@@ -42,6 +42,9 @@ LabelMe JSON 格式读写模块
 更新: 2026-09-10 document_shapes 新增四点矩形归一：PPOCRLabel 等第三方
       工具写出的 rectangle 为四角点表示，统一取包围盒转为本项目画布的
       两点式语义（[左上, 右下]），修复外部 OCR 标注显示被压扁的问题
+更新: 2026-09-10 collect_labels_from_files 返回值新增 text_shape_count
+      （box 类形状中 description 非空的个数，OCR 推断文本证据），与
+      dataset_analyzer 口径一致，供导出对话框预填任务类型复用
 """
 
 import json
@@ -240,7 +243,8 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
     Returns:
         {"labels": [标签...], "keypoints": [关键点...],
          "counts": {标签: 实例个数},
-         "shape_counts": {"rectangle": n, "point": n, "polygon": n}}，
+         "shape_counts": {"rectangle": n, "point": n, "polygon": n},
+         "text_shape_count": box 类形状中 description 非空的个数}，
         labels/keypoints 按字典序排序，counts 键为合并大小写后的标签拼写，
         shape_counts 为 shape 分组出现次数（仅含出现过的分组）。
     """
@@ -252,6 +256,8 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
     is_keypoint: Dict[str, bool] = {}
     # shape 分组（rectangle/point/polygon）-> 出现次数
     shape_counts: Dict[str, int] = {}
+    # box 类形状中 description 非空的个数（OCR 推断文本证据）
+    text_shape_count = 0
     # 物化为列表以获取总数（json_paths 可能是生成器）
     paths = list(json_paths)
     total = len(paths)
@@ -282,6 +288,12 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
                 group = SHAPE_GROUPS.get(str(shape.get("shape_type", "")).lower())
                 if group:
                     shape_counts[group] = shape_counts.get(group, 0) + 1
+                    # OCR 文本证据（与分析器口径一致：box 类 + 非空 description）
+                    if (
+                        group in ("rectangle", "polygon")
+                        and str(shape.get("description", "") or "").strip()
+                    ):
+                        text_shape_count += 1
         done += 1
         # 进度上报（每 500 个文件一次，避免高频回调开销）
         if on_progress is not None and done % 500 == 0:
@@ -295,4 +307,5 @@ def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) ->
         "keypoints": keypoints,
         "counts": merged_counts,
         "shape_counts": shape_counts,
+        "text_shape_count": text_shape_count,
     }

@@ -18,12 +18,15 @@
       构造签名增加 group_ids 参数
 更新: 2026-09-03 标签列表单击选中项同步 label 编辑框（选中即预览）
 更新: 2026-09-07 修复复合标签双击失效：单击同步文本时阻断过滤信号（blockSignals），避免列表实时重排导致双击第二击落点漂移
+更新: 2026-09-10 新增困难样本 (difficult) 复选框（第 4 行），result_values/get_shape_props 扩展为四元组，
+      老 JSON 缺失 difficult 键时默认不勾选（兼容性）
 """
 
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -110,6 +113,12 @@ class ShapeDialog(QDialog):
         self.desc_edit.setPlaceholderText("Label description")
         grid.addWidget(self.desc_edit, 3, 0, 1, 2)
 
+        # ===== 第 4 行：困难样本 (difficult) 复选框 =====
+        # 老 JSON 无 difficult 键时默认不勾选（兼容历史标注文件）
+        self.difficult_check = QCheckBox("困难样本 (difficult)")
+        self.difficult_check.setChecked(bool(shape.get("difficult", False)))
+        grid.addWidget(self.difficult_check, 4, 0, 1, 2)
+
         # 回车确认（标签编辑框除外——回车仅确认对话框，labelme 同款行为）
         buttons.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
 
@@ -165,11 +174,12 @@ class ShapeDialog(QDialog):
         self.accept()
 
     # -------------------------- 结果读取 --------------------------
-    def result_values(self) -> Tuple[str, str, Optional[int]]:
+    def result_values(self) -> Tuple[str, str, Optional[int], bool]:
         """返回编辑后的属性值。
 
         Returns:
-            (标签, 描述, 分组编号) 三元组；Group ID 为空或非整数时返回 None。
+            (标签, 描述, 分组编号, 困难样本标记) 四元组；
+            Group ID 为空或非整数时返回 None。
         """
         label = self.label_edit.text().strip()
         description = self.desc_edit.text().strip()
@@ -178,7 +188,7 @@ class ShapeDialog(QDialog):
             gid = int(gid_text) if gid_text else None
         except ValueError:
             gid = None
-        return label, description, gid
+        return label, description, gid, self.difficult_check.isChecked()
 
     @staticmethod
     def get_shape_props(
@@ -186,7 +196,7 @@ class ShapeDialog(QDialog):
         shape: Dict[str, Any],
         group_ids: Optional[List[int]] = None,
         parent=None,
-    ) -> Optional[Tuple[str, str, Optional[int]]]:
+    ) -> Optional[Tuple[str, str, Optional[int], bool]]:
         """弹窗编辑形状属性，返回结果或 None（取消时）。
 
         Args:
@@ -196,7 +206,7 @@ class ShapeDialog(QDialog):
             parent: 父控件。
 
         Returns:
-            (标签, 描述, 分组编号) 或 None。
+            (标签, 描述, 分组编号, 困难样本标记) 或 None。
         """
         dialog = ShapeDialog(labels, shape, group_ids, parent)
         if dialog.exec() == QDialog.DialogCode.Accepted:

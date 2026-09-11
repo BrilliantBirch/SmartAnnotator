@@ -3,12 +3,14 @@
 格式转换页 - ConvertPage
 
 按 UI 文档 §5.2 与计划 §2.6：基础卡 + 数据集分析卡 + 高级卡 + 预览卡 + 进度卡。
-按方向构建两种实例：导出（JSON→YOLO，源为只读工作路径）与
-导入（YOLO→JSON，自由选择输入目录）。
+按方向构建两种实例：导出（JSON→任务数据集，源为只读工作路径）与
+导入（任务数据集→JSON，自由选择输入目录）。"任务数据集"按任务类型
+分发：DETECT/POSE/SEGMENT → YOLO TXT（含数据集划分），OCR → PaddleOCR
+det/rec 标注。
 
 数据集分析（2026-09-02 新增）：
-    - 一键分析输入目录：提取 LabelMe 标签、推断任务类型（shape 特征）、
-      自动识别转换方向（json→txt / txt→json）
+    - 一键分析输入目录：提取 LabelMe 标签、推断任务类型（shape 特征 +
+      文本证据）、自动识别转换方向（json→数据集 / 数据集→json）
     - 类别列表支持拖拽排序，行首数字即转换后的类别索引
 
 作者: BaiBinnan
@@ -39,6 +41,21 @@
       同步用剔除后数量）；_on_import_config docstring 更新为 from_dict
       白名单过滤说明（废弃键/运行期字段键静默忽略，仅恢复有效字段）
 更新: 2026-09-04 预览列表仅显示图片文件（不再混入标注文件，标注无预览价值）
+更新: 2026-09-10 启用 OCR 任务类型（导出 JSON→PPOCR det/rec、导入 PPOCR det→JSON
+      两方向均可选）；新增 OCR 专属参数区（"生成识别数据集 (rec)" 与
+      "字典包含空格字符 (use_space_char)" 两个复选框，默认勾选），仅导出
+      方向且任务类型为 OCR 时显示；collect_config 纳入 ocr_gen_rec/
+      ocr_use_space_char 两键（随 ConvertConfig 序列化白名单持久化）
+更新: 2026-09-10 一键分析与统计预填适配 OCR：task_names 补 OCR 名称，
+      OCR 任务下方向文案显示"LabelMe (JSON) → PaddleOCR (det/rec)"；
+      _apply_stats 透传 text_shape_count（box 类形状 description 非空
+      个数）至推断规则，OCR 数据集自动推断为文字识别任务
+更新: 2026-09-11 转换语义升级：页面定位从"YOLO↔JSON 互转"改为"任务
+      相关数据集结构 ↔ JSON 互转"（DETECT/POSE/SEGMENT → YOLO TXT，
+      OCR → PPOCR det/rec）；导出方向 OCR 任务隐藏分割比例行与"导出
+      YOLO 数据集目录结构"复选框（PPOCR 结构无划分，隐藏时同步取消
+      勾选防状态残留），显隐统一收敛到 _on_task_changed（方向+任务双
+      条件）；相关注释语义同步清理
 """
 
 import json
@@ -76,12 +93,12 @@ from ..utils.qt_logger import add_qt_handler
 
 
 class ConvertPage(BasePage):
-    """格式转换页 - LabelMe ↔ YOLO 双向转换。
+    """格式转换页 - LabelMe ↔ 任务相关双向转换。
 
     Signals:
         task_started: 任务开始（用于禁用导航）。
         task_finished: 任务结束（用于恢复导航）。
-        import_finished: 导入方向（YOLO→JSON）任务成功完成时发射（携带输出目录）。
+        import_finished: 导入方向（任务→JSON）任务成功完成时发射（携带输出目录）。
     """
 
     task_started = Signal()
@@ -142,14 +159,16 @@ class ConvertPage(BasePage):
     def _apply_direction_visibility(self) -> None:
         """按转换方向统一设置控件显隐。
 
-        导出方向：分割比例行与"导出 YOLO 数据集目录结构"复选框可见，
-        文件列表与图像预览卡隐藏；导入方向相反。可视化复选框与
-        类别/关键点列表两方向均保留显示（关键点列表仍仅 POSE 任务显示）。
+        导出方向：文件列表与图像预览卡隐藏；导入方向相反。可视化复选框
+        与类别/关键点列表两方向均保留显示。分割比例行与"导出 YOLO 数据
+        集目录结构"复选框的显隐由 _on_task_changed 统一管理（既依赖方向
+        也依赖任务类型：仅导出方向且非 OCR 任务显示——OCR 导出 PPOCR
+        标注结构，无 train/val/test 划分与 images/labels 目录）。
         """
         is_export = self._direction == "export"
-        self.ratio_container.setVisible(is_export)
-        self.chk_export.setVisible(is_export)
         self.preview_card.setVisible(not is_export)
+        # 比例行/目录结构复选框依赖"方向 + 任务类型"双条件，统一走任务联动
+        self._on_task_changed()
 
     def _build_basic_card(self) -> None:
         """构建基础卡：任务类型、输入/输出路径（按方向）、开始/停止。
@@ -166,10 +185,8 @@ class ConvertPage(BasePage):
         self.task_combo.addItem("目标检测 (DETECT)", MODE.DETECT)
         self.task_combo.addItem("姿态估计 (POSE)", MODE.POSE)
         self.task_combo.addItem("实例分割 (SEGMENT)", MODE.SEGMENT)
-        # OCR 任务占位项（单项禁用不可选）：QComboBox 默认 model 即
-        # QStandardItemModel，可直接对 item 置灰实现单项禁用
-        self.task_combo.addItem("文字识别 (OCR) [暂未开放]", MODE.OCR)
-        self.task_combo.model().item(self.task_combo.count() - 1).setEnabled(False)
+        # OCR 任务：导出方向 JSON→PPOCR det/rec，导入方向 PPOCR det→JSON
+        self.task_combo.addItem("文字识别 (OCR)", MODE.OCR)
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
         task_row.addWidget(self.task_combo)
         task_row.addStretch()
@@ -308,7 +325,12 @@ class ConvertPage(BasePage):
 
         # ===== 1. 标注格式识别（仅用于摘要展示，页面方向由构造参数锁定）=====
         if result.source_format == Format.LABELME:
-            direction_text = "LabelMe (JSON) → YOLO (TXT)"
+            # OCR 任务输出 PaddleOCR 标注（det/rec），非 YOLO TXT
+            direction_text = (
+                "LabelMe (JSON) → PaddleOCR (det/rec)"
+                if result.task_type == MODE.OCR
+                else "LabelMe (JSON) → YOLO (TXT)"
+            )
         else:
             direction_text = "YOLO (TXT) → LabelMe (JSON)"
 
@@ -320,6 +342,7 @@ class ConvertPage(BasePage):
             MODE.DETECT: "目标检测 (DETECT)",
             MODE.POSE: "姿态估计 (POSE)",
             MODE.SEGMENT: "实例分割 (SEGMENT)",
+            MODE.OCR: "文字识别 (OCR)",
         }
         shape_text = "、".join(
             f"{k} {v} 个" for k, v in result.shape_counts.items()
@@ -446,17 +469,20 @@ class ConvertPage(BasePage):
 
         填充类别列表与关键点列表（keypoints 非空才填，且此时参照一键
         分析逻辑剔除 labels 中的关键点标签，避免混入普通类别列表），
-        并按 shape 分组特征推断任务类型（point>0→POSE，polygon>0→
-        SEGMENT，否则 DETECT）。
+        并按 shape 分组特征与文本证据推断任务类型（point>0→POSE，
+        box 类形状过半携带非空 description→OCR，polygon>0→SEGMENT，
+        否则 DETECT）。
 
         Args:
             stats: 统计数据，键为 "labels"（类别名列表，含关键点标签）、
                 "keypoints"（关键点名列表）、"shape_counts"（{"rectangle":
-                n, "polygon": n, "point": n}）。
+                n, "polygon": n, "point": n}）、"text_shape_count"（box 类
+                形状中 description 非空的个数，OCR 推断证据，可选）。
         """
         labels = stats.get("labels") or []
         keypoints = stats.get("keypoints") or []
         shape_counts = stats.get("shape_counts") or {}
+        text_shape_count = int(stats.get("text_shape_count") or 0)
         # 类别列表预填：keypoints 非空时按一键分析同样逻辑剔除关键点标签
         # （大小写不敏感比较），防止关键点标签混入普通类别列表导致转换丢失
         box_labels = labels
@@ -468,8 +494,8 @@ class ConvertPage(BasePage):
         # 关键点列表预填
         if keypoints:
             self._fill_kpt_list(keypoints)
-        # 任务类型推断：复用数据集分析的 shape 特征推断规则
-        task_type = _infer_task_from_shapes(shape_counts)
+        # 任务类型推断：复用数据集分析的 shape 特征与文本证据推断规则
+        task_type = _infer_task_from_shapes(shape_counts, text_shape_count)
         task_idx = self.task_combo.findData(task_type)
         if task_idx >= 0:
             self.task_combo.setCurrentIndex(task_idx)
@@ -551,6 +577,21 @@ class ConvertPage(BasePage):
         opt_row.addStretch()
         self.advanced_card.addLayout(opt_row)
 
+        # OCR 专属参数区（包装为容器便于显隐：仅导出方向且任务类型为 OCR
+        # 时显示，见 _on_task_changed）；两个参数对应 ConvertConfig 的
+        # ocr_gen_rec / ocr_use_space_char 字段，默认均勾选
+        self.ocr_container = QWidget()
+        ocr_layout = QHBoxLayout(self.ocr_container)
+        ocr_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_ocr_gen_rec = QCheckBox("生成识别数据集 (rec)")
+        self.chk_ocr_gen_rec.setChecked(True)
+        self.chk_ocr_use_space_char = QCheckBox("字典包含空格字符 (use_space_char)")
+        self.chk_ocr_use_space_char.setChecked(True)
+        ocr_layout.addWidget(self.chk_ocr_gen_rec)
+        ocr_layout.addWidget(self.chk_ocr_use_space_char)
+        ocr_layout.addStretch()
+        self.advanced_card.addWidget(self.ocr_container)
+
         # 导入/导出配置
         cfg_row = QHBoxLayout()
         cfg_row.addStretch()
@@ -604,20 +645,38 @@ class ConvertPage(BasePage):
 
     # -------------------------- 任务类型与输入联动 --------------------------
     def _on_task_changed(self) -> None:
-        """任务类型变化时切换关键点编辑器可见性。
+        """任务类型变化时切换关键点编辑器、OCR 参数区与 YOLO 结构选项。
 
-        仅 POSE 任务显示关键点列表；DETECT/SEGMENT 等任务整体隐藏，
-        避免残留空白区域。OCR 项在下拉中已禁用不可选，无需单独分支。
+        显隐规则：
+            - 关键点列表仅 POSE 任务显示；
+            - OCR 专属参数区（rec 数据集 / use_space_char 字典）仅导出
+              方向且任务类型为 OCR 时显示，导入方向 PPOCR det→JSON 不
+              生成识别数据集故恒隐藏；
+            - 分割比例行与"导出 YOLO 数据集目录结构"复选框仅导出方向
+              且非 OCR 任务显示（DETECT/POSE/SEGMENT 的 YOLO TXT 导出
+              才有 train/val/test 划分与 images/labels 结构；OCR 导出
+              PPOCR 标注结构不适用），隐藏时同步取消勾选防残留状态。
         """
         mode = self.task_combo.currentData()
         is_pose = mode == MODE.POSE
+        is_ocr = mode == MODE.OCR
         self.kpt_container.setVisible(is_pose)
+        # OCR 参数区：仅导出方向 + OCR 任务显示（导入方向不适用）
+        self.ocr_container.setVisible(is_ocr and self._direction == "export")
+        # YOLO 数据集结构选项：仅导出方向且非 OCR 任务显示
+        show_yolo_opts = self._direction == "export" and not is_ocr
+        self.ratio_container.setVisible(show_yolo_opts)
+        self.chk_export.setVisible(show_yolo_opts)
+        if not show_yolo_opts:
+            # 隐藏时取消勾选，防止历史勾选状态经 collect_config 残留到
+            # OCR 转换配置（PPOCR 导出链路不消费该值，此处保证语义干净）
+            self.chk_export.setChecked(False)
 
     def _on_input_changed(self, path: str) -> None:
         """输入路径变化时统计文件数量并填充预览列表。
 
         导入方向由输入目录控件信号触发；导出方向由构造函数对工作路径
-        直接调用（无输入目录控件）。按 YOLO 数据集目录层级自动识别
+        直接调用（无输入目录控件）。按数据集目录层级自动识别
         （label/image/dataset 层级或平铺），标注与图片分别从解析出的
         对应目录扫描。
         """
@@ -731,6 +790,9 @@ class ConvertPage(BasePage):
         cc.kpt = self._collect_kpt()
         cc.visualize = self.chk_visualize.isChecked()
         cc.export = self.chk_export.isChecked()
+        # OCR 专属参数（导出 JSON→PPOCR 时生成 rec 识别数据集与字典空格字符）
+        cc.ocr_gen_rec = self.chk_ocr_gen_rec.isChecked()
+        cc.ocr_use_space_char = self.chk_ocr_use_space_char.isChecked()
         cc.train_ratio = self.spin_train.value()
         cc.val_ratio = self.spin_val.value()
         cc.test_ratio = self.spin_test.value()

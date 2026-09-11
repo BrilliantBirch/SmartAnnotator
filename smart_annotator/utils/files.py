@@ -17,7 +17,12 @@
       det 单通道概率图输出），names 类别元数据存在才默认 DETECT，
       均无法判定时返回 None 解锁手动选择（修复 OCR 模型被误锁 DETECT）；
       新增 getOcrModelRole 判定 OCR 模型角色（det/rec），供 UI 字段引导
- """
+更新: 2026-09-11 resolve_dataset_dirs 适配 PaddleOCR 导出结构：dataset
+      层级仅有 images/ 子目录而无 labels/、且根目录存在 det 标注 txt 时
+      （PPOCR2JsonConverter 导出产物），标注目录回退输入根目录（结构
+      描述带 PPOCR_STRUCTURE_MARK 标记供分析器识别），修复 OCR 数据集
+      一键分析"未检测到任何标注文件"
+"""
 
 import glob
 import os
@@ -64,6 +69,9 @@ def getVideoFilesInDir(dirPath) -> list:
 # ===== YOLO 数据集目录命名兼容（复数/单数均支持）=====
 IMAGE_DIR_NAMES = ("images", "image")
 LABEL_DIR_NAMES = ("labels", "label")
+# PaddleOCR 导出结构的层级识别标记（拼入结构描述文本，供数据集分析器
+# 识别 OCR 数据集并走 det 标注解析分支，避免被当作 YOLO TXT 逐行解析）
+PPOCR_STRUCTURE_MARK = "PaddleOCR 结构"
 
 
 def _first_existing_sibling(base: Path, names: tuple):
@@ -109,7 +117,8 @@ def resolve_dataset_dirs(input_dir) -> tuple:
         2. image 层级: 输入目录名为 images/image，图片在本目录，
            标注在兄弟 labels/label 目录中查找
         3. dataset 层级: 输入目录含 images/image 与 labels/label 子目录，
-           分别作为图片与标注目录
+           分别作为图片与标注目录；若仅有 images/ 子目录且根目录存在
+           det 标注 txt（PaddleOCR 导出结构），标注目录回退输入根目录
     以上均不匹配时视为平铺结构（LabelMe 惯例），标注与图片均在输入目录本身。
 
     Args:
@@ -136,6 +145,17 @@ def resolve_dataset_dirs(input_dir) -> tuple:
     image_dir = _first_existing_subdir(path, IMAGE_DIR_NAMES)
     anno_dir = _first_existing_subdir(path, LABEL_DIR_NAMES)
     if image_dir is not None or anno_dir is not None:
+        # PaddleOCR 导出结构兼容（PPOCR2JsonConverter 导出产物）：仅有
+        # images/ 子目录而无 labels/，det 标注 txt（det_gt.txt/train.txt
+        # 等）位于根目录——此时标注目录回退输入根目录（getTxtFilesInDir
+        # 非递归，不会误扫子目录），结构描述带标记供分析器识别 OCR 数据集
+        if image_dir is not None and anno_dir is None:
+            if getTxtFilesInDir(str(path)):
+                return (
+                    path,
+                    image_dir,
+                    f"dataset 层级（images 子目录 + 根目录 det 标注，{PPOCR_STRUCTURE_MARK}）",
+                )
         return anno_dir, image_dir, "dataset 层级（images/labels 子目录）"
 
     # 平铺结构：标注与图片均在输入目录

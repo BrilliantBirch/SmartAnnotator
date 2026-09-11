@@ -18,6 +18,9 @@
       进度同时上报 progress_updated（0-1 浮点）驱动进度条
 更新: 2026-09-04 labels_ready 扩展四参数（新增 shape_counts 分组计数字典），
       供主窗口缓存统计结果并复用于导出对话框预填
+更新: 2026-09-10 labels_ready 扩展五参数（新增 text_shape_count：box 类
+      形状中 description 非空的个数，OCR 推断文本证据），随统计缓存传递
+      至导出对话框任务类型预填
 """
 
 from PySide6.QtCore import Signal, QMutexLocker
@@ -31,12 +34,13 @@ class LabelScanWorker(BaseWorker):
     """后台标签扫描线程。
 
     Signals:
-        labels_ready(list, list, list, dict): 扫描完成，参数为
+        labels_ready(list, list, list, dict, int): 扫描完成，参数为
             (标签列表, 关键点列表, [标签, 实例个数] 二元组列表（按个数降序）,
-             shape 分组计数字典 {"rectangle": n, "point": n, "polygon": n})。
+             shape 分组计数字典 {"rectangle": n, "point": n, "polygon": n},
+             box 类形状中 description 非空的个数（OCR 推断证据）)。
     """
 
-    labels_ready = Signal(list, list, list, dict)
+    labels_ready = Signal(list, list, list, dict, int)
 
     def __init__(self):
         """初始化标签扫描线程。"""
@@ -92,6 +96,7 @@ class LabelScanWorker(BaseWorker):
                 result["keypoints"],
                 [list(kv) for kv in counts_items],
                 shape_counts,
+                int(result.get("text_shape_count", 0)),
             )
 
         except Exception as e:

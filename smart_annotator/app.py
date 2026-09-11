@@ -154,6 +154,9 @@
       现有菜单槽函数（槽内自带防呆/确认框，全标注模式通用）；新增模块级
       _RESERVED_SHORTCUTS 固定保留键表（画布 Esc），快捷键设置对话框
       传入 reserved 增强冲突检测（与不可配置固定键冲突时阻止保存）
+更新: 2026-09-10 属性弹窗 difficult 适配：_on_shape_created/_on_edit_object
+      两处调用点解包扩展为四元组，difficult 始终显式写入 shape 字典
+      （PPOCRLabel 兼容格式）
 """
 
 import json
@@ -1849,7 +1852,7 @@ class MainWindow(QMainWindow):
                 self.canvas.discard_shape(shape)
                 self.statusBar().showMessage("未设置标签，已取消该标注", 2000)
             return
-        label, description, group_id = result
+        label, description, group_id, difficult = result
         if not label:
             # 空 label：形状不生效，静默丢弃（无弹窗提醒）
             self.canvas.discard_shape(shape)
@@ -1858,6 +1861,7 @@ class MainWindow(QMainWindow):
         shape["label"] = label
         shape["description"] = description
         shape["group_id"] = group_id
+        shape["difficult"] = difficult
         self.canvas.refresh()
         self._dirty = True
         self._refresh_objects()
@@ -2084,10 +2088,11 @@ class MainWindow(QMainWindow):
         result = ShapeDialog.get_shape_props(labels, shape, self._canvas_group_ids(), self)
         if result is None:
             return
-        label, description, group_id = result
+        label, description, group_id, difficult = result
         shape["label"] = label
         shape["description"] = description
         shape["group_id"] = group_id
+        shape["difficult"] = difficult
         self.canvas.refresh()
         self._dirty = True
         self._refresh_objects()
@@ -2216,19 +2221,21 @@ class MainWindow(QMainWindow):
         self._scan_progress_dlg = None
         self.statusBar().showMessage("扫描已中止", 2500)
 
-    def _on_labels_scanned(self, labels: list, keypoints: list, counts: list, shape_counts: dict) -> None:
+    def _on_labels_scanned(self, labels: list, keypoints: list, counts: list, shape_counts: dict, text_shape_count: int = 0) -> None:
         """后台扫描完成：同步标签列表、缓存统计结果并弹出统计窗口。
 
         扫描结果已合并大小写同名标签（拼写取首次出现）；中止路径不进入
         本回调。当前画布标签与扫描结果取并集后刷新列表。统计结果
-        （labels/keypoints/shape_counts）缓存到 _label_stats_cache，
-        供导出标注对话框预填类别/关键点/任务类型（复用扫描结论）。
+        （labels/keypoints/shape_counts/text_shape_count）缓存到
+        _label_stats_cache，供导出标注对话框预填类别/关键点/任务类型
+        （复用扫描结论）。
 
         Args:
             labels: 标签名列表（合并大小写后）。
             keypoints: 关键点标签名列表。
             counts: [标签, 实例个数] 二元组列表（按个数降序）。
             shape_counts: shape 分组计数字典 {"rectangle": n, "point": n, "polygon": n}。
+            text_shape_count: box 类形状中 description 非空的个数（OCR 推断证据）。
         """
         self._all_labels = list(labels)
         # 缓存统计结果（导出对话框预填用；列表/字典复制，避免与信号源共享引用）
@@ -2236,6 +2243,7 @@ class MainWindow(QMainWindow):
             "labels": list(labels),
             "keypoints": list(keypoints),
             "shape_counts": dict(shape_counts),
+            "text_shape_count": int(text_shape_count),
         }
         self._refresh_labels()
         # 关闭进度对话框（先断开 canceled，避免正常完成被误判为中止）

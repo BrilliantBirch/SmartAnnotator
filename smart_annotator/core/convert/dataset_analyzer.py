@@ -4,8 +4,11 @@
 
 扫描标注目录，实现三项分析：
     1. 标签提取：从 LabelMe JSON 标注的 shapes 中提取所有唯一标签
-    2. 任务类型推断：按 shape 类型特征推断 DETECT/POSE/SEGMENT
-    3. 转换方向检测：按标注文件后缀推断源格式（JSON→TXT 或 TXT→JSON）
+    2. 任务类型推断：按 shape 类型特征与文本证据推断 DETECT/POSE/
+       SEGMENT/OCR
+    3. 转换方向检测：按标注文件后缀推断源格式（JSON→任务数据集 或
+       任务数据集→JSON；任务数据集按任务类型分发——YOLO TXT 或
+       PaddleOCR det/rec 标注）
 
 纯逻辑实现，无 Qt 依赖（供 AnalyzeWorker 在后台线程调用）。
 
@@ -15,6 +18,15 @@
       字段数歧义（原逻辑将 5/8 顶点多边形误判为 POSE）；新增关键点数推断
 更新: 2026-09-02 LabelMe 标签提取按 shape 类型分类：point 类型标签归入
       kpt_labels（关键点类别集合），不再混入普通类别列表
+更新: 2026-09-10 适配 OCR 数据集推断：LabelMe 解析新增 text_shape_count
+      统计（box 类形状中 description 非空的个数），推断规则新增 OCR 分支
+      （无关键点、box 类形状过半携带非空文本 → MODE.OCR，优先级在 POSE
+      之后、SEGMENT 之前），修复 OCR 文本框被误判为实例分割
+更新: 2026-09-11 适配 PaddleOCR 导出结构（images/ 子目录 + 根目录 det 标注
+      txt）的一键分析：新增 _analyze_ppocr_dets 逐行解析 det 标注（四点框
+      归 polygon 组、transcription 非空计入文本证据、标签固定 text），
+      按 PPOCR_STRUCTURE_MARK 分流，避免 det 行被当作 YOLO 格式误解析；
+      修复 OCR 数据集导入方向"未检测到任何标注文件"
 """
 
 import json
@@ -22,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...config import MODE, Format
-from ...utils import LOGGER, scan_dataset_files
+from ...utils import LOGGER, PPOCR_STRUCTURE_MARK, scan_dataset_files
 
 
 # LabelMe shape_type → shape 分组（用于任务类型推断）
@@ -46,6 +58,9 @@ class DatasetAnalysis:
         kpt_labels: 关键点标签列表（shape 类型为 point/points 的标签，
             即 POSE 任务的"关键点类别集合"，按首次出现顺序）。
         shape_counts: {shape 分组: 出现次数}（rectangle/point/polygon）。
+        text_shape_count: box 类形状（rectangle/polygon）中 description
+            非空的个数（OCR 推断证据：OCR 文本框必然携带识别文本，检测/
+            分割标注的 description 通常为空）。
         task_type: 推断的任务类型。
         source_format: 检测到的标注格式（LabelMe=JSON 输入 / YOLO=TXT 输入）；
             无标注文件时为 None。
@@ -62,6 +77,7 @@ class DatasetAnalysis:
     label_counts: dict = field(default_factory=dict)
     kpt_labels: list = field(default_factory=list)
     shape_counts: dict = field(default_factory=dict)
+    text_shape_count: int = 0
     task_type: MODE = MODE.DETECT
     source_format: Format = None
     json_count: int = 0
@@ -76,23 +92,32 @@ class DatasetAnalysis:
     orphan_annotations: list = field(default_factory=list)
 
 
-def _infer_task_from_shapes(shape_counts: dict) -> MODE:
-    """按 shape 分组特征推断任务类型（多类型共存时的优先级判断）。
+def _infer_task_from_shapes(shape_counts: dict, text_shape_count: int = 0) -> MODE:
+    """按 shape 分组特征与文本证据推断任务类型（多类型共存时的优先级判断）。
 
     优先级机制（高 → 低）：
-        point > polygon > rectangle
-    依据：姿态数据集必含 box+point（box 不构成否定证据），
-    分割数据集常含 box+polygon，故 point 最高、polygon 次之、
-    仅 rectangle 时才判定为检测任务。
+        point > OCR > polygon > rectangle
+    依据：姿态数据集必含 box+point（box 不构成否定证据），point 最高；
+    OCR 数据集全部为 box 类四点框且过半携带非空文本内容（PPOCRLabel/
+    本编辑器 OCR 标注的强特征——检测/分割标注的 description 通常为空），
+    判 OCR；分割数据集常含 box+polygon（description 为空，不满足 OCR
+    文本证据）判 SEGMENT；仅 rectangle 时才判定为检测任务。
 
     Args:
         shape_counts: {shape 分组: 出现次数}。
+        text_shape_count: box 类形状中 description 非空的个数（OCR 文本
+            证据，LabelMe 数据集才有；默认 0 不触发 OCR 分支）。
 
     Returns:
         推断的任务类型（无任何 shape 时默认 DETECT）。
     """
     if shape_counts.get("point", 0) > 0:
         return MODE.POSE
+    box_count = shape_counts.get("rectangle", 0) + shape_counts.get("polygon", 0)
+    # OCR 分支：存在 box 类形状且过半携带非空文本内容（阈值取半数，
+    # 兼容少量空文本框；纯检测/分割数据集 description 罕有过半非空）
+    if box_count > 0 and text_shape_count * 2 >= box_count:
+        return MODE.OCR
     if shape_counts.get("polygon", 0) > 0:
         return MODE.SEGMENT
     return MODE.DETECT
@@ -143,6 +168,12 @@ def _analyze_labelme_jsons(json_files: list, result: DatasetAnalysis, progress_c
                 )
                 if group:
                     result.shape_counts[group] = result.shape_counts.get(group, 0) + 1
+                    # OCR 文本证据：box 类形状带非空 description（识别文本）
+                    if (
+                        group in ("rectangle", "polygon")
+                        and str(shape.get("description", "") or "").strip()
+                    ):
+                        result.text_shape_count += 1
         except (ValueError, KeyError, OSError, UnicodeDecodeError) as ex:
             result.error_files.append(str(file_path))
             LOGGER.warning(f"解析标注文件失败（已跳过）: {file_path}: {ex}")
@@ -285,6 +316,60 @@ def _analyze_yolo_txts(txt_files: list, result: DatasetAnalysis, progress_cb) ->
         )
 
 
+def _analyze_ppocr_dets(txt_files: list, result: DatasetAnalysis, progress_cb) -> None:
+    """解析 PaddleOCR det 标注 txt：统计形状数与文本证据，确证 OCR 任务。
+
+    det 标注行格式：`{图片相对路径}\t[{"transcription": 文本, "points":
+    [[x,y]...], "difficult": bool}, ...]`。四点框归入 polygon 分组（与
+    本编辑器 OCR 标注的导出口径一致）；transcription 非空计入
+    text_shape_count（OCR 推断证据）；标签固定为 "text"（导入生成的
+    LabelMe JSON 即该标签）。rec_gt（纯文本行）/dict（字符表）等非 det
+    格式行经 JSON 解析失败自然跳过。
+
+    Args:
+        txt_files: det 标注 txt 文件路径列表。
+        result: 分析结果对象（就地更新）。
+        progress_cb: 进度回调 callback(desc, progress)。
+    """
+    total = len(txt_files)
+    text_label_added = False
+    for idx, file_path in enumerate(txt_files):
+        progress_cb("解析 PaddleOCR det 标注", (idx + 1) / total)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.rstrip("\r\n")
+                    if not line or "\t" not in line:
+                        continue
+                    _image_path, arr = line.split("\t", 1)
+                    try:
+                        items = json.loads(arr)
+                    except (ValueError, TypeError):
+                        continue  # rec_gt 纯文本行/dict 字符行等非 det 格式
+                    if not isinstance(items, list):
+                        continue
+                    if not text_label_added:
+                        # OCR 导入生成的 LabelMe JSON 标签固定为 text
+                        result.labels.append("text")
+                        result.label_counts["text"] = 0
+                        text_label_added = True
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        points = item.get("points")
+                        if not isinstance(points, list) or not points:
+                            continue
+                        result.shape_counts["polygon"] = (
+                            result.shape_counts.get("polygon", 0) + 1
+                        )
+                        result.label_counts["text"] += 1
+                        if str(item.get("transcription", "") or "").strip():
+                            result.text_shape_count += 1
+        except (OSError, UnicodeDecodeError) as ex:
+            result.error_files.append(str(file_path))
+            LOGGER.warning(f"解析标注文件失败（已跳过）: {file_path}: {ex}")
+
+
 def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
     """一键分析标注数据集：提取标签 + 推断任务类型 + 检测转换方向。
 
@@ -294,8 +379,8 @@ def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
         - 均不匹配 → 平铺结构（输入目录本身）
 
     转换方向检测规则：
-        - 检测到 JSON 标注 → 源格式 LabelMe（json→txt 方向）
-        - 仅检测到 TXT 标注 → 源格式 YOLO（txt→json 方向）
+        - 检测到 JSON 标注 → 源格式 LabelMe（JSON→任务数据集方向）
+        - 仅检测到 TXT 标注 → 源格式 YOLO（任务数据集→JSON方向）
         - 两者共存 → 优先 JSON（LabelMe 标签信息更完整），并记录告警
 
     孤立标注检测：无对应同名图片的标注文件逐个记入日志（详细信息），
@@ -353,12 +438,14 @@ def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
     else:
         result.source_format = Format.YOLO
 
-    # ===== 步骤 3: 孤立标注检测（无对应同名图片的标注）=====
-    image_stems = {Path(f).stem for f in image_files}
-    anno_files = json_files if result.source_format == Format.LABELME else txt_files
-    for f in anno_files:
-        if Path(f).stem not in image_stems:
-            result.orphan_annotations.append(f)
+    # ===== 步骤 3: 孤立标注检测（仅 LabelMe JSON 方向）=====
+    # LabelMe 惯例 JSON 与图片同名配对，无配对图片即无法转换；YOLO/PPOCR
+    # 方向的 txt 文件与图片非同名对应关系（det_gt 集中索引），不适用该检测
+    if result.source_format == Format.LABELME:
+        image_stems = {Path(f).stem for f in image_files}
+        for f in json_files:
+            if Path(f).stem not in image_stems:
+                result.orphan_annotations.append(f)
     if result.orphan_annotations:
         LOGGER.warning(
             f"[分析] 检测到 {len(result.orphan_annotations)} 个孤立标注文件"
@@ -370,11 +457,22 @@ def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
     # ===== 步骤 4: 解析标注内容 =====
     if result.source_format == Format.LABELME:
         _analyze_labelme_jsons(json_files, result, progress_cb)
+    elif PPOCR_STRUCTURE_MARK in result.structure_desc:
+        # PaddleOCR 导出结构（images/ 子目录 + 根目录 det 标注）：det 行
+        # 为"路径\tJSON数组"格式，不符合任何 YOLO 标准行格式，须走专用解析
+        _analyze_ppocr_dets(txt_files, result, progress_cb)
     else:
         _analyze_yolo_txts(txt_files, result, progress_cb)
 
-    # ===== 步骤 5: 推断任务类型 =====
-    result.task_type = _infer_task_from_shapes(result.shape_counts)
+    # ===== 步骤 5: 推断任务类型（box 类形状文本证据参与 OCR 分支判定）=====
+    result.task_type = _infer_task_from_shapes(
+        result.shape_counts, result.text_shape_count
+    )
+    if result.task_type == MODE.OCR:
+        LOGGER.info(
+            f"[分析] box 类形状 {result.shape_counts.get('rectangle', 0) + result.shape_counts.get('polygon', 0)} 个中 "
+            f"{result.text_shape_count} 个携带非空文本内容，判定为 OCR 数据集"
+        )
     progress_cb("分析完成", 1.0)
 
     return result

@@ -55,7 +55,7 @@ class ConvertWorker(BaseWorker):
             self.progress_desc.emit("开始格式校验...")
             valid_files, invalid_reports = validate_annotation_files(
                 cc.annotation_files,
-                direction_to_source_format(cc.direction),
+                direction_to_source_format(cc.direction, self.config.task_type),
                 self.config.task_type,
                 kpt_count,
                 self.run_callback,

@@ -49,6 +49,11 @@
       annotate_single（标注当前图片 Ctrl+1）/annotate_all（标注所有图片
       Ctrl+2）/clear_shapes（清空当前标注 Ctrl+Shift+C），旧 shortcuts.json
       经白名单合并自动补齐默认绑定
+更新: 2026-09-10 Format 枚举新增 PPOCR（PaddleOCR 标注格式，det_gt.txt 等，
+      仅 OCR 任务导入时作为源格式）；ConvertConfig 新增 OCR 转换开关
+      ocr_use_space_char（字典尾追加空格字符）与 ocr_gen_rec（同时生成
+      rec 识别数据集），均仅 OCR 转换使用，纳入 to_dict 序列化与
+      from_dict 非 bool 容错（非法值回字段默认）
 """
 
 from dataclasses import dataclass, field
@@ -85,6 +90,7 @@ class Format(Enum):
 
     LABELME = 0
     YOLO = 1
+    PPOCR = 2  # PaddleOCR 标注格式（det_gt.txt 等，仅 OCR 任务导入时作为源格式）
 
 
 # ===== 配置 dataclass =====
@@ -96,11 +102,14 @@ class ConvertConfig:
 
     Attributes:
         direction: 转换方向（运行期字段）："export"=LabelMe→YOLO 导出 /
-            "import"=YOLO→LabelMe 导入。
+            "import"=YOLO→LabelMe 导入（OCR 任务时源格式为 PPOCR）。
         classes: 类别名称列表。
         kpt: 关键点信息 {name: {"isChecked": bool, "bbox_size": int}}。
         visualize: 是否可视化。
         export: 是否导出 YOLO 训练集目录结构。
+        ocr_use_space_char: 字典尾追加空格字符（仅 OCR 转换使用）。
+        ocr_gen_rec: 同时生成 rec 识别数据集（裁剪文本行图 + rec_gt，
+            仅 OCR 转换使用）。
         train_ratio: 训练集比例。
         val_ratio: 验证集比例。
         test_ratio: 测试集比例。
@@ -115,6 +124,9 @@ class ConvertConfig:
     kpt: dict = field(default_factory=dict)
     visualize: bool = False
     export: bool = False
+    # OCR 专属转换开关（仅 OCR 转换使用）
+    ocr_use_space_char: bool = True  # 字典尾追加空格字符（use_space_char=True）
+    ocr_gen_rec: bool = True  # 同时生成 rec 识别数据集（裁剪文本行图 + rec_gt）
     train_ratio: float = 0.8
     val_ratio: float = 0.1
     test_ratio: float = 0.1
@@ -132,6 +144,8 @@ class ConvertConfig:
             "kpt",
             "visualize",
             "export",
+            "ocr_use_space_char",
+            "ocr_gen_rec",
             "train_ratio",
             "val_ratio",
             "test_ratio",
@@ -145,6 +159,8 @@ class ConvertConfig:
             "kpt": dict(self.kpt),
             "visualize": self.visualize,
             "export": self.export,
+            "ocr_use_space_char": self.ocr_use_space_char,
+            "ocr_gen_rec": self.ocr_gen_rec,
             "train_ratio": self.train_ratio,
             "val_ratio": self.val_ratio,
             "test_ratio": self.test_ratio,
@@ -175,6 +191,10 @@ class ConvertConfig:
         filtered = {
             k: v for k, v in migrated.items() if k in cls._SERIALIZED_FIELDS
         }
+        # OCR 转换开关：非 bool 值容错丢弃（回 dataclass 字段默认值）
+        for key in ("ocr_use_space_char", "ocr_gen_rec"):
+            if key in filtered and not isinstance(filtered[key], bool):
+                filtered.pop(key)
         return cls(**filtered)
 
 
