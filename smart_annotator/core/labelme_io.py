@@ -45,6 +45,7 @@ LabelMe JSON 格式读写模块
 更新: 2026-09-10 collect_labels_from_files 返回值新增 text_shape_count
       （box 类形状中 description 非空的个数，OCR 推断文本证据），与
       dataset_analyzer 口径一致，供导出对话框预填任务类型复用
+更新: 2026-09-11 清理死代码：删除全库零引用的 SUPPORTED_SHAPES 常量
 """
 
 import json
@@ -56,9 +57,6 @@ from smart_annotator.config import LABELME_VERSION
 SHAPE_RECTANGLE = "rectangle"
 SHAPE_POINT = "point"
 SHAPE_POLYGON = "polygon"
-
-# 本编辑器支持的形状类型集合
-SUPPORTED_SHAPES = (SHAPE_RECTANGLE, SHAPE_POINT, SHAPE_POLYGON)
 
 # LabelMe shape_type → shape 分组（与 dataset_analyzer 的 _SHAPE_GROUPS 规则
 # 保持一致：point/points 归为 point 组，rectangle 为 box，polygon 为多边形），

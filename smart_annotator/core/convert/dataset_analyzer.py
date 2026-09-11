@@ -26,7 +26,10 @@
       txt）的一键分析：新增 _analyze_ppocr_dets 逐行解析 det 标注（四点框
       归 polygon 组、transcription 非空计入文本证据、标签固定 text），
       按 PPOCR_STRUCTURE_MARK 分流，避免 det 行被当作 YOLO 格式误解析；
-      修复 OCR 数据集导入方向"未检测到任何标注文件"
+      修复 OCR 数据集导入方向"未检测到任何标注文件"；
+      新增 _sniff_ppocr_det 嗅探（平铺 PPOCR 数据集误入 YOLO 分支防护）；
+      修复空数组 det 行写入计数 0 的 text 空标签污染；修复顶层数组损坏
+      JSON 的 AttributeError 逃逸（改为记入 error_files）
 """
 
 import json
@@ -142,6 +145,10 @@ def _analyze_labelme_jsons(json_files: list, result: DatasetAnalysis, progress_c
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # 结构校验：顶层必须为对象（损坏文件顶层可能是数组/标量，
+            # 直接 .get 会抛 AttributeError 逃逸出单文件容错）
+            if not isinstance(data, dict):
+                raise ValueError("标注顶层不是 JSON 对象")
             # 结构校验：LabelMe 标注必须含 shapes 列表
             shapes = data.get("shapes")
             if not isinstance(shapes, list):
@@ -348,6 +355,16 @@ def _analyze_ppocr_dets(txt_files: list, result: DatasetAnalysis, progress_cb) -
                         continue  # rec_gt 纯文本行/dict 字符行等非 det 格式
                     if not isinstance(items, list):
                         continue
+                    # 标签写入条件：该行至少含一个有效框（dict 且 points
+                    # 为非空列表）；空数组/无有效元素行跳过标签写入，防止
+                    # 纯空数组数据集产生计数 0 的 text 空标签污染
+                    if not any(
+                        isinstance(it, dict)
+                        and isinstance(it.get("points"), list)
+                        and it["points"]
+                        for it in items
+                    ):
+                        continue
                     if not text_label_added:
                         # OCR 导入生成的 LabelMe JSON 标签固定为 text
                         result.labels.append("text")
@@ -368,6 +385,58 @@ def _analyze_ppocr_dets(txt_files: list, result: DatasetAnalysis, progress_cb) -
         except (OSError, UnicodeDecodeError) as ex:
             result.error_files.append(str(file_path))
             LOGGER.warning(f"解析标注文件失败（已跳过）: {file_path}: {ex}")
+
+
+def _sniff_ppocr_det(txt_files: list) -> bool:
+    """轻量嗅探 TXT 标注是否为 PaddleOCR det 格式（平铺结构误判防护）。
+
+    平铺 PPOCR 数据集（det_gt.txt 与图片同层，无 images/ 子目录标记）
+    不满足 PPOCR_STRUCTURE_MARK 条件，会落入 YOLO 解析分支。此处读取
+    首个非空 txt 的前 3 行，任一行含制表符且右侧 JSON 解析成功、为
+    非空 list 且元素为 dict（含 transcription 或 points 键）即判定为
+    PPOCR det 标注；首个非空 txt 检查不命中则按 YOLO 处理。
+
+    Args:
+        txt_files: TXT 标注文件路径列表（按扫描顺序）。
+
+    Returns:
+        判定为 PPOCR det 标注返回 True，否则 False。
+    """
+    for file_path in txt_files:
+        try:
+            # 读取前 3 个非空行（空文件跳过，继续找下一个非空 txt）
+            lines: list = []
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped:
+                        lines.append(stripped)
+                    if len(lines) >= 3:
+                        break
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not lines:
+            continue
+        for line in lines:
+            # det 行格式：{图片相对路径}\t{JSON数组}
+            if "\t" not in line:
+                continue
+            _image_path, arr = line.split("\t", 1)
+            try:
+                items = json.loads(arr)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(items, list) or not items:
+                continue
+            if any(
+                isinstance(it, dict) and ("transcription" in it or "points" in it)
+                for it in items
+            ):
+                LOGGER.info(f"[分析] 嗅探到 PaddleOCR det 标注: {file_path}")
+                return True
+        # 首个非空 txt 检查完毕仍不命中：按 YOLO 处理
+        return False
+    return False
 
 
 def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
@@ -460,6 +529,10 @@ def analyze_dataset(input_dir, progress_cb=None) -> DatasetAnalysis:
     elif PPOCR_STRUCTURE_MARK in result.structure_desc:
         # PaddleOCR 导出结构（images/ 子目录 + 根目录 det 标注）：det 行
         # 为"路径\tJSON数组"格式，不符合任何 YOLO 标准行格式，须走专用解析
+        _analyze_ppocr_dets(txt_files, result, progress_cb)
+    elif _sniff_ppocr_det(txt_files):
+        # 平铺 PPOCR 数据集（det_gt.txt 与图片同层，无 images/ 标记）：
+        # 嗅探 det 行格式命中后同样走专用解析，避免被当作 YOLO 误解析
         _analyze_ppocr_dets(txt_files, result, progress_cb)
     else:
         _analyze_yolo_txts(txt_files, result, progress_cb)

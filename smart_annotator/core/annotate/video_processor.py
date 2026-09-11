@@ -10,12 +10,14 @@
       但帧位不前进/空帧时强制终止，避免死循环）
 更新: 2026-09-10 断点续传：帧图文件已存在时跳过重新写盘（保留已有抽帧
       结果，配合标注侧"JSON 已存在跳过标注"实现视频任务中断续跑）
+更新: 2026-09-11 清理死代码：删除零调用的 extract_frames 列表模式方法
+      （extract_frames_iter 为唯一抽帧入口）
 """
 
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Generator
+from typing import Generator
 
 # 损坏视频判定：连续读取 N 帧位不前进即视为损坏（防死循环）
 _STUCK_POS_LIMIT = 5
@@ -122,21 +124,6 @@ class VideoProcessor:
                 frame_index += 1
         finally:
             cap.release()
-
-    def extract_frames(
-        self, video_path: Path, output_dir: Path
-    ) -> Tuple[List[str], int, int]:
-        """从视频中提取关键帧（列表模式，兼容旧接口）。
-
-        Args:
-            video_path: 视频文件路径。
-            output_dir: 输出目录。
-
-        Returns:
-            Tuple[提取的帧文件路径列表, 总抽取帧数, 跳过的冗余帧数]。
-        """
-        frames = list(self.extract_frames_iter(video_path, output_dir))
-        return frames, self.extracted_count, self.skipped_count
 
     def _calculate_frame_diff(self, frame1: np.ndarray, frame2: np.ndarray) -> float:
         """计算两帧之间的差异值。

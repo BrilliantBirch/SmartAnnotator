@@ -6,12 +6,16 @@
     - AnnotateOptionsDialog: 批量标注前选择已标注图片的处理方式
       （跳过已标注 / 重新标注覆盖）
     - AnnotateProgressDialog: 标注进度对话框（模态，进度条 + 日志区 +
-      中止按钮）。模态保证标注期间主窗口不可预览/编辑；中止语义复用
-      ScanProgressDialog 的"只发射一次 canceled"模式（中止按钮、标题栏
-      关闭与 Esc 三条路径共用）
+      暂停/恢复 + 中止按钮）。模态保证标注期间主窗口不可预览/编辑；中止
+      语义复用 ScanProgressDialog 的"只发射一次 canceled"模式（中止按钮、
+      标题栏关闭与 Esc 三条路径共用）；暂停/恢复经 pause_requested 信号
+      由调用方接到 BaseWorker.pause/resume（run_callback 阻塞挂起，
+      任务不中断）
 
 作者: BaiBinnan
 创建日期: 2026-09-03
+更新: 2026-09-11 新增暂停/恢复按钮（pause_requested(bool) 信号，文案
+      "暂停标注"↔"恢复标注"切换），对接 BaseWorker 既有暂停原语
 """
 
 from PySide6.QtCore import Signal
@@ -87,13 +91,16 @@ class AnnotateOptionsDialog(QDialog):
 
 
 class AnnotateProgressDialog(QDialog):
-    """自动标注进度对话框（模态：进度条 + 日志区 + 中止按钮）。
+    """自动标注进度对话框（模态：进度条 + 日志区 + 暂停/恢复 + 中止按钮）。
 
     Signals:
         canceled: 用户请求中止标注（点击"中止"按钮或直接关闭对话框）。
+        pause_requested(bool): 用户点击暂停/恢复按钮（True=请求暂停，
+            False=请求恢复）；由调用方连接到 worker 的 pause()/resume()。
     """
 
     canceled = Signal()
+    pause_requested = Signal(bool)
 
     def __init__(self, title: str, target: str, parent=None):
         """初始化进度对话框。
@@ -110,6 +117,8 @@ class AnnotateProgressDialog(QDialog):
 
         # 防重复发射标志：canceled 只发射一次
         self._canceled_emitted = False
+        # 暂停状态（按钮文案切换依据）
+        self._paused = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -133,9 +142,12 @@ class AnnotateProgressDialog(QDialog):
         self.log.setMaximumBlockCount(2000)
         lay.addWidget(self.log, 1)
 
-        # ===== 中止按钮（右对齐）=====
+        # ===== 暂停/恢复 + 中止按钮（右对齐）=====
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        self.pause_btn = SecondaryButton("暂停标注")
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        btn_row.addWidget(self.pause_btn)
         self.abort_btn = SecondaryButton("中止标注")
         self.abort_btn.clicked.connect(self._emit_canceled)
         btn_row.addWidget(self.abort_btn)
@@ -158,6 +170,17 @@ class AnnotateProgressDialog(QDialog):
             msg: 进度描述文本。
         """
         self.log.appendPlainText(msg)
+
+    # -------------------------- 暂停/恢复 --------------------------
+    def _toggle_pause(self) -> None:
+        """暂停/恢复按钮入口：切换文案并广播请求。
+
+        worker 层经 BaseWorker.pause/resume 实现挂起/唤醒（run_callback
+        阻塞等待，任务不中断）；任务完成/中止后由调用方关闭对话框。
+        """
+        self._paused = not self._paused
+        self.pause_btn.setText("恢复标注" if self._paused else "暂停标注")
+        self.pause_requested.emit(self._paused)
 
     # -------------------------- 中止处理 --------------------------
     def _notify_canceled(self) -> None:

@@ -10,8 +10,11 @@ ONNX 推理后端（onnxruntime，CPU / CUDA Execution Provider）
       （providers 配置为 CUDA 优先 + CPU 回退，避免无 CUDA 机器直接崩溃）；
       新增 _ensure_cuda_dlls 自动定位 cuDNN（nvidia-cudnn-cu12 / torch
       自带 / conda Library\bin）并注册 DLL 搜索目录，免去用户手动配 PATH
+更新: 2026-09-11 imgsz 元数据解析改用 ast.literal_eval（防 eval 注入），
+      解析失败回退默认值 [640, 640]
 """
 
+import ast
 import os
 import sys
 import sysconfig
@@ -126,7 +129,13 @@ class ONNXInfer:
         )
         self.output_name = [x.name for x in self.session.get_outputs()]
         self.imgsz = self.metadata.get("imgsz", "[640,640]")
-        self.imgsz = tuple(eval(self.imgsz))
+        # 元数据解析用 ast.literal_eval（防 eval 注入任意代码），解析失败
+        # 回退默认值 [640, 640]
+        try:
+            self.imgsz = tuple(ast.literal_eval(self.imgsz))
+        except (ValueError, SyntaxError):
+            LOGGER.warning(f"imgsz 元数据解析失败，回退默认值: {self.imgsz!r}")
+            self.imgsz = (640, 640)
 
     def predict(self, img):
         """执行推理。

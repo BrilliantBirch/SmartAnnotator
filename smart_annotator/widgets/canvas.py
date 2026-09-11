@@ -11,7 +11,8 @@
       已放置顶点圆点标记（点工具不画延长线，十字光标由 CrossCursor 提供）
     - 编辑模式（工具为"编辑"）：多选（Shift+点击 / Ctrl+框选）、
       批量拖拽移动（边界钳制 + 阻力反馈）、端点拖动缩放（边界钳制）、
-      hover 半透明掩码、可编辑端点仅选中形状显示
+      hover 半透明掩码；悬停形状即显半透明小号编辑端点，悬停形状可
+      直接拖拽移动/拖端点修改（无需先点击选中），选中形状端点全样式
     - Ctrl+滚轮缩放（无修饰键滚轮滚动浏览）+ Esc 取消当前绘制
 
 形状以 labelme 标准字典为唯一数据源（见 core/labelme_io.py），
@@ -64,6 +65,20 @@
       捕获）；文本阴影改为双 QGraphicsTextItem 自绘（底层黑色阴影
       setOpacity 承载 0-100 配置 + 顶层标签色文字，偏移 (1,1)），
       移除 QGraphicsDropShadowEffect 依赖
+更新: 2026-09-11 清理与命名修正：删除 _update_polygon_draft 的死参数
+      close_on_first（函数体从未使用，3 处调用点同步）；描述截断
+      常量 _OCR_TRUNCATE 更名 _DESC_TRUNCATE（已通用化为形状描述
+      截断，与 OCR 无关）
+更新: 2026-09-11 修复 load_image 切图时 RuntimeError：场景清空前先经
+      _clear_draft/_clear_rubber/_remove_hover_mask 释放草稿、框选与
+      hover 掩码项（这些清理方法需访问场景中仍存活的 item）
+更新: 2026-09-11 悬停即编辑交互：悬停形状即时渲染半透明小号编辑端点
+      （新增 _render_hover_vertices，独立容器 _hover_vertex_items，
+      端点同样注册 _vertex_map 复用既有拖动命中机制）；悬停端点按下
+      即选中该形状并直接进入端点拖动、悬停形状按下即选中并拖拽移动
+      （复用既有 press 选中/拖拽路径，Ctrl/Shift 修饰键行为不变）；
+      新增悬停光标反馈（端点 SizeAll、形状 OpenHand、拖动中
+      ClosedHand，移出/Esc/释放复位）
 """
 
 import copy
@@ -124,7 +139,7 @@ _MAX_UNDO = 50
 # 粘贴剪贴板形状时的顶点坐标偏移量（像素，避免粘贴件与原形状完全重叠）
 _PASTE_OFFSET = 10.0
 # 形状描述文本在图像上的显示截断长度（超过则用 .. 截断）
-_OCR_TRUNCATE = 32
+_DESC_TRUNCATE = 32
 # 形状文本与包围盒左上角的固定垂直间隙（像素，保证文字在框外不重叠）
 _TEXT_OFFSET = 4.0
 
@@ -226,6 +241,9 @@ class Canvas(QGraphicsView):
         # 编辑模式 hover 半透明掩码
         self._hover_id: Optional[int] = None
         self._hover_item: Optional[QGraphicsItem] = None
+        # 悬停形状的半透明小号编辑端点项（与选中端点区分样式，
+        # 清理时机与 hover 掩码一致，经 _remove_hover_mask 统一清理）
+        self._hover_vertex_items: List[QGraphicsItem] = []
 
         # 编辑模式可拖动端点项：形状 id -> [端点 item]
         self._vertex_items: Dict[int, List[QGraphicsItem]] = {}
@@ -292,6 +310,13 @@ class Canvas(QGraphicsView):
         self._image_width = pixmap.width()
         self._image_height = pixmap.height()
 
+        # 场景清空前先释放草稿/框选/hover 掩码项：这些清理方法需访问
+        # 场景中仍存活的 item，若在 _scene.clear() 之后调用会因访问
+        # 已删除的 C++ 对象触发 RuntimeError
+        self._clear_draft()
+        self._clear_rubber()
+        self._remove_hover_mask()
+
         self._scene.clear()
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setTransformationMode(
@@ -317,7 +342,6 @@ class Canvas(QGraphicsView):
         self._draft_vertex_items = []
         self._edge_hint_items = []
         self._edge_hint_timer.stop()
-        self._clear_draft()
 
         self.fit_to_window()
         return True
@@ -588,7 +612,7 @@ class Canvas(QGraphicsView):
                 self._clear_draft()
                 return
             # 重建预览线；顶点标记按 _draft_points 全量重建，先清空待移动重绘
-            self._update_polygon_draft(close_on_first=False)
+            self._update_polygon_draft()
             self._clear_guides()
         # 矩形两点式绘制中：撤销起点即取消草稿
         elif self._tool == labelme_io.SHAPE_RECTANGLE and self._draft_item is not None:
@@ -868,7 +892,7 @@ class Canvas(QGraphicsView):
 
         - 标签：show_label 开且 label 非空；label 为 "text"（OCR 形状）时跳过
         - 组号：show_group 开且 group_id 非 None，显示 "G{group_id}"
-        - 描述：show_description 开且非空，超过 _OCR_TRUNCATE 字符截断加 ".."
+        - 描述：show_description 开且非空，超过 _DESC_TRUNCATE 字符截断加 ".."
         - 全部关闭或无内容时不渲染；文本颜色与标签色一致，字号取配置。
         - 文本锚点固定在形状包围盒左上角外侧（向上偏移 _TEXT_OFFSET
           像素间隙），与标注框不重叠。
@@ -891,8 +915,8 @@ class Canvas(QGraphicsView):
         # 描述部分（超长截断）
         desc = str(shape.get("description", "") or "")
         if cfg.show_description and desc:
-            if len(desc) > _OCR_TRUNCATE:
-                desc = desc[:_OCR_TRUNCATE] + ".."
+            if len(desc) > _DESC_TRUNCATE:
+                desc = desc[:_DESC_TRUNCATE] + ".."
             parts.append(desc)
         if not parts:
             return
@@ -981,6 +1005,8 @@ class Canvas(QGraphicsView):
 
         矩形显示左上/右下两个端点；多边形显示全部顶点；点形状即顶点本身
         不额外渲染。非编辑模式（绘制工具激活）或形状未选中时不显示端点。
+        悬停形状的半透明小号端点由 _render_hover_vertices 单独渲染
+        （_render 起始处 _remove_hover_mask 已将其随悬停状态一并清理）。
         """
         # 清理旧端点项
         for items in self._vertex_items.values():
@@ -1026,12 +1052,21 @@ class Canvas(QGraphicsView):
                 self._vertex_map[id(item)] = (id(shape), pi)
 
     def _remove_hover_mask(self) -> None:
-        """移除当前 hover 半透明掩码（若有）。"""
+        """移除当前 hover 半透明掩码与悬停端点项（若有）。
+
+        悬停端点与掩码同生命周期：重绘（形状删除/修改/选中变化）、
+        鼠标移出、Esc 时经本方法统一清理。
+        """
         if self._hover_item is not None:
             if self._hover_item.scene() is self._scene:
                 self._scene.removeItem(self._hover_item)
             self._hover_item = None
         self._hover_id = None
+        # 同步清理悬停端点（scene() 判断兜底：item 可能已随场景清除）
+        for it in self._hover_vertex_items:
+            if it.scene() is self._scene:
+                self._scene.removeItem(it)
+        self._hover_vertex_items = []
 
     def _update_hover_mask(self, scene: QPointF) -> None:
         """编辑模式下鼠标进入形状范围时显示半透明掩码。
@@ -1082,6 +1117,75 @@ class Canvas(QGraphicsView):
             self._scene.addItem(mask)
             self._hover_item = mask
             self._hover_id = hit_id
+            # 悬停形状同步渲染半透明小号端点（选中形状不重复渲染）
+            self._render_hover_vertices()
+
+    def _render_hover_vertices(self) -> None:
+        """为当前悬停形状渲染半透明小号可拖动端点（选中形状不重复渲染）。
+
+        端点同样注册进 _vertex_map，与选中端点共用一套拖动命中机制
+        （_hit_vertex），实现"悬停即可拖端点"无需先点击选中；仅样式
+        区分：填充/描边 alpha 降低、半径缩小 20%。矩形显示两个对角
+        端点，多边形显示全部顶点，点形状本身即顶点不额外渲染。
+        """
+        # 清理旧悬停端点项（幂等，重复调用安全）
+        for it in self._hover_vertex_items:
+            if it.scene() is self._scene:
+                self._scene.removeItem(it)
+        self._hover_vertex_items = []
+        # 仅编辑模式且存在悬停形状时渲染
+        if self._tool is not None or self._hover_id is None:
+            return
+        # 已选中形状的端点由 _render_vertices 全样式渲染，不重复注册
+        if self._hover_id in self._selected_ids:
+            return
+        shape = self._find_shape_by_id(self._hover_id)
+        if shape is None or not shape.get("_visible", True):
+            return
+        shape_type = shape.get("shape_type", "")
+        points = shape.get("points", [])
+        if shape_type == labelme_io.SHAPE_RECTANGLE:
+            point_indices = [0, 1]
+        elif shape_type == labelme_io.SHAPE_POLYGON:
+            point_indices = list(range(len(points)))
+        else:
+            # 点形状本身即顶点，无需额外端点
+            return
+        # 半透明样式：标签色填充 alpha 降低，白描边同步降 alpha，
+        # 半径取选中端点的 80%
+        fill = QColor(color_for_label(shape.get("label", "")))
+        fill.setAlpha(150)
+        r = _EDIT_VERTEX_RADIUS * 0.8
+        for pi in point_indices:
+            if pi >= len(points):
+                continue
+            x, y = points[pi]
+            item = QGraphicsEllipseItem(x - r, y - r, r * 2, r * 2)
+            item.setPen(QPen(QColor(255, 255, 255, 150), 1))
+            item.setBrush(QBrush(fill))
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setZValue(10)
+            self._scene.addItem(item)
+            self._hover_vertex_items.append(item)
+            # 注册端点命中映射：悬停端点可直接拖动（与选中端点同机制）
+            self._vertex_map[id(item)] = (id(shape), pi)
+
+    def _update_hover_cursor(self, scene: QPointF) -> None:
+        """编辑模式空闲移动时的悬停光标反馈。
+
+        端点上为 SizeAll（可拖端点）、悬停形状上为 OpenHand（可拖拽
+        移动）、空白处恢复默认光标；拖拽进行中的光标由按下/释放分支
+        单独控制，不经过本方法。
+
+        Args:
+            scene: 当前鼠标场景坐标。
+        """
+        if self._hit_vertex(scene) is not None:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self._hover_id is not None:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
 
     def _update_guides(self, scene: QPointF) -> None:
         """更新绘制辅助（延长线 + 已放置顶点标记）：延长线仅矩形/多边形工具显示。
@@ -1293,15 +1397,23 @@ class Canvas(QGraphicsView):
 
         if self._tool == labelme_io.SHAPE_POLYGON:
             self._draft_points.append(scene)
-            self._update_polygon_draft(close_on_first=False)
+            self._update_polygon_draft()
             return
 
         # ===== 编辑模式（工具为 None）=====
         # 先检测端点命中：进入端点拖动（缩放形状，快照懒记录见 _move_vertex）
         vertex = self._hit_vertex(scene)
         if vertex is not None:
+            shape_id, _point_idx = vertex
+            # 悬停端点命中：该形状未选中时先选中（其端点随即转为全样式
+            # 渲染，_vertex_map 同步重建），实现悬停即可直接拖端点修改
+            if shape_id not in self._selected_ids:
+                hover_shape = self._find_shape_by_id(shape_id)
+                if hover_shape is not None:
+                    self.select_shape(hover_shape)
             self._vertex_drag = vertex
             self._vertex_moved = False
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
             return
 
         # Ctrl+按下：开始框选（批量多选）
@@ -1331,6 +1443,8 @@ class Canvas(QGraphicsView):
             self._dragging = True
             self._drag_moved = False
             self._drag_last = scene
+            # 光标反馈：拖拽中闭合手型（释放时复位）
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             # 未命中任何形状：清空选中
             if self._selected_ids:
@@ -1356,7 +1470,7 @@ class Canvas(QGraphicsView):
 
         # 多边形预览线
         if self._tool == labelme_io.SHAPE_POLYGON and self._draft_points:
-            self._update_polygon_draft(close_on_first=False, cursor=scene)
+            self._update_polygon_draft(cursor=scene)
             return
 
         # Ctrl 框选矩形更新
@@ -1374,9 +1488,10 @@ class Canvas(QGraphicsView):
             self._move_selected(scene)
             return
 
-        # 编辑模式空闲移动：更新 hover 半透明掩码
+        # 编辑模式空闲移动：更新 hover 半透明掩码/悬停端点与光标反馈
         if self._tool is None:
             self._update_hover_mask(scene)
+            self._update_hover_cursor(scene)
 
     def mouseReleaseEvent(self, event) -> None:
         """鼠标释放：结束框选/端点拖动/拖拽移动。
@@ -1398,6 +1513,8 @@ class Canvas(QGraphicsView):
             moved = self._vertex_moved
             self._vertex_drag = None
             self._vertex_moved = False
+            # 复位光标（下一次移动按悬停状态重新反馈）
+            self.unsetCursor()
             if moved:
                 self.shapes_changed.emit()
             return
@@ -1410,6 +1527,8 @@ class Canvas(QGraphicsView):
             self._drag_moved = False
             # 拖动结束清除边界阻力高亮
             self._clear_edge_hints()
+            # 复位光标（下一次移动按悬停状态重新反馈）
+            self.unsetCursor()
             if moved:
                 self.shapes_changed.emit()
             return
@@ -1426,18 +1545,25 @@ class Canvas(QGraphicsView):
                 moved = self._vertex_moved
                 self._vertex_drag = None
                 self._vertex_moved = False
+                # 复位光标（悬停端点已随拖动重绘清理）
+                self.unsetCursor()
                 if moved:
                     self.undo()
                 return
             self._clear_draft()
             self._clear_rubber()
+            # Esc 同步清理悬停掩码/端点并复位光标
+            self._remove_hover_mask()
+            self.unsetCursor()
             return
         super().keyPressEvent(event)
 
     def leaveEvent(self, event) -> None:
-        """鼠标离开画布：清理顶点标记与 hover 掩码。"""
+        """鼠标离开画布：清理顶点标记、hover 掩码/端点并复位光标。"""
         self._clear_guides()
         self._remove_hover_mask()
+        # 复位悬停光标反馈
+        self.unsetCursor()
         super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:
@@ -1730,11 +1856,10 @@ class Canvas(QGraphicsView):
         self.shapes_changed.emit()
         self.shape_created.emit(shape)
 
-    def _update_polygon_draft(self, close_on_first: bool, cursor: Optional[QPointF] = None) -> None:
+    def _update_polygon_draft(self, cursor: Optional[QPointF] = None) -> None:
         """更新多边形临时预览线。
 
         Args:
-            close_on_first: 是否高亮首顶点（接近闭合）。
             cursor: 当前光标场景坐标（用于橡皮筋预览）。
         """
         if self._draft_item is not None:

@@ -54,6 +54,10 @@
       ocr_use_space_char（字典尾追加空格字符）与 ocr_gen_rec（同时生成
       rec 识别数据集），均仅 OCR 转换使用，纳入 to_dict 序列化与
       from_dict 非 bool 容错（非法值回字段默认）
+更新: 2026-09-11 清理死代码：删除冲突的旧版 __VERSION__ 常量（版本单点
+      迁移至 __init__.py 的 __version__）；删除零引用的
+      AnnotateConfig.from_dict 类方法与 _coerce_device 辅助函数
+      （_coerce_mode 保留，仍被转换页引用）
 """
 
 from dataclasses import dataclass, field
@@ -63,7 +67,6 @@ from typing import Any, Dict
 
 # ===== 应用级常量 =====
 __APPNAME__ = "BrilliantAnnotator"
-__VERSION__ = "1.2.0"
 LABELME_VERSION = "5.4.1"
 RANDOM_SEED = 42
 
@@ -262,56 +265,6 @@ class AnnotateConfig:
             "task_type": self.task_type.name,
             "selected_classes": list(self.selected_classes),
         }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "AnnotateConfig":
-        """从字典构造配置，兼容旧版 camelCase 键。
-
-        Args:
-            d: 字典（可为 to_dict 产物或旧版 JSON）。
-
-        Returns:
-            AnnotateConfig 实例。
-        """
-        legacy = {
-            "modelPath": "model_path",
-            "inputDir": "image_path",
-            "outputDir": "dataset_path",
-            "bboxConf": "conf",
-            "kptConf": "kpt_conf",
-            "frameInterval": "frame_interval",
-            "diffThreshold": "diff_threshold",
-        }
-        migrated = {}
-        for k, v in d.items():
-            migrated[legacy.get(k, k)] = v
-        # OCR 识别模型/字典路径：缺失或非字符串（如 null）容错回空串
-        for key in ("rec_model_path", "rec_dict_path"):
-            if not isinstance(migrated.get(key), str):
-                migrated[key] = ""
-        # OCR 专属推理参数：缺失或非数值容错回默认（dataclass 字段默认值）
-        for key, default in (
-            ("ocr_thresh", cls.__dataclass_fields__["ocr_thresh"].default),
-            ("ocr_box_thresh", cls.__dataclass_fields__["ocr_box_thresh"].default),
-            (
-                "ocr_unclip_ratio",
-                cls.__dataclass_fields__["ocr_unclip_ratio"].default,
-            ),
-        ):
-            v = migrated.get(key)
-            if not isinstance(v, (int, float)) or isinstance(v, bool):
-                migrated[key] = default
-            else:
-                migrated[key] = float(v)
-        if "device" in migrated:
-            migrated["device"] = _coerce_device(migrated["device"])
-        if "task_type" in migrated:
-            migrated["task_type"] = _coerce_mode(migrated["task_type"])
-        elif "mode" in migrated:
-            migrated["task_type"] = _coerce_mode(migrated.pop("mode"))
-        known = {f for f in cls.__dataclass_fields__}
-        filtered = {k: v for k, v in migrated.items() if k in known}
-        return cls(**filtered)
 
 
 @dataclass
@@ -548,17 +501,3 @@ def _coerce_mode(value: Any) -> MODE:
     if isinstance(value, int):
         return MODE(value)
     raise ValueError(f"无法解析任务模式: {value}")
-
-
-def _coerce_device(value: Any) -> DEVICE:
-    """将值转换为 DEVICE 枚举（接受枚举、名称字符串、整数值）。"""
-    if isinstance(value, DEVICE):
-        return value
-    if isinstance(value, str):
-        try:
-            return DEVICE[value]
-        except KeyError:
-            raise ValueError(f"未知设备: {value}")
-    if isinstance(value, int):
-        return DEVICE(value)
-    raise ValueError(f"无法解析设备: {value}")

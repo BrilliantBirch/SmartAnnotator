@@ -8,6 +8,7 @@ YOLO 预测器
 更新: 2026-09-04 GPU 推理由 TensorRT engine 切换为 onnxruntime CUDA EP：
       删除 engine 加载与 onnx→engine 隐式转换逻辑（转换持 GIL 导致 UI
       卡死），后处理移除 .engine 输出顺序分支
+更新: 2026-09-11 清理死代码：删除零调用的 BasePredictor.unload_model 方法
 """
 
 import numpy as np
@@ -100,10 +101,6 @@ class BasePredictor:
         Returns:
             加载成功返回 True，失败返回 False。
         """
-        pass
-
-    def unload_model(self) -> None:
-        """卸载模型。"""
         pass
 
     def predict(self, input_data: List[np.ndarray]) -> Optional[List[Dict[str, Any]]]:

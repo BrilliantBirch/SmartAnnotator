@@ -9,6 +9,8 @@
 创建日期: 2026-08-10
 更新: 2026-09-03 模型加载前发射进度描述（engine 反序列化耗时较长，
       进度窗口可显示"正在加载模型..."）
+更新: 2026-09-11 修复任务异常中断（run 返回 False 且非手动停止）时
+      未发 error_occurred 信号导致 UI 无法感知失败
 """
 
 from smart_annotator.config import SysConfig
@@ -58,7 +60,10 @@ class AnnotationWorker(BaseWorker):
                     self.progress_desc.emit("标注任务完成")
                     self.progress_updated.emit(1.0)
                 else:
+                    # annotator.run 返回 False 且非手动停止：任务异常中断，
+                    # 必须发错误信号驱动 UI 收尾（否则进度窗口无法感知失败）
                     self.progress_desc.emit("标注任务异常中断")
+                    self.error_occurred.emit("标注任务异常中断，详情见日志")
 
         except ValueError as e:
             LOGGER.error(f"标注配置错误: {str(e)}")

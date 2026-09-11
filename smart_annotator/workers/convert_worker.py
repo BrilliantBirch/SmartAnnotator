@@ -10,6 +10,8 @@
 更新: 2026-09-04 转换前新增格式校验阶段（无效文件剔除并汇总报告）
 更新: 2026-09-04 格式校验的源格式改由 cc.direction 推导
       （direction_to_source_format），不再读取已删除的 source_format 字段
+更新: 2026-09-11 修复任务异常中断（run 返回 False 且非手动停止）时
+      未发 error_occurred 信号导致 UI 无法感知失败
 """
 
 from smart_annotator.config import SysConfig
@@ -103,7 +105,10 @@ class ConvertWorker(BaseWorker):
                     self.progress_desc.emit("转换任务完成")
                     self.progress_updated.emit(1.0)
                 else:
+                    # converter.run 返回 False 且非手动停止：任务异常中断，
+                    # 必须发错误信号驱动 UI 收尾（否则进度窗口无法感知失败）
                     self.progress_desc.emit("转换任务异常中断")
+                    self.error_occurred.emit("转换任务异常中断，详情见日志")
 
         except ValueError as e:
             LOGGER.error(f"转换配置错误: {str(e)}")

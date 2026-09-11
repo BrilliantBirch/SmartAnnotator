@@ -20,6 +20,12 @@ video_processor.py（帧位不前进/空帧强制终止）。
 创建日期: 2026-09-03
 更新: 2026-09-04 视频列表由 QListWidget + QTimer 分批入列重构为
       QListView + VideoListModel（canFetchMore/fetchMore 数据虚拟化）
+更新: 2026-09-11 修复 checked_videos() 误用 QListView 接口致入口不可用
+      （改委托 VideoListModel.checked_paths()）；新增 done() 覆写，
+      取消/Esc 路径同样释放播放资源（抽 _release_resources 复用）
+更新: 2026-09-11 会话级记忆：构造新增 last_cfg 参数（不落盘），恢复
+      上次输入/输出路径、抽帧间隔与勾选视频（VideoListModel 新增
+      set_checked_paths，扫描完成后按记忆路径恢复勾选）
 """
 
 import os
@@ -222,6 +228,23 @@ class VideoListModel(QAbstractListModel):
         """返回勾选的视频路径列表（空列表表示未勾选任何视频）。"""
         return [p for p, c in zip(self._videos, self._checked) if c]
 
+    def set_checked_paths(self, paths: list) -> None:
+        """按路径列表勾选匹配行、取消其余行（会话级恢复勾选状态用）。
+
+        Args:
+            paths: 需保持勾选的视频路径列表（大小写不敏感匹配）。
+        """
+        wanted = {Path(p).as_posix().lower() for p in paths or []}
+        self._checked = [
+            Path(v).as_posix().lower() in wanted for v in self._videos
+        ]
+        if self._videos:
+            self.dataChanged.emit(
+                self.index(0),
+                self.index(len(self._videos) - 1),
+                [Qt.ItemDataRole.CheckStateRole],
+            )
+
     def _close_iter(self) -> None:
         """关闭并丢弃目录迭代器（幂等）。"""
         if self._scan_iter is not None:
@@ -239,12 +262,15 @@ class VideoAnnotateDialog(QDialog):
         无（配置经 get_result() 静态方法返回）。
     """
 
-    def __init__(self, default_input: str = "", parent=None):
+    def __init__(self, default_input: str = "", parent=None, last_cfg=None):
         """初始化视频标注窗口。
 
         Args:
             default_input: 默认输入路径（通常为主窗口当前工作目录）。
             parent: 父控件。
+            last_cfg: 上一次会话的配置 dict（{"input_dir", "output_dir",
+                "frame_interval", "videos"}，会话级记忆不落盘）；非空时
+                恢复输入/输出路径、抽帧间隔与勾选视频列表。
         """
         super().__init__(parent)
         self.setWindowTitle("标注视频")
@@ -255,6 +281,8 @@ class VideoAnnotateDialog(QDialog):
         self._fps = 0.0           # 当前视频帧率
         self._total_frames = 0    # 当前视频总帧数
         self._playing = False     # 播放状态
+        # 会话级记忆：待恢复勾选的视频路径（_on_scan_finished 时应用）
+        self._pending_checked = list((last_cfg or {}).get("videos") or [])
 
         # ===== 视频列表模型（增量加载：canFetchMore/fetchMore）=====
         self.model = VideoListModel(self)
@@ -282,7 +310,11 @@ class VideoAnnotateDialog(QDialog):
         in_label = QLabel("输入路径:")
         in_label.setMinimumWidth(60)
         self.input_field = PathField(browse_type="dir", placeholder="选择视频所在目录")
-        if default_input:
+        # 会话级记忆优先于默认工作目录（上次标注到哪个目录就回到哪里）
+        last_input = (last_cfg or {}).get("input_dir") or ""
+        if last_input:
+            self.input_field.set_path(last_input)
+        elif default_input:
             self.input_field.set_path(default_input)
         self.input_field.path_changed.connect(self._on_input_changed)
         in_row.addWidget(in_label)
@@ -295,6 +327,11 @@ class VideoAnnotateDialog(QDialog):
         self.output_field = PathField(browse_type="dir", placeholder="默认为输入路径下的 Output 目录")
         self._output_customized = False  # 用户是否手动修改过输出路径
         self.output_field.path_changed.connect(self._on_output_changed)
+        # 会话级记忆输出路径（视为用户手动指定，阻止自动跟随输入目录）
+        last_output = (last_cfg or {}).get("output_dir") or ""
+        if last_output:
+            self.output_field.set_path(last_output)
+            self._output_customized = True
         out_row.addWidget(out_label)
         out_row.addWidget(self.output_field)
         path_col.addLayout(out_row)
@@ -303,6 +340,10 @@ class VideoAnnotateDialog(QDialog):
         self.interval_spin = LabeledSpin(
             "抽帧间隔(帧):", spin_type="int", minimum=1, maximum=10000, step=1, value=10
         )
+        # 会话级记忆抽帧间隔
+        last_interval = (last_cfg or {}).get("frame_interval")
+        if isinstance(last_interval, int) and last_interval > 0:
+            self.interval_spin.set_value(last_interval)
         self.interval_spin.setMaximumWidth(260)
         interval_row.addWidget(self.interval_spin)
         interval_row.addStretch()
@@ -352,10 +393,13 @@ class VideoAnnotateDialog(QDialog):
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
 
-        # 初始：按默认输入路径设置默认输出（Input/Output）并启动动态遍历
-        if default_input:
-            self.output_field.set_path(str(Path(default_input) / "Output"))
-            self._start_scan(default_input)
+        # 初始：输出路径按 会话级记忆 > 默认输入/Output 取值，并启动动态
+        # 遍历（输入路径同理：会话级记忆优先，视频列表扫描上次的目录）
+        init_input = last_input or default_input
+        if init_input:
+            if not last_output:
+                self.output_field.set_path(str(Path(init_input) / "Output"))
+            self._start_scan(init_input)
 
     # -------------------------- 播放器构建 --------------------------
     def _build_player(self) -> QWidget:
@@ -475,6 +519,9 @@ class VideoAnnotateDialog(QDialog):
             if total
             else "未找到视频文件（mp4/avi/mov）"
         )
+        # 会话级记忆：扫描完成后按上次勾选恢复（未记忆时不改动默认全选）
+        if self._pending_checked:
+            self.model.set_checked_paths(self._pending_checked)
 
     def _select_all(self) -> None:
         """全选视频复选框。"""
@@ -676,12 +723,9 @@ class VideoAnnotateDialog(QDialog):
         Returns:
             勾选视频路径列表（空列表表示未勾选任何视频）。
         """
-        result = []
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                result.append(item.data(Qt.ItemDataRole.UserRole))
-        return result
+        # 委托模型：file_list 是 QListView（无 count()/item() 接口），
+        # 勾选状态存储在 VideoListModel 中
+        return self.model.checked_paths()
 
     def result_config(self) -> dict:
         """返回窗口配置（调用方在 accept 后读取）。
@@ -697,28 +741,47 @@ class VideoAnnotateDialog(QDialog):
         }
 
     @staticmethod
-    def get_config(default_input: str = "", parent=None):
+    def get_config(default_input: str = "", parent=None, last_cfg=None):
         """弹出视频标注窗口并返回配置。
 
         Args:
             default_input: 默认输入路径。
             parent: 父控件。
+            last_cfg: 上一次会话的配置 dict（会话级记忆，不落盘），
+                非空时恢复输入/输出路径、抽帧间隔与勾选视频。
 
         Returns:
             配置 dict（见 result_config()）；用户取消返回 None。
         """
-        dlg = VideoAnnotateDialog(default_input, parent)
+        dlg = VideoAnnotateDialog(default_input, parent, last_cfg=last_cfg)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return dlg.result_config()
 
     # -------------------------- 资源清理 --------------------------
-    def closeEvent(self, event) -> None:
-        """关闭窗口：停止定时器、中止模型遍历并释放视频句柄。"""
+    def _release_resources(self) -> None:
+        """统一资源清理：停定时器、中止模型遍历并释放视频句柄。
+
+        closeEvent 与 done() 共用，确保取消/Esc（reject → done）路径
+        同样释放预览 VideoCapture，避免句柄泄漏。
+        """
         self._scan_timer.stop()
         self.model.close_scan()
         self._pause()
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+
+    def done(self, r) -> None:
+        """对话框关闭（accept/reject 均经此）：先释放资源再关闭。
+
+        Args:
+            r: 关闭结果码（QDialog.DialogCode）。
+        """
+        self._release_resources()
+        super().done(r)
+
+    def closeEvent(self, event) -> None:
+        """关闭窗口：停止定时器、中止模型遍历并释放视频句柄。"""
+        self._release_resources()
         super().closeEvent(event)

@@ -26,6 +26,9 @@ OCR 自动标注预测器 - PP-OCR 文本检测(det) + 文本识别(rec) 端到�
       复制补批，rec 固定宽/固定批按会话签名对齐（补零行后截断）；padding
       区预填 -1 修正为与官方"零像素填充后归一化"语义一致；DB 后处理
       阈值改为从配置读取（ocr_thresh/ocr_box_thresh/ocr_unclip_ratio）
+更新: 2026-09-11 修复 static 固定批 rec 模型（N<8）分块越界：predict 阶段
+      3 分块步长改为对齐 rec 固定批 N（动态模型仍用 self.batch）；阶段 2
+      跳过退化框产出的 0 尺寸空裁剪（防下游宽高比除零整批静默失败）
 """
 
 from pathlib import Path
@@ -543,15 +546,38 @@ class OcrPredictor(BasePredictor):
                 all_det_scores.append(det_scores)
 
             # ===== 阶段 2：透视裁剪文本行，记录归属图索引 =====
+            # 退化框兜底（boundingRect）可能产出 0 尺寸空图：跳过该行裁剪
+            # （不进 rec，避免 _preprocess_rec 宽高比除零导致整批静默失败），
+            # 并同步剔除对应框与 det 得分，保证阶段 4 聚合按 cursor 对齐
             crops: List[np.ndarray] = []
             for i, boxes in enumerate(all_boxes):
-                for box in boxes:
-                    crops.append(get_rotate_crop_image(imgs[i], box))
+                kept_boxes: List[np.ndarray] = []
+                kept_scores: List[float] = []
+                for j, box in enumerate(boxes):
+                    crop = get_rotate_crop_image(imgs[i], box)
+                    if (
+                        crop is None
+                        or crop.size == 0
+                        or min(crop.shape[0], crop.shape[1]) < 1
+                    ):
+                        LOGGER.warning(f"第 {i + 1} 张图存在退化文本框，已跳过该行裁剪")
+                        continue
+                    kept_boxes.append(box)
+                    kept_scores.append(all_det_scores[i][j])
+                    crops.append(crop)
+                all_boxes[i] = kept_boxes
+                all_det_scores[i] = kept_scores
 
-            # ===== 阶段 3：全部文本行合并后按 batch 分块批量识别（防 OOM）=====
+            # ===== 阶段 3：全部文本行合并后按批分块批量识别（防 OOM）=====
+            # 分块步长对齐：static 固定批 rec 模型以固定批 N 为块（N 即
+            # _preprocess_rec 预分配张量的批数，按 N 切块避免 N < self.batch
+            # 时 batch[i] 越界）；动态模型按 self.batch 分块
+            chunk_size = (
+                self._rec_fixed[0] if self._rec_fixed is not None else self.batch
+            )
             rec_results: List[Dict[str, Any]] = []
-            for start in range(0, len(crops), self.batch):
-                chunk = crops[start : start + self.batch]
+            for start in range(0, len(crops), chunk_size):
+                chunk = crops[start : start + chunk_size]
                 rec_results.extend(self._recognize_chunk(chunk))
 
             # ===== 阶段 4：按图聚合输出（与 Annotator 的 imgInfo 对齐）=====

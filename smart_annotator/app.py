@@ -157,6 +157,17 @@
 更新: 2026-09-10 属性弹窗 difficult 适配：_on_shape_created/_on_edit_object
       两处调用点解包扩展为四元组，difficult 始终显式写入 shape 字典
       （PPOCRLabel 兼容格式）
+更新: 2026-09-11 注释修正：两处删除确认 docstring 的"不再提醒"说明改为
+      与会话级 _confirm_skipped 实现一致（不落盘，重启恢复默认提醒）
+更新: 2026-09-11 编排层修复：closeEvent 对协作停止超时的 worker 增加
+      terminate 兜底（仅退出路径，防线程随窗口销毁闪退）；"不保存"
+      分支复位 _dirty 防重复弹窗；_on_save/_on_save_as/_confirm_discard_changes
+      保存分支增加写盘异常捕获（失败弹窗并中断流程）
+更新: 2026-09-11 耗时任务新增暂停/恢复：自动标注进度窗口新增"暂停标注/
+      恢复标注"切换按钮（pause_requested 信号 → BaseWorker 既有 pause/
+      resume 原语，run_callback 阻塞挂起任务不中断），单张/批量/视频
+      三入口均支持；视频标注窗口新增会话级配置记忆（last_cfg 参数，
+      不落盘），中断后再次进入恢复上次输入/输出路径、抽帧间隔与勾选视频
 """
 
 import json
@@ -325,6 +336,8 @@ class MainWindow(QMainWindow):
         self._annotate_progress_dlg: "AnnotateProgressDialog | None" = None
         self._annotate_mode: str = ""  # single / all / video（空 = 无任务）
         self._annotate_error: str = ""
+        # 会话级记忆：上次视频标注配置（不落盘，仅本次运行期内恢复）
+        self._last_video_cfg: dict = None
 
         # 后台线程（单张 worker 常驻主窗口，避免局部变量被回收导致
         # "QThread: Destroyed while thread is still running" 闪退）
@@ -1242,7 +1255,12 @@ class MainWindow(QMainWindow):
         if not self._current_image_path():
             showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
             return
-        self._write_annotation(self._current_json_path())
+        # 写盘失败（磁盘满/权限等）弹窗提示，不再继续刷新标签
+        try:
+            self._write_annotation(self._current_json_path())
+        except Exception as e:
+            showMessageBox(QMessageBox.Icon.Critical, f"保存失败: {e}")
+            return
         self._refresh_labels()
 
     def _on_save_as(self) -> None:
@@ -1256,7 +1274,12 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self._write_annotation(path)
+        # 写盘失败（磁盘满/权限等）弹窗提示，不再继续刷新标签
+        try:
+            self._write_annotation(path)
+        except Exception as e:
+            showMessageBox(QMessageBox.Icon.Critical, f"保存失败: {e}")
+            return
         self._refresh_labels()
 
     def _write_annotation(self, json_path: str) -> None:
@@ -1403,7 +1426,8 @@ class MainWindow(QMainWindow):
     def _on_delete_image_and_annotation(self) -> None:
         """删除当前图片及其同名标注文件（Shift+Delete 键）。
 
-        删除前确认（可勾选"不再提醒"按操作类型记忆到渲染配置）；
+        删除前确认（可勾选"不再提醒"按操作类型会话级记忆，不落盘，
+        重启恢复默认提醒）；
         删除后同步更新文件列表并加载下一张（或清空画布），
         防止下标越界与 NoneType 错误。
         """
@@ -1572,8 +1596,26 @@ class MainWindow(QMainWindow):
         self._annotate_mode = mode
         self._annotate_error = ""
         dlg.canceled.connect(self._on_annotate_dialog_canceled)
+        # 暂停/恢复：经 BaseWorker 既有原语挂起/唤醒（run_callback 阻塞等待）
+        dlg.pause_requested.connect(
+            self._on_annotate_pause_requested if mode != "single"
+            else lambda paused: self.single_annotate_worker.pause()
+            if paused
+            else self.single_annotate_worker.resume()
+        )
         worker.start()
         dlg.exec()
+
+    def _on_annotate_pause_requested(self, paused: bool) -> None:
+        """批量/视频标注进度窗口的暂停/恢复请求（单张任务经 lambda 直连）。
+
+        Args:
+            paused: True 请求暂停，False 请求恢复。
+        """
+        if paused:
+            self.annotate_worker.pause()
+        else:
+            self.annotate_worker.resume()
 
     def _on_annotate_dialog_canceled(self) -> None:
         """用户中止标注：停止对应 worker（线程内逐批检查停止标志）。"""
@@ -1647,12 +1689,15 @@ class MainWindow(QMainWindow):
         if self._annotate_worker_busy():
             return
 
-        # 视频标注窗口（默认输入路径 = 当前工作目录；输出默认 Input/Output）
+        # 视频标注窗口（默认输入路径 = 当前工作目录；会话级记忆上次配置）
         config = VideoAnnotateDialog.get_config(
-            default_input=self._work_dir or "", parent=self
+            default_input=self._work_dir or "", parent=self,
+            last_cfg=self._last_video_cfg,
         )
         if config is None:
             return
+        # 会话级记忆本次配置（不落盘，仅当前运行期内再次打开时恢复）
+        self._last_video_cfg = dict(config)
 
         videos = config["videos"]
         output_dir = config["output_dir"]
@@ -1927,11 +1972,18 @@ class MainWindow(QMainWindow):
             if not self._current_image_path():
                 showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
                 return False
-            self._write_annotation(self._current_json_path())
+            # 写盘失败（磁盘满/权限等）弹窗提示并中止切换/关闭
+            try:
+                self._write_annotation(self._current_json_path())
+            except Exception as e:
+                showMessageBox(QMessageBox.Icon.Critical, f"保存失败: {e}")
+                return False
             self._refresh_labels()
             return True
         if clicked is discard_btn:
-            # 不保存：丢弃未保存修改并放行
+            # 不保存：丢弃未保存修改并放行（复位 _dirty，避免后续
+            # 加载路径如 _open_workdir → _load_image_by_index 重复弹确认框）
+            self._dirty = False
             return True
         return False
 
@@ -2102,7 +2154,8 @@ class MainWindow(QMainWindow):
     def _on_delete_objects(self, indices: list) -> None:
         """删除对象列表中选中的全部对象（支持多选批量删除）。
 
-        删除前确认（可勾选"不再提醒"按操作类型记忆到渲染配置）。
+        删除前确认（可勾选"不再提醒"按操作类型会话级记忆，不落盘，
+        重启恢复默认提醒）。
 
         Args:
             indices: 对象下标列表。
@@ -2545,6 +2598,21 @@ class MainWindow(QMainWindow):
         except UpdaterError as e:
             showMessageBox(QMessageBox.Icon.Critical, str(e))
 
+    def _terminate_worker_if_running(self, worker, timeout_ms: int = 1000) -> None:
+        """工作线程 wait 超时仍运行时强制 terminate 兜底（仅退出路径调用）。
+
+        网络阻塞的更新线程（HTTP 请求无停止检查点）等协作 stop 无法
+        及时退出；窗口即将销毁时残留线程随对象析构会引发闪退，故在
+        进程即将退出前 terminate 强杀（不影响正常运行路径）。
+
+        Args:
+            worker: 目标工作线程（BaseWorker/QThread 子类）。
+            timeout_ms: terminate 后等待线程结束的毫秒数。
+        """
+        if worker.isRunning():
+            worker.terminate()
+            worker.wait(timeout_ms)
+
     # -------------------------- 关闭处理 --------------------------
     def closeEvent(self, event) -> None:
         """关闭窗口时确认未保存修改、落盘渲染配置并停止运行中的 worker。"""
@@ -2582,6 +2650,17 @@ class MainWindow(QMainWindow):
         # 更新线程停止请求后短等待（网络请求阻塞时由超时自然结束，不阻塞退出）
         self._update_check_worker.wait(1000)
         self._update_download_worker.wait(1000)
+        # 兜底：协作停止超时仍运行的线程强制 terminate（仅退出路径），
+        # 防止网络阻塞等场景下线程随窗口销毁引发闪退
+        for worker in (
+            self.annotate_worker,
+            self.convert_worker,
+            self.label_scan_worker,
+            self.single_annotate_worker,
+            self._update_check_worker,
+            self._update_download_worker,
+        ):
+            self._terminate_worker_if_running(worker)
         event.accept()
         # 在线更新收尾：主窗口确认关闭后拉起静默安装器（必须在进程
         # 退出前启动，故放在 event.accept 之后、返回事件循环之前）

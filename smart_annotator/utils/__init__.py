@@ -8,8 +8,11 @@
     - LOGGING_NAME: 日志记录器名称（GUI 推送处理器按此挂接）
     - ROOT, resource_path: 项目根目录与资源路径解析
     - COLORS: 类别可视化调色板（numpy）
-    - 文件扫描: checkAnnotationFiles, getImageFilesInDir, getVideoFilesInDir 等
-    - 标注工具: yolo_to_labelme, generate_labelme_file, export, split_data 等
+    - 文件扫描: getJsonFilesInDir, getTxtFilesInDir, getImageFilesInDir,
+      getVideoFilesInDir, getModelClasses, getModelTaskType,
+      getOcrModelRole, resolve_dataset_dirs, scan_dataset_files 等
+    - 标注工具: is_point_in_box, split_data, create_yaml, export,
+      yolo_to_labelme, generate_labelme_file 等转换工具
 
 注意：Qt 日志处理器（QtLogHandler）位于 qt_logger.py，需 PySide6，
 仅 GUI 使用时显式导入，避免算法层强制依赖 PySide6。
@@ -22,6 +25,9 @@
 更新: 2026-09-08 冗余清理：移除死函数 checkAnnotationFiles/
       is_rect_inside/detect_anomalies/rotate_90_image 的导入与 __all__
       导出（函数本体已删，全库零引用）
+更新: 2026-09-11 清理死代码：移除 classMapping/move_files 的导入与
+      __all__ 导出（函数本体已删，全库零引用），docstring 导出清单
+      同步为现存活代码
 """
 
 import logging
@@ -35,7 +41,6 @@ from .files import (
     getTxtFilesInDir,
     getImageFilesInDir,
     getVideoFilesInDir,
-    move_files,
     getModelClasses,
     getModelTaskType,
     getOcrModelRole,
@@ -45,7 +50,6 @@ from .files import (
 )
 from .tool import (
     is_point_in_box,
-    classMapping,
     split_data,
     create_yaml,
     export,
@@ -111,7 +115,6 @@ __all__ = [
     "getTxtFilesInDir",
     "getImageFilesInDir",
     "getVideoFilesInDir",
-    "move_files",
     "getModelClasses",
     "getModelTaskType",
     "getOcrModelRole",
@@ -119,7 +122,6 @@ __all__ = [
     "resolve_dataset_dirs",
     "scan_dataset_files",
     "is_point_in_box",
-    "classMapping",
     "split_data",
     "create_yaml",
     "export",

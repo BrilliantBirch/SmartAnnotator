@@ -22,11 +22,12 @@
       （PPOCR2JsonConverter 导出产物），标注目录回退输入根目录（结构
       描述带 PPOCR_STRUCTURE_MARK 标记供分析器识别），修复 OCR 数据集
       一键分析"未检测到任何标注文件"
+更新: 2026-09-11 清理死代码：删除全库零引用的 move_files 函数及仅其
+      使用的 shutil import（tool.py:split_data 内同名内嵌函数无关）
 """
 
 import glob
 import os
-import shutil
 from pathlib import Path
 
 
@@ -187,22 +188,6 @@ def scan_dataset_files(input_dir) -> dict:
         "txt_files": getTxtFilesInDir(str(anno_dir)) if anno_dir else [],
         "image_files": getImageFilesInDir(str(image_dir)) if image_dir else [],
     }
-
-
-def move_files(filelist, splitname, output):
-    """移动文件到 split 目录（保留 images/labels 结构）。"""
-    for file_name in filelist:
-        try:
-            img_src = file_name
-            lbl_src = os.path.splitext(file_name)[0] + ".txt"
-            lbl_src = lbl_src.replace("images", "labels")
-            file_basename = os.path.basename(file_name)
-            img_dst = os.path.join(output, splitname, "images", file_basename)
-            lbl_dst = os.path.join(output, splitname, "labels", os.path.basename(lbl_src))
-            shutil.copy(img_src, img_dst)
-            shutil.copy(lbl_src, lbl_dst)
-        except Exception as ex:
-            raise RuntimeError(f"移动文件{file_name}时失败：{str(ex)}")
 
 
 def _normalize_names(mapping) -> dict:

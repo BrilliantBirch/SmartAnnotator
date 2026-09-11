@@ -15,6 +15,10 @@
        （帧级进度 + 可中断，中止时已生成帧保留、剩余帧停止处理）
     8. 2026-09-10 注册 OCR 模式（OcrPredictor/OcrFormatter），批量/单张
        输出通道兼容 OCR 直出 labelme 形状；视频标注增加断点续传跳过
+    9. 2026-09-11 注释修正：视频断点续传注释补充局限说明（空推理结果帧
+       不写 JSON，重跑会重复推理该帧，结果一致仅性能损耗）
+    10. 2026-09-11 修复坏图整批失败：批量链路解码失败（返回 None）的图片
+       跳过并告警（不入推理批与 imgInfo，保证两者枚举对齐）
 """
 
 import cv2
@@ -41,7 +45,7 @@ def _load_image(image_path: Path) -> np.ndarray:
         image_path: 图片路径。
 
     Returns:
-        解码后的 BGR 图像数组。
+        解码后的 BGR 图像数组；解码失败（损坏/非图片文件）返回 None。
     """
     image_data = np.fromfile(image_path, dtype=np.uint8)
     return cv2.imdecode(image_data, cv2.IMREAD_COLOR)
@@ -208,7 +212,9 @@ class Annotator:
                         ):
                             return False
                         # 断点续传：帧图对应标注 JSON 已存在时跳过该帧标注
-                        # （对所有任务模式生效），中断重跑只补标缺失帧
+                        # （对所有任务模式生效），中断重跑只补标缺失帧。
+                        # 局限：空推理结果帧不写 JSON，重跑时会重复推理
+                        # 该帧（结果一致，仅性能损耗）
                         pending_paths = [
                             p
                             for p in annotation_pathList
@@ -328,12 +334,22 @@ class Annotator:
                 img = future.result()
                 result_map[path] = img
 
-            # 按原始顺序重构列表
+            # 按原始顺序重构列表（解码失败的坏图跳过：不入推理批也不入
+            # imgInfo，保证 predictions 与 imgInfo 枚举对齐，单图失败不
+            # 再拖垮整批）
             for path in image_pathList:
                 img = result_map[path]
+                if img is None:
+                    LOGGER.warning(f"图片解码失败，已跳过: {path}")
+                    continue
                 img_h, img_w = img.shape[:2]
                 images.append(img)
                 imgInfo.append((path, img_h, img_w))
+
+        # 整批解码失败时直接返回（空批次不送推理）
+        if not images:
+            LOGGER.warning(f"本批图片全部解码失败，已跳过: {[p.name for p in image_pathList]}")
+            return
 
         predictions = self.model.predict(images)
         if not predictions:

@@ -56,8 +56,15 @@ det/rec 标注。
       YOLO 数据集目录结构"复选框（PPOCR 结构无划分，隐藏时同步取消
       勾选防状态残留），显隐统一收敛到 _on_task_changed（方向+任务双
       条件）；相关注释语义同步清理
+更新: 2026-09-11 修复 apply_config 回填顺序绕过防残留：chk_export 勾选
+      在 _on_task_changed 之后写入，末尾统一重跑任务联动；direction
+      参数改为必填（移除 None 默认值，与构造校验一致，全库调用点
+      app.py 两处均已显式传参）
+更新: 2026-09-11 新增暂停/恢复：基础卡新增"暂停"按钮（"暂停"↔"恢复"
+      文案切换），经 BaseWorker 既有 pause/resume 原语挂起/唤醒任务
+      （run_callback 阻塞等待，当前文件处理完成后挂起，不中断）；
+      任务启动复位、结束/中止后按钮复位禁用
 """
-
 import json
 from pathlib import Path
 
@@ -105,14 +112,14 @@ class ConvertPage(BasePage):
     task_finished = Signal()
     import_finished = Signal(str)
 
-    def __init__(self, parent=None, direction: str = None,
+    def __init__(self, parent=None, *, direction: str,
                  work_path: str = "", stats: dict | None = None):
         """初始化格式转换页（按方向构建，构造后方向不可更改）。
 
         Args:
             parent: 父控件。
-            direction: 转换方向（必填）："export"=导出 JSON→YOLO /
-                "import"=导入 YOLO→JSON；非法值抛 ValueError。
+            direction: 转换方向（必填关键字参数，无默认值）："export"=导出
+                JSON→YOLO / "import"=导入 YOLO→JSON；非法值抛 ValueError。
             work_path: 导出方向的只读工作路径（主窗口传入）。
             stats: 导出方向的统计预填数据，键为 "labels"（类别名列表）、
                 "keypoints"（关键点名列表）、"shape_counts"（shape 分组
@@ -207,17 +214,22 @@ class ConvertPage(BasePage):
         self.output_field = PathField(browse_type="dir", placeholder="选择输出目录")
         self.basic_card.addWidget(self._labeled("输出目录", self.output_field))
 
-        # 文件计数 + 开始/停止
+        # 文件计数 + 开始/暂停/停止
         action_row = QHBoxLayout()
         self.count_label = QLabel("未选择目录")
         self.count_label.setStyleSheet("color: #71717a;")
         action_row.addWidget(self.count_label)
         action_row.addStretch()
         self.btn_start = PrimaryButton("开始转换")
+        self.btn_pause = SecondaryButton("暂停")
+        self.btn_pause.setEnabled(False)
+        self._paused = False  # 暂停状态（按钮文案切换依据）
         self.btn_stop = SecondaryButton("停止")
         self.btn_stop.setEnabled(False)
         self.btn_start.clicked.connect(self._on_start)
+        self.btn_pause.clicked.connect(self._on_pause)
         self.btn_stop.clicked.connect(self._on_stop)
+        action_row.addWidget(self.btn_pause)
         action_row.addWidget(self.btn_stop)
         action_row.addWidget(self.btn_start)
         self.basic_card.addLayout(action_row)
@@ -859,6 +871,10 @@ class ConvertPage(BasePage):
         self.spin_test.set_value(cc.test_ratio)
         self.chk_visualize.setChecked(cc.visualize)
         self.chk_export.setChecked(cc.export)
+        # 末尾重跑任务联动：chk_export 的勾选在 _on_task_changed 之后写入，
+        # OCR/导入方向下显隐规则（隐藏时取消勾选防残留）会被绕过，故统一
+        # 复位一次（非 OCR 导出方向时勾选状态原样保留，无副作用）
+        self._on_task_changed()
 
     # -------------------------- 配置导入导出 --------------------------
     def _on_import_config(self) -> None:
@@ -1000,9 +1016,29 @@ class ConvertPage(BasePage):
         self.log_edit.clear()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        # 暂停按钮复位（新任务从运行态开始）
+        self._paused = False
+        self.btn_pause.setText("暂停")
+        self.btn_pause.setEnabled(True)
         self.task_started.emit()
         self._task_success = True  # 默认视为成功，出错时在 _on_error 置 False
         self._worker.start()
+
+    def _on_pause(self) -> None:
+        """暂停/恢复转换任务（切换文案，经 BaseWorker 原语挂起/唤醒）。
+
+        暂停经 BaseWorker.run_callback 的 QWaitCondition 阻塞实现——
+        当前文件处理完成后挂起，任务不中断；恢复后从断点继续。
+        """
+        if self._worker is None:
+            return
+        self._paused = not self._paused
+        if self._paused:
+            self._worker.pause()
+            self.btn_pause.setText("恢复")
+        else:
+            self._worker.resume()
+            self.btn_pause.setText("暂停")
 
     def _on_stop(self) -> None:
         """停止转换任务。"""
@@ -1042,6 +1078,10 @@ class ConvertPage(BasePage):
         """
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        # 暂停按钮复位（任务结束/中止后不可再恢复）
+        self._paused = False
+        self.btn_pause.setText("暂停")
+        self.btn_pause.setEnabled(False)
         # 导入方向任务成功完成：通知外部（输出目录为界面当前输出路径）
         if self._direction == "import" and self._task_success:
             self.import_finished.emit(self.output_field.path())

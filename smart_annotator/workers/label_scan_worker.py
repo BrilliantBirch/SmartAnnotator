@@ -21,6 +21,8 @@
 更新: 2026-09-10 labels_ready 扩展五参数（新增 text_shape_count：box 类
       形状中 description 非空的个数，OCR 推断文本证据），随统计缓存传递
       至导出对话框任务类型预填
+更新: 2026-09-11 注释修正：run() docstring 补全 labels_ready 第五参数
+      说明（box 类形状 description 非空个数）
 """
 
 from PySide6.QtCore import Signal, QMutexLocker
@@ -59,7 +61,8 @@ class LabelScanWorker(BaseWorker):
         """线程主逻辑：批量解析 JSON 并汇总标签/关键点/实例计数/shape 分组计数（可中断、带进度）。
 
         扫描完成后经 labels_ready 发射 (标签列表, 关键点列表, [标签, 实例个数]
-        二元组列表（按个数降序）, shape 分组计数字典)；进度同时上报
+        二元组列表（按个数降序）, shape 分组计数字典, box 类形状中
+        description 非空的个数（OCR 推断证据）)；进度同时上报
         progress_updated（0-1 浮点，驱动进度条）与 progress_desc（状态栏文字）。
         """
         try:

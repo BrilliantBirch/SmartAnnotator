@@ -3,7 +3,8 @@
 拖拽排序列表控件 - DragDropListWidget
 
 支持条目内部拖拽排序的 QListWidget 子类：
-    - 拖拽调整顺序后发射 order_changed 信号
+    - 拖拽调整顺序后自动刷新行首索引（顺序经页面 collect_config
+      按行号重建，无需额外信号）
     - 行首索引标签自动刷新（行号即转换后的类别索引）
 
 注意：必须重写 dropEvent 手动重排——QListWidget 默认的 InternalMove
@@ -11,20 +12,15 @@
 
 作者: BaiBinnan
 创建日期: 2026-09-02
+更新: 2026-09-11 清理死代码：删除全库零连接的 order_changed 信号
+      （类别顺序由页面 collect_config 按行号重建）
 """
 
-from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QListWidget
 
 
 class DragDropListWidget(QListWidget):
-    """支持内部拖拽排序的列表控件（保留 itemWidget 关联）。
-
-    Signals:
-        order_changed: 拖拽排序完成后发射（顺序已变化）。
-    """
-
-    order_changed = Signal()
+    """支持内部拖拽排序的列表控件（保留 itemWidget 关联）。"""
 
     def __init__(self, parent=None):
         """初始化拖拽模式与行结构变化监听。"""
@@ -89,7 +85,6 @@ class DragDropListWidget(QListWidget):
 
         event.accept()  # 标记事件已处理，阻止默认删除逻辑
         self.refresh_indices()
-        self.order_changed.emit()
 
     def refresh_indices(self) -> None:
         """刷新所有行的索引前缀标签。

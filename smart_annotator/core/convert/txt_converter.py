@@ -19,6 +19,10 @@ labelme 文件转到 txt 格式的标签
       （+ visualize/），自带 run 编排（不走基类 YOLO 行语义），裁剪
       复用 core.annotate.vision.ocr.get_rotate_crop_image，可视化改用
       PIL 中文多边形描边与文本绘制
+更新: 2026-09-11 注释修正：PPOCRConverter 类 docstring 输出结构中
+      rec_gt.txt/rec_images/ 标注生成条件（ocr_gen_rec=True，默认开启）
+更新: 2026-09-11 修复 rec_gt 行错位：transcription 含制表符/换行符时
+      写行前统一替换为空格
 """
 
 from smart_annotator.config import RANDOM_SEED, ConvertConfig, MODE
@@ -30,7 +34,7 @@ from smart_annotator.core.annotate.vision.ocr import (
 )
 
 
-from typing import List, Tuple, Set
+from typing import List, Optional, Tuple, Set
 from pathlib import Path
 import random
 import json
@@ -838,8 +842,8 @@ class PPOCRConverter(TxtConverter):
     输出目录结构（不走基类 run 的 YOLO 行语义，自带编排）：
         {output}/images/        复制源图（文件名主干匹配基类 run 的 path/imagePath 链路）
         {output}/det_gt.txt     检测标注：每行 {图片相对路径}\t{JSON数组}
-        {output}/rec_gt.txt     识别标注：每行 {裁剪图相对路径}\t{transcription}
-        {output}/rec_images/    裁剪文本行图（{stem}_{序号}.jpg）
+        {output}/rec_gt.txt     识别标注：每行 {裁剪图相对路径}\t{transcription}（ocr_gen_rec=True 时生成，默认开启）
+        {output}/rec_images/    裁剪文本行图（{stem}_{序号}.jpg）（ocr_gen_rec=True 时生成，默认开启）
         {output}/dict.txt       字符字典：字符首次出现顺序去重 + use_space_char 尾追加空格行
         {output}/visualize/     可视化结果（config.visualize 时）
 
@@ -936,7 +940,7 @@ class PPOCRConverter(TxtConverter):
         return ppocr_annotations
 
     @staticmethod
-    def _min_area_quad(points) -> List[List[int]]:
+    def _min_area_quad(points) -> Optional[List[List[int]]]:
         """任意多边形点集归一为 左上/右上/右下/左下 顺序的四点框。
 
         复用 DBPostProcess._get_mini_boxes（最小外接四边形 + 顶点排序），
@@ -1090,7 +1094,12 @@ class PPOCRConverter(TxtConverter):
                             else:
                                 LOGGER.warning(f"保存裁剪图失败 {rec_dst}")
                                 continue
-                            rec_lines.append(f"rec_images/{rec_name}\t{text}")
+                            # 转义 transcription 中的制表/换行符（rec_gt 行
+                            # 以 \t 分列、以换行断行，原样写入会导致行错位）
+                            safe_text = str(text).replace("\t", " ").replace(
+                                "\n", " "
+                            ).replace("\r", " ")
+                            rec_lines.append(f"rec_images/{rec_name}\t{safe_text}")
                             # 字典字符累积（首次出现顺序去重）
                             for ch in text:
                                 if ch not in seen_chars:
@@ -1115,9 +1124,10 @@ class PPOCRConverter(TxtConverter):
             if self.gen_rec:
                 with open(self.output / "rec_gt.txt", "w", encoding="utf-8") as f:
                     f.write("\n".join(rec_lines))
-            # 写 dict.txt（字符首次出现顺序去重 + use_space_char 尾追加空格行）
+            # 写 dict.txt（字符首次出现顺序去重 + use_space_char 尾追加空格行；
+            # transcription 已含空格字符时不再重复追加，保证字典字符表唯一）
             dict_lines = list(dict_chars)
-            if self.use_space_char:
+            if self.use_space_char and " " not in seen_chars:
                 dict_lines.append(" ")
             with open(self.output / "dict.txt", "w", encoding="utf-8") as f:
                 f.write("\n".join(dict_lines))

@@ -11,6 +11,8 @@ LOGGER 通过延迟导入避免循环依赖。
       detect_anomalies/rotate_90_image（含"图片处理"region 与 PIL 局部
       导入）与未使用 import os；yolo_to_labelme 转换链为自动标注输出
       与导出转换的活代码，保留
+更新: 2026-09-11 清理死代码：删除零引用的 classMapping 函数
+      （create_yaml/export 等同名形参与其无关，保留）
 """
 
 from pathlib import Path
@@ -39,22 +41,6 @@ def is_point_in_box(point, box):
     y1, y2 = min(y1, y2), max(y1, y2)
     return x1 <= x <= x2 and y1 <= y <= y2
 # endregion 标注检查
-
-
-def classMapping(classes):
-    """读取类别文件，返回 {class_name: index} 字典。
-
-    Args:
-        classes: 类别文件路径。
-
-    Returns:
-        dict: 类别名称到索引的映射。
-    """
-    class_dict = dict()
-    with open(classes, mode="r") as c:
-        for index, line in enumerate(c):
-            class_dict[line.strip()] = index
-    return class_dict
 
 
 # region 数据集分割与 yaml 文件生成

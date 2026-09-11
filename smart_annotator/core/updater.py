@@ -16,6 +16,8 @@
 作者: BaiBinnan
 创建日期: 2026-09-09
 更新: 2026-09-09 修正仓库地址为实际发布仓库 vai_-e_-smart-annotator
+更新: 2026-09-11 修复取消下载残留：取消分支先删除 .part 临时文件再中止
+      （原实现 raise 不在异常捕获范围，临时文件残留）
 """
 
 import json
@@ -160,8 +162,10 @@ def download_file(
             total = int(response.headers.get("Content-Length", 0))
             done = 0
             while True:
-                # 每块写入前检查中断标志
+                # 每块写入前检查中断标志（取消时先删除残留的临时文件再
+                # 中止——UpdaterError 不在下方 except 捕获范围，须就地清理）
                 if stop_check is not None and stop_check():
+                    temp_path.unlink(missing_ok=True)
                     raise UpdaterError("下载已取消")
                 chunk = response.read(DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
