@@ -180,6 +180,10 @@
       标注覆盖与空结果清空画布两处缺陷）；新增 ocr_rec_only 快捷键
       动作（Ctrl+R，默认键，接入自定义快捷键体系持久化）；工具栏新增
       "仅识别"checkable 按钮（仅 OCR 任务显示，与配置复选框双向同步）
+更新: 2026-09-11 菜单快捷键提示补全：标注当前图片/标注所有图片/清空
+      标注三动作由 QShortcut 迁移为 QAction setShortcut（无焦点路由
+      需求），菜单项原生右对齐显示快捷键且改键后自动同步，消除菜单
+      项不显示绑定键的问题
 """
 
 import json
@@ -703,12 +707,18 @@ class MainWindow(QMainWindow):
     def _apply_shortcuts(self) -> None:
         """将当前快捷键配置集中应用到 QAction 与 QShortcut。
 
-        QAction 类动作直接 setShortcut；QShortcut 类动作懒创建并缓存于
-        _shortcut_objs（重复调用复用实例 setKey，天然幂等不叠加）。
-        delete 动作固定走 QShortcut 焦点路由，绝不给 act_delete.setShortcut，
-        防止同键经 QAction 与 QShortcut 双触发两次确认框。
+        QAction 类动作直接 setShortcut（菜单项原生右对齐显示快捷键，
+        改键后自动同步）；QShortcut 类动作懒创建并缓存于 _shortcut_objs
+        （重复调用复用实例 setKey，天然幂等不叠加）。delete 动作固定走
+        QShortcut 焦点路由，绝不给 act_delete.setShortcut，防止同键经
+        QAction 与 QShortcut 双触发两次确认框。
         """
         # ===== QAction 类动作映射（action_id -> QAction 实例） =====
+        # 标注三动作（annotate_single/annotate_all/clear_shapes）同样走
+        # QAction：菜单项原生右对齐显示快捷键（改键后自动同步），且槽内
+        # 自带防呆无焦点路由需求；delete 仍固定走 QShortcut 焦点路由，
+        # 绝不给 act_delete.setShortcut，防止同键经 QAction 与 QShortcut
+        # 双触发两次确认框
         qaction_map = {
             "open": self.act_open,
             "open_file": self.act_open_file,
@@ -723,19 +733,19 @@ class MainWindow(QMainWindow):
             "tool_point": self._tool_actions[TOOL_POINT],
             "tool_polygon": self._tool_actions[TOOL_POLYGON],
             "fit_window": self.act_fit_window,
+            "annotate_single": self.act_annotate_single,
+            "annotate_all": self.act_annotate_all,
+            "clear_shapes": self.act_clear,
         }
         # ===== QShortcut 类动作映射（action_id -> 触发槽函数） =====
         # context 保持默认 WindowShortcut，与原直连实现行为一致；
-        # 自动标注三动作复用菜单槽函数（槽内自带防呆/确认框，全模式安全）
+        # 仅保留无菜单项/需焦点路由的画布与浏览动作
         qshortcut_slots = {
             "copy": self.canvas.copy_selected,
             "paste": self.canvas.paste_clipboard,
             "delete": self._on_delete_shortcut,
             "prev_image": self._prev_image,
             "next_image": self._next_image,
-            "annotate_single": self._on_annotate_single,
-            "annotate_all": self._on_annotate_all,
-            "clear_shapes": self._on_clear,
             "ocr_rec_only": self._on_ocr_rec_only,
         }
         # 应用 QAction 类快捷键（非法键序列已在 _resolve_shortcut 中回退）
