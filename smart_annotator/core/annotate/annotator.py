@@ -17,13 +17,16 @@
        输出通道兼容 OCR 直出 labelme 形状；视频标注增加断点续传跳过
     9. 2026-09-11 注释修正：视频断点续传注释补充局限说明（空推理结果帧
        不写 JSON，重跑会重复推理该帧，结果一致仅性能损耗）
-    10. 2026-09-11 修复坏图整批失败：批量链路解码失败（返回 None）的图片
-       跳过并告警（不入推理批与 imgInfo，保证两者枚举对齐）
+    10. 2026-09-11 修复视频中止标注 GeneratorExit：批量/视频两分支的标注
+        生成器改经 contextlib.closing 显式确定性关闭（中止 return 时受控
+        抛出而非依赖 GC 随机触发；关闭链传播至帧迭代器 finally 释放
+        VideoCapture），视频中止补记"已抽取帧数（保留）"日志
 """
 
 import cv2
 import numpy as np
 import shutil
+from contextlib import closing
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -152,25 +155,26 @@ class Annotator:
         processed_tasks = 0
 
         if image_files:
-            annotation_gen = annotation_generator(image_files, self.model.batch)
             total_images = len(image_files)
-
-            for idx, annotation_pathList in enumerate(annotation_gen):
-                try:
-                    progress = processed_tasks / total_tasks if total_tasks > 0 else 0
-                    # 进度描述附带本批文件名（供进度窗口日志展示）
-                    names = "、".join(Path(p).name for p in annotation_pathList[:2])
-                    suffix = f" 等{len(annotation_pathList)}张" if len(annotation_pathList) > 2 else ""
-                    if not callback(
-                        f"标注图片: {names}{suffix}",
-                        progress,
-                    ):
-                        return False
-                    self._label(annotation_pathList)
-                    processed_tasks += len(annotation_pathList)
-                except Exception as e:
-                    LOGGER.error(f"处理第{idx}批图片数据时出错: {e}")
-                    success = False
+            # closing 确保中止（return False）时生成器在受控点确定性关闭：
+            # 否则依赖 GC 随机触发 GeneratorExit，调试器会捕获为未处理异常
+            with closing(annotation_generator(image_files, self.model.batch)) as annotation_gen:
+                for idx, annotation_pathList in enumerate(annotation_gen):
+                    try:
+                        progress = processed_tasks / total_tasks if total_tasks > 0 else 0
+                        # 进度描述附带本批文件名（供进度窗口日志展示）
+                        names = "、".join(Path(p).name for p in annotation_pathList[:2])
+                        suffix = f" 等{len(annotation_pathList)}张" if len(annotation_pathList) > 2 else ""
+                        if not callback(
+                            f"标注图片: {names}{suffix}",
+                            progress,
+                        ):
+                            return False
+                        self._label(annotation_pathList)
+                        processed_tasks += len(annotation_pathList)
+                    except Exception as e:
+                        LOGGER.error(f"处理第{idx}批图片数据时出错: {e}")
+                        success = False
 
         if video_files:
             video_processor = VideoProcessor(
@@ -197,35 +201,42 @@ class Annotator:
                     frame_iter = video_processor.extract_frames_iter(
                         Path(video_path), self.output
                     )
-                    annotation_gen = annotation_generator(
-                        frame_iter, self.model.batch
-                    )
                     labeled_frames = 0
-                    for idx, annotation_pathList in enumerate(annotation_gen):
-                        # 帧级进度与中断检查（中止时已生成帧保留）
-                        labeled_frames += len(annotation_pathList)
-                        inner = min(labeled_frames / est_frames, 1.0)
-                        progress = (processed_tasks + inner) / total_tasks if total_tasks > 0 else 0
-                        if not callback(
-                            f"标注视频帧: {Path(video_path).name} 已抽取 {video_processor.extracted_count} 帧",
-                            progress,
-                        ):
-                            return False
-                        # 断点续传：帧图对应标注 JSON 已存在时跳过该帧标注
-                        # （对所有任务模式生效），中断重跑只补标缺失帧。
-                        # 局限：空推理结果帧不写 JSON，重跑时会重复推理
-                        # 该帧（结果一致，仅性能损耗）
-                        pending_paths = [
-                            p
-                            for p in annotation_pathList
-                            if not (self.output / f"{p.stem}.json").exists()
-                        ]
-                        if not pending_paths:
-                            continue
-                        try:
-                            self._label(pending_paths)
-                        except Exception as e:
-                            LOGGER.error(f"处理视频帧时出错: {e}")
+                    # closing 链式确定性关闭：annotation_gen 关闭时
+                    # GeneratorExit 传播至 frame_iter 的 finally
+                    # （cap.release()），视频句柄不再依赖 GC 释放
+                    with closing(annotation_generator(
+                        frame_iter, self.model.batch
+                    )) as annotation_gen:
+                        for idx, annotation_pathList in enumerate(annotation_gen):
+                            # 帧级进度与中断检查（中止时已生成帧保留）
+                            labeled_frames += len(annotation_pathList)
+                            inner = min(labeled_frames / est_frames, 1.0)
+                            progress = (processed_tasks + inner) / total_tasks if total_tasks > 0 else 0
+                            if not callback(
+                                f"标注视频帧: {Path(video_path).name} 已抽取 {video_processor.extracted_count} 帧",
+                                progress,
+                            ):
+                                LOGGER.info(
+                                    f"视频标注中止: {Path(video_path).name}，"
+                                    f"已抽取 {video_processor.extracted_count} 帧（保留）"
+                                )
+                                return False
+                            # 断点续传：帧图对应标注 JSON 已存在时跳过该帧标注
+                            # （对所有任务模式生效），中断重跑只补标缺失帧。
+                            # 局限：空推理结果帧不写 JSON，重跑时会重复推理
+                            # 该帧（结果一致，仅性能损耗）
+                            pending_paths = [
+                                p
+                                for p in annotation_pathList
+                                if not (self.output / f"{p.stem}.json").exists()
+                            ]
+                            if not pending_paths:
+                                continue
+                            try:
+                                self._label(pending_paths)
+                            except Exception as e:
+                                LOGGER.error(f"处理视频帧时出错: {e}")
 
                     total_video_frames += video_processor.extracted_count
                     total_skipped_frames += video_processor.skipped_count
