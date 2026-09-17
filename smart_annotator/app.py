@@ -14,12 +14,14 @@
 标准菜单栏（文件/编辑/视图/工具/统计/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
       另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
-    - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、删除选中标注、
-      清空标注、Delete 按焦点上下文删除、删除图片及标注 Shift+Delete
-    - 视图：渲染开关与档位、对象面板开关与三分区显隐
+    - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、复制选中标注
+      Ctrl+C、粘贴标注 Ctrl+V、删除选中标注、清空标注、Delete 按焦点
+      上下文删除、删除图片及标注 Shift+Delete
+    - 视图：渲染开关与档位、三分区显隐、适应窗口 Ctrl+0、
+      上一张图片 A、下一张图片 D
     - 工具：标注工具（编辑/矩形/点/多边形）、加载模型、自动标注单张/
-      全部/视频、导出/导入标注（自动标注入口唯一收敛于此菜单）
-    - 图片浏览：A 上一张、D 下一张
+      全部/视频、OCR 仅识别（当前图片）Ctrl+R、导出/导入标注
+      （自动标注入口唯一收敛于此菜单）
 
 标注数据完全复用 labelme JSON（core/labelme_io.py）。目录校验、后台标签
 扫描（修复打开目录卡死）、绘制完成属性弹窗、类别颜色一致性均在此实现。
@@ -184,6 +186,12 @@
       标注三动作由 QShortcut 迁移为 QAction setShortcut（无焦点路由
       需求），菜单项原生右对齐显示快捷键且改键后自动同步，消除菜单
       项不显示绑定键的问题
+更新: 2026-09-17 菜单入口补全（第二批）：复制选中标注/粘贴标注/上一张
+      图片/下一张图片/OCR 仅识别五个快捷键动作原仅挂 QShortcut、菜单栏
+      无对应入口，现迁移为 QAction（编辑菜单新增复制/粘贴、视图菜单新增
+      上一张/下一张图片、工具菜单新增 OCR 仅识别（当前图片）），菜单项
+      原生右对齐显示绑定键且改键后自动同步；qshortcut_slots 仅剩 delete
+      （唯一保留焦点路由的动作）
 """
 
 import json
@@ -462,6 +470,17 @@ class MainWindow(QMainWindow):
         menu_edit.addAction(self.act_redo)
 
         menu_edit.addSeparator()
+        # 复制/粘贴选中标注（内部剪贴板；菜单构建早于画布创建，
+        # 触发时经 lambda 延迟解析 canvas）
+        self.act_copy = QAction("复制选中标注", self)
+        self.act_copy.triggered.connect(lambda: self.canvas.copy_selected())
+        menu_edit.addAction(self.act_copy)
+
+        self.act_paste = QAction("粘贴标注", self)
+        self.act_paste.triggered.connect(lambda: self.canvas.paste_clipboard())
+        menu_edit.addAction(self.act_paste)
+
+        menu_edit.addSeparator()
         self.act_delete = QAction("删除选中标注", self)
         self.act_delete.triggered.connect(self._on_delete)
         menu_edit.addAction(self.act_delete)
@@ -547,6 +566,17 @@ class MainWindow(QMainWindow):
         self.act_fit_window.triggered.connect(lambda: self.canvas.fit_to_window())
         menu_view.addAction(self.act_fit_window)
 
+        # 图片浏览：上一张 / 下一张（到首/末张时静默不切换，槽内自带
+        # 下标边界防呆；快捷键 A / D 经 _apply_shortcuts 统一应用）
+        menu_view.addSeparator()
+        self.act_prev_image = QAction("上一张图片", self)
+        self.act_prev_image.triggered.connect(self._prev_image)
+        menu_view.addAction(self.act_prev_image)
+
+        self.act_next_image = QAction("下一张图片", self)
+        self.act_next_image.triggered.connect(self._next_image)
+        menu_view.addAction(self.act_next_image)
+
         # ===== 工具 =====
         menu_tool = menu_bar.addMenu("工具(&T)")
 
@@ -571,6 +601,12 @@ class MainWindow(QMainWindow):
         self.act_annotate_single = QAction("标注当前图片", self)
         self.act_annotate_single.triggered.connect(self._on_annotate_single)
         menu_tool.addAction(self.act_annotate_single)
+
+        # OCR 仅识别（Ctrl+R）：对当前画布已标注区域执行一次文本识别，
+        # 强制按仅识别语义执行（与"仅识别"开关无关，非 OCR 任务点击时提示）
+        self.act_ocr_rec_only = QAction("OCR 仅识别（当前图片）", self)
+        self.act_ocr_rec_only.triggered.connect(self._on_ocr_rec_only)
+        menu_tool.addAction(self.act_ocr_rec_only)
 
         self.act_annotate_all = QAction("标注所有图片", self)
         self.act_annotate_all.triggered.connect(self._on_annotate_all)
@@ -714,11 +750,10 @@ class MainWindow(QMainWindow):
         QAction 与 QShortcut 双触发两次确认框。
         """
         # ===== QAction 类动作映射（action_id -> QAction 实例） =====
-        # 标注三动作（annotate_single/annotate_all/clear_shapes）同样走
-        # QAction：菜单项原生右对齐显示快捷键（改键后自动同步），且槽内
-        # 自带防呆无焦点路由需求；delete 仍固定走 QShortcut 焦点路由，
-        # 绝不给 act_delete.setShortcut，防止同键经 QAction 与 QShortcut
-        # 双触发两次确认框
+        # 全部有菜单项的动作用 QAction：菜单项原生右对齐显示快捷键
+        # （改键后自动同步），槽内均无焦点路由需求；delete 固定走
+        # QShortcut 焦点路由，绝不给 act_delete.setShortcut，防止同键经
+        # QAction 与 QShortcut 双触发两次确认框
         qaction_map = {
             "open": self.act_open,
             "open_file": self.act_open_file,
@@ -727,26 +762,27 @@ class MainWindow(QMainWindow):
             "edit_mode": self.act_edit_mode,
             "undo": self.act_undo,
             "redo": self.act_redo,
+            "copy": self.act_copy,
+            "paste": self.act_paste,
             "delete_image": self.act_delete_image,
             "tool_select": self._tool_actions[TOOL_SELECT],
             "tool_rectangle": self._tool_actions[TOOL_RECTANGLE],
             "tool_point": self._tool_actions[TOOL_POINT],
             "tool_polygon": self._tool_actions[TOOL_POLYGON],
             "fit_window": self.act_fit_window,
+            "prev_image": self.act_prev_image,
+            "next_image": self.act_next_image,
             "annotate_single": self.act_annotate_single,
             "annotate_all": self.act_annotate_all,
+            "ocr_rec_only": self.act_ocr_rec_only,
             "clear_shapes": self.act_clear,
         }
         # ===== QShortcut 类动作映射（action_id -> 触发槽函数） =====
         # context 保持默认 WindowShortcut，与原直连实现行为一致；
-        # 仅保留无菜单项/需焦点路由的画布与浏览动作
+        # 仅保留 delete：需按当前焦点控件路由删除业务（画布/对象列表/
+        # 文件列表三分支），QAction 无法感知焦点归属
         qshortcut_slots = {
-            "copy": self.canvas.copy_selected,
-            "paste": self.canvas.paste_clipboard,
             "delete": self._on_delete_shortcut,
-            "prev_image": self._prev_image,
-            "next_image": self._next_image,
-            "ocr_rec_only": self._on_ocr_rec_only,
         }
         # 应用 QAction 类快捷键（非法键序列已在 _resolve_shortcut 中回退）
         for action_id, act in qaction_map.items():
@@ -823,7 +859,9 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         # 三个列表 Dock 显隐开关（QDockWidget 自带 toggleViewAction）加入
-        # 视图菜单，勾选态随 QMainWindow 布局状态（dock_state）持久化
+        # 视图菜单，勾选态随 QMainWindow 布局状态（dock_state）持久化；
+        # 前置分隔线与菜单上方浏览/适应窗口动作区隔
+        self._menu_view.addSeparator()
         for dock, text, tip in (
             (self.label_dock, "显示标签列表", "显示/隐藏标签列表（Dock）"),
             (self.object_dock, "显示对象列表", "显示/隐藏对象列表（Dock）"),
