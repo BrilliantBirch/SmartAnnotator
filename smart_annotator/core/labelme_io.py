@@ -23,8 +23,17 @@ LabelMe JSON 格式读写模块
         "imagePath": str,          # 关联图像文件名
         "imageData": None,         # 内嵌图像（本项目使用外链 imagePath，恒为 None）
         "imageHeight": int,
-        "imageWidth": int
+        "imageWidth": int,
+        "ROI": [                   # 感知区（ROI）裁剪框列表（顶层字段，可缺省）
+            {                      # 空列表/不使用时该键不写入（旧版 JSON 兼容）
+                "id": int,         # 感知区 id，同图内唯一正整数
+                "box": [x1, y1, x2, y2]   # 像素坐标轴对齐矩形（左上为原点，
+            }                      # 读取时归一为 x1<x2、y1<y2）
+        ]
     }
+
+注意：ROI 为顶层字段，与 imagePath/imageWidth/imageHeight 同级，不得写入
+shapes 数组（避免被 labelme 等第三方工具当作普通标注对象）。
 
 作者: BaiBinnan
 创建日期: 2026-09-02
@@ -46,6 +55,9 @@ LabelMe JSON 格式读写模块
       （box 类形状中 description 非空的个数，OCR 推断文本证据），与
       dataset_analyzer 口径一致，供导出对话框预填任务类型复用
 更新: 2026-09-11 清理死代码：删除全库零引用的 SUPPORTED_SHAPES 常量
+更新: 2026-09-17 新增感知区（ROI）数据层：ROI_FIELD 常量与 new_roi /
+      document_rois / set_document_rois 三函数（顶层 ROI 字段读写，
+      容错兼容无该字段的旧版 JSON，为空时不写该键）
 """
 
 import json
@@ -209,6 +221,92 @@ def set_document_shapes(doc: Dict[str, Any], shapes: List[Dict[str, Any]]) -> No
         {k: v for k, v in shape.items() if not str(k).startswith("_")}
         for shape in shapes
     ]
+
+
+# ===== 感知区（ROI）字段常量（labelme 顶层扩展字段）=====
+# ROI 与 imagePath/imageWidth/imageHeight 同级，仅存裁剪框信息，
+# 不进入 shapes 数组；为空时不写该键，保证旧版 JSON 保存后不新增键
+ROI_FIELD = "ROI"
+
+
+def new_roi(roi_id: int, box) -> Dict[str, Any]:
+    """构造一个感知区（ROI）字典。
+
+    Args:
+        roi_id: 感知区 id（同图内唯一正整数）。
+        box: 边界框序列 [x1, y1, x2, y2]（图像像素坐标，左上为原点）。
+
+    Returns:
+        {"id": int, "box": [x1, y1, x2, y2]}，box 归一为左上/右下顺序
+        （逐轴取 min/max，兼容任意对角点书写），坐标统一转为 float。
+    """
+    # 逐轴取包围盒（容忍调用方传入任意对角点顺序）
+    coords = [float(v) for v in box]
+    x1, y1, x2, y2 = coords[0], coords[1], coords[2], coords[3]
+    return {"id": int(roi_id), "box": [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]}
+
+
+def document_rois(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """读取文档顶层的感知区（ROI）列表（容错解析）。
+
+    旧版 JSON 无 ROI 字段：字段缺失或不是列表时返回空列表；逐条校验
+    （须为字典、id 可转 int 且 > 0、box 为长度 >= 4 的可转 float 序列），
+    非法条目静默丢弃，合法条目经 new_roi 归一后按原顺序返回。
+
+    Args:
+        doc: labelme 文档字典。
+
+    Returns:
+        感知区字典列表，元素形如 {"id": int, "box": [x1, y1, x2, y2]}
+        （坐标为 float，左上/右下顺序）；无合法感知区时为空列表。
+    """
+    raw = doc.get(ROI_FIELD)
+    if not isinstance(raw, list):
+        return []
+    rois: List[Dict[str, Any]] = []
+    for item in raw:
+        # 校验：条目须为字典
+        if not isinstance(item, dict):
+            continue
+        # 校验：id 须可转 int 且为正整数
+        try:
+            roi_id = int(item["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if roi_id <= 0:
+            continue
+        # 校验：box 须为长度 >= 4 的可转 float 序列（字符串不算合法序列）
+        box = item.get("box")
+        if isinstance(box, (str, bytes)) or not hasattr(box, "__len__"):
+            continue
+        try:
+            if len(box) < 4:
+                continue
+            new_roi(roi_id, box)
+        except (TypeError, ValueError):
+            continue
+        rois.append(new_roi(roi_id, box))
+    return rois
+
+
+def set_document_rois(doc: Dict[str, Any], rois: List[Dict[str, Any]]) -> None:
+    """写入文档顶层的感知区（ROI）列表（为空时删除该键）。
+
+    写入前逐条经 new_roi 归一（id 转 int、box 转 float 并按左上/右下排序），
+    键顺序固定为 id、box。rois 为空（含全部条目非法）时删除顶层 ROI 键，
+    保证旧版 JSON 保存后不新增该键。
+
+    Args:
+        doc: labelme 文档字典（就地更新）。
+        rois: 感知区字典列表，元素形如
+            {"id": int, "box": [x1, y1, x2, y2]}。
+    """
+    # 复用 document_rois 的容错校验与归一逻辑，避免两处规则不一致
+    normalized = document_rois({ROI_FIELD: rois})
+    if normalized:
+        doc[ROI_FIELD] = normalized
+    else:
+        doc.pop(ROI_FIELD, None)
 
 
 def collect_labels_from_files(json_paths, should_stop=None, on_progress=None) -> Dict[str, Any]:

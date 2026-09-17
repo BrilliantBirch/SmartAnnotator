@@ -11,7 +11,7 @@
       可移动/浮动/关闭；Dock 布局（位置/尺寸/显隐）随渲染配置
       dock_state 持久化
 
-标准菜单栏（文件/编辑/视图/工具/统计/帮助）+ 快捷键体系：
+标准菜单栏（文件/编辑/视图/工具/感知区/统计/帮助）+ 快捷键体系：
     - 文件：打开文件夹 Ctrl+O、打开文件 Ctrl+Shift+O、保存 Ctrl+S、
       另存为 Ctrl+Shift+S、自动保存（勾选后切换图片时自动保存）
     - 编辑：编辑模式 Ctrl+E、撤销 Ctrl+Z、重做 Ctrl+Shift+Z、复制选中标注
@@ -19,9 +19,10 @@
       上下文删除、删除图片及标注 Shift+Delete
     - 视图：渲染开关与档位、三分区显隐、适应窗口 Ctrl+0、
       上一张图片 A、下一张图片 D
-    - 工具：标注工具（编辑/矩形/点/多边形）、加载模型、自动标注单张/
+    - 工具：标注工具（编辑/矩形/点/多边形/感知区）、加载模型、自动标注单张/
       全部/视频、OCR 仅识别（当前图片）Ctrl+R、导出/导入标注
       （自动标注入口唯一收敛于此菜单）
+    - 感知区：从选中矩形标注创建感知区 Ctrl+Shift+R
 
 标注数据完全复用 labelme JSON（core/labelme_io.py）。目录校验、后台标签
 扫描（修复打开目录卡死）、绘制完成属性弹窗、类别颜色一致性均在此实现。
@@ -192,6 +193,26 @@
       上一张/下一张图片、工具菜单新增 OCR 仅识别（当前图片）），菜单项
       原生右对齐显示绑定键且改键后自动同步；qshortcut_slots 仅剩 delete
       （唯一保留焦点路由的动作）
+更新: 2026-09-17 感知区（ROI）工具入口与转换入口：工具菜单标注工具组
+      新增"感知区"（tool_roi，默认键 O，与工具栏按钮联动）；新增顶级
+      "感知区"菜单与"从选中矩形标注创建感知区"动作（roi_from_shape，
+      默认键 Ctrl+Shift+R）；画布右键菜单新增"创建感知区"（工具切换区
+      可勾选项）与"转换为感知区"（仅命中的矩形标注可用）；画布
+      roi_hint 信号接入状态栏
+更新: 2026-09-17 感知区列表 Dock 集成：新增 RoiSection（"感知区"）装入
+      roiDock（objectName roiDock）并入右区三 Dock 统一特性循环与视图
+      菜单显隐 toggle（"显示感知区列表"），首次运行默认堆叠高度补第四项；
+      感知区信号接线（roi_selected/roi_locate_requested/roi_delete_requested
+      与画布 rois_changed/roi_selection_changed 双向联动、定位缩放、删除
+      走统一确认链路）；打开图片/标注时加载 ROI、保存时写回 ROI（为空
+      不写键）；Delete 快捷键路由新增感知区列表与感知区工具两条分支
+更新: 2026-09-17 感知区（ROI）导出接线：感知区菜单新增"手动导出感知区
+      数据"（act_roi_export，默认键 Ctrl+Shift+E，范围当前图片/全部图片
+      由 RoiExportDialog 收集后交常驻 RoiExportWorker 后台裁剪，模态复用
+      AnnotateProgressDialog 显示进度并弹汇总）与"自动导出感知区数据"
+      勾选项（act_roi_auto_export，勾选态随 RenderConfig.roi_auto_export
+      持久化）；_write_annotation 在写盘后按开关自动导出当前图片的感知区
+      裁剪到 <工作路径>/ROI（失败仅提示不中断保存）
 """
 
 import json
@@ -226,7 +247,7 @@ from PySide6.QtWidgets import (
 from . import __appname__, __version__
 from .styles import GLOBAL_QSS
 from .config import SysConfig, RenderConfig, DEFAULT_SHORTCUTS, MODE
-from .core import labelme_io
+from .core import labelme_io, roi_export
 from .core.updater import (
     RELEASE_PAGE_URL,
     UpdaterError,
@@ -245,13 +266,16 @@ from .widgets.left_toolbar import (
     TOOL_RECTANGLE,
     TOOL_POINT,
     TOOL_POLYGON,
+    TOOL_ROI,
 )
 from .widgets import FileSection, LabelSection, ObjectSection
+from .widgets.right_panel import RoiSection
 from .widgets.canvas import Canvas, color_for_label
 from .widgets.shape_dialog import ShapeDialog
 from .widgets.scan_stats_dialog import ScanProgressDialog, ScanStatsDialog
 from .widgets.manual_dialog import ManualDialog
 from .widgets.shortcut_dialog import ShortcutDialog
+from .widgets.roi_export_dialog import RoiExportDialog
 from .pages.annotate_page import AnnotatePage
 from .pages.convert_page import ConvertPage
 from .workers.annotate_worker import AnnotationWorker
@@ -259,6 +283,7 @@ from .workers.convert_worker import ConvertWorker
 from .workers.single_annotate_worker import SingleAnnotateWorker
 from .workers.label_scan_worker import LabelScanWorker
 from .workers.model_load_worker import ModelLoadWorker
+from .workers.roi_export_worker import RoiExportWorker
 from .workers.update_worker import UpdateCheckWorker, UpdateDownloadWorker
 
 # 工具名 -> 显示文案
@@ -267,6 +292,7 @@ _TOOL_LABELS = {
     TOOL_RECTANGLE: "矩形",
     TOOL_POINT: "点",
     TOOL_POLYGON: "多边形",
+    TOOL_ROI: "感知区",
 }
 
 # 动作定义表（action_id -> 中文描述，顺序即快捷键设置对话框中的显示顺序；
@@ -285,6 +311,7 @@ _ACTION_DEFS: Dict[str, str] = {
     "tool_rectangle": "矩形工具",
     "tool_point": "点工具",
     "tool_polygon": "多边形工具",
+    "tool_roi": "感知区工具",
     "delete": "删除选中标注",
     "delete_image": "删除图片及标注",
     "prev_image": "上一张图片",
@@ -294,6 +321,8 @@ _ACTION_DEFS: Dict[str, str] = {
     "annotate_all": "标注所有图片",
     "clear_shapes": "清空当前标注",
     "ocr_rec_only": "OCR 仅识别（当前图片已标注区域）",
+    "roi_from_shape": "从选中矩形标注创建感知区",
+    "roi_export": "手动导出感知区数据",
 }
 
 # 固定保留键（不可配置，QKeySequence PortableText → 固定功能描述）：
@@ -364,6 +393,9 @@ class MainWindow(QMainWindow):
         self._annotate_progress_dlg: "AnnotateProgressDialog | None" = None
         self._annotate_mode: str = ""  # single / all / video（空 = 无任务）
         self._annotate_error: str = ""
+        # 感知区导出运行期状态（模态进度对话框 / 线程异常错误）
+        self._roi_export_dlg: "AnnotateProgressDialog | None" = None
+        self._roi_export_error: str = ""
         # 会话级记忆：上次视频标注配置（不落盘，仅本次运行期内恢复）
         self._last_video_cfg: dict = None
 
@@ -371,6 +403,7 @@ class MainWindow(QMainWindow):
         # "QThread: Destroyed while thread is still running" 闪退）
         self.annotate_worker = AnnotationWorker()
         self.convert_worker = ConvertWorker()
+        self.roi_export_worker = RoiExportWorker()
         self.label_scan_worker = LabelScanWorker()
         self.single_annotate_worker = SingleAnnotateWorker()
         # 在线更新线程（常驻复用：检查更新 / 下载安装器，低频任务）
@@ -584,7 +617,7 @@ class MainWindow(QMainWindow):
         self._tool_action_group = QActionGroup(self)
         self._tool_action_group.setExclusive(True)
         self._tool_actions: dict = {}
-        for tool in (TOOL_SELECT, TOOL_RECTANGLE, TOOL_POINT, TOOL_POLYGON):
+        for tool in (TOOL_SELECT, TOOL_RECTANGLE, TOOL_POINT, TOOL_POLYGON, TOOL_ROI):
             act = QAction(_TOOL_LABELS[tool], self)
             act.setCheckable(True)
             act.triggered.connect(lambda checked=False, t=tool: self._on_tool_selected(t))
@@ -636,6 +669,33 @@ class MainWindow(QMainWindow):
         self.act_shortcut_settings = QAction("自定义快捷键...", self)
         self.act_shortcut_settings.triggered.connect(self._on_shortcut_settings)
         menu_tool.addAction(self.act_shortcut_settings)
+
+        # ===== 感知区（ROI）=====
+        # 引用保留到 self._menu_roi：后续任务向该菜单追加感知区导出等条目；
+        # 菜单构建早于画布创建，触发路径经槽函数在触发时才解析 canvas
+        self._menu_roi = menu_bar.addMenu("感知区(&R)")
+
+        # 从选中矩形标注创建感知区（快捷键经 _apply_shortcuts 统一应用）
+        self.act_roi_from_shape = QAction("从选中矩形标注创建感知区", self)
+        self.act_roi_from_shape.triggered.connect(self._on_create_roi_from_shape)
+        self._menu_roi.addAction(self.act_roi_from_shape)
+
+        self._menu_roi.addSeparator()
+
+        # 手动导出感知区数据：先经 RoiExportDialog 收集范围与输出目录，
+        # 再交后台 RoiExportWorker 批量裁剪（快捷键经 _apply_shortcuts 统一应用）
+        self.act_roi_export = QAction("手动导出感知区数据", self)
+        self.act_roi_export.triggered.connect(self._open_roi_export_dialog)
+        self._menu_roi.addAction(self.act_roi_export)
+
+        # 自动导出感知区数据：勾选后每次保存标注自动导出当前图片的感知区
+        # 裁剪到 <工作路径>/ROI（勾选态随渲染配置持久化；先 setChecked 再
+        # connect，防构建期 toggled 误触发落盘）
+        self.act_roi_auto_export = QAction("自动导出感知区数据", self)
+        self.act_roi_auto_export.setCheckable(True)
+        self.act_roi_auto_export.setChecked(self._render_config.roi_auto_export)
+        self.act_roi_auto_export.toggled.connect(self._on_roi_auto_export_toggled)
+        self._menu_roi.addAction(self.act_roi_auto_export)
 
         # ===== 统计 =====
         menu_stats = menu_bar.addMenu("统计(&S)")
@@ -769,6 +829,7 @@ class MainWindow(QMainWindow):
             "tool_rectangle": self._tool_actions[TOOL_RECTANGLE],
             "tool_point": self._tool_actions[TOOL_POINT],
             "tool_polygon": self._tool_actions[TOOL_POLYGON],
+            "tool_roi": self._tool_actions[TOOL_ROI],
             "fit_window": self.act_fit_window,
             "prev_image": self.act_prev_image,
             "next_image": self.act_next_image,
@@ -776,6 +837,8 @@ class MainWindow(QMainWindow):
             "annotate_all": self.act_annotate_all,
             "ocr_rec_only": self.act_ocr_rec_only,
             "clear_shapes": self.act_clear,
+            "roi_from_shape": self.act_roi_from_shape,
+            "roi_export": self.act_roi_export,
         }
         # ===== QShortcut 类动作映射（action_id -> 触发槽函数） =====
         # context 保持默认 WindowShortcut，与原直连实现行为一致；
@@ -827,7 +890,7 @@ class MainWindow(QMainWindow):
         self.canvas = Canvas()
         self.setCentralWidget(self.canvas)
 
-        # 右侧三个列表 Dock：三分区控件分别由独立 QDockWidget 承载，
+        # 右侧四个列表 Dock：四分区控件分别由独立 QDockWidget 承载，
         # 纵向堆叠于右区——堆叠高度由 Dock 间分隔条拖拽调节，挂靠左右
         # 边界时宽度由 Dock 与中央控件间分隔条拖拽调节（QMainWindow
         # 原生行为）；可移动/浮动/关闭。
@@ -836,7 +899,8 @@ class MainWindow(QMainWindow):
         self.label_section = LabelSection()
         self.object_section = ObjectSection()
         self.file_section = FileSection()
-        # Dock 特性统一：可移动/浮动/关闭（用户可自由重排三列表布局）
+        self.roi_section = RoiSection()
+        # Dock 特性统一：可移动/浮动/关闭（用户可自由重排四列表布局）
         dock_features = (
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -848,17 +912,20 @@ class MainWindow(QMainWindow):
         self.object_dock.setObjectName("objectDock")
         self.file_dock = QDockWidget("文件列表", self)
         self.file_dock.setObjectName("fileDock")
+        self.roi_dock = QDockWidget("感知区列表", self)
+        self.roi_dock.setObjectName("roiDock")
         for dock, section in (
             (self.label_dock, self.label_section),
             (self.object_dock, self.object_section),
             (self.file_dock, self.file_section),
+            (self.roi_dock, self.roi_section),
         ):
             dock.setFeatures(dock_features)
             dock.setWidget(section)
             # 右区依次加入：同区域多 Dock 默认纵向堆叠
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
-        # 三个列表 Dock 显隐开关（QDockWidget 自带 toggleViewAction）加入
+        # 四个列表 Dock 显隐开关（QDockWidget 自带 toggleViewAction）加入
         # 视图菜单，勾选态随 QMainWindow 布局状态（dock_state）持久化；
         # 前置分隔线与菜单上方浏览/适应窗口动作区隔
         self._menu_view.addSeparator()
@@ -866,6 +933,7 @@ class MainWindow(QMainWindow):
             (self.label_dock, "显示标签列表", "显示/隐藏标签列表（Dock）"),
             (self.object_dock, "显示对象列表", "显示/隐藏对象列表（Dock）"),
             (self.file_dock, "显示文件列表", "显示/隐藏文件列表（Dock）"),
+            (self.roi_dock, "显示感知区列表", "显示/隐藏感知区列表（Dock）"),
         ):
             toggle = dock.toggleViewAction()
             toggle.setText(text)
@@ -877,27 +945,27 @@ class MainWindow(QMainWindow):
 
     # -------------------------- 界面布局尺寸 --------------------------
     def _apply_panel_sizes(self) -> None:
-        """应用持久化的窗口布局状态（工具栏与三个列表 Dock 的位置/尺寸）。
+        """应用持久化的窗口布局状态（工具栏与四个列表 Dock 的位置/尺寸）。
 
         dock_state 恢复后 Dock 的位置、堆叠高度、挂靠宽度与显隐一并
         还原（QMainWindow saveState 序列化完整布局）；首次运行（配置
-        无状态字节）时按默认布局设初始尺寸：右区纵向堆叠三个 Dock
-        （高度 180/180/280）、面板宽度 320。
+        无状态字节）时按默认布局设初始尺寸：右区纵向堆叠四个 Dock
+        （高度 180/180/280/180）、面板宽度 320。
         """
         self._restore_window_state()
         # 无记忆状态（首次运行）：设默认初始尺寸（有记忆时不得覆盖
         # restoreState 还原的用户自定义布局）
         if not self._render_config.dock_state:
-            # 堆叠高度：右区纵向三 Dock 按序分配（与分区最小高度 96 双保险）
+            # 堆叠高度：右区纵向四 Dock 按序分配（与分区最小高度 96 双保险）
             self.resizeDocks(
-                [self.label_dock, self.object_dock, self.file_dock],
-                [180, 180, 280],
+                [self.label_dock, self.object_dock, self.file_dock, self.roi_dock],
+                [180, 180, 280, 180],
                 Qt.Orientation.Vertical,
             )
             # 挂靠宽度：Dock 与中央画布间分隔条拖拽调节，此处设初始宽度
             self.resizeDocks(
-                [self.label_dock, self.object_dock, self.file_dock],
-                [320, 320, 320],
+                [self.label_dock, self.object_dock, self.file_dock, self.roi_dock],
+                [320, 320, 320, 320],
                 Qt.Orientation.Horizontal,
             )
 
@@ -950,6 +1018,14 @@ class MainWindow(QMainWindow):
         self.canvas.shape_created.connect(self._on_shape_created)
         # 编辑模式右键（空白/对象）：弹出上下文菜单进入编辑模式
         self.canvas.context_menu_requested.connect(self._on_canvas_context_menu)
+        # 感知区操作提示（如绘制过小被丢弃）：转状态栏显示
+        self.canvas.roi_hint.connect(
+            lambda msg: self.statusBar().showMessage(msg, 3000)
+        )
+        # 画布感知区数据/选中变化：回填感知区列表（列表程序化选中静默，
+        # 不与"列表 → 画布"方向形成回环）
+        self.canvas.rois_changed.connect(self._on_rois_changed)
+        self.canvas.roi_selection_changed.connect(self._on_roi_selection_changed)
 
         # 标签列表 Dock
         self.label_section.label_selected.connect(self._on_label_selected)
@@ -968,6 +1044,11 @@ class MainWindow(QMainWindow):
         # 文件列表双击：加载该图片并进入编辑模式
         self.file_section.file_edit_requested.connect(self._on_file_edit_requested)
 
+        # 感知区列表 Dock：选中联动画布、双击/右键定位缩放、右键删除
+        self.roi_section.roi_selected.connect(self._on_roi_selected)
+        self.roi_section.roi_locate_requested.connect(self._on_roi_locate)
+        self.roi_section.roi_delete_requested.connect(self._on_roi_delete)
+
         # 后台标签扫描
         self.label_scan_worker.labels_ready.connect(self._on_labels_scanned)
         # 扫描进度：驱动进度对话框（进度条 + 文字）；状态栏同步提示
@@ -981,6 +1062,14 @@ class MainWindow(QMainWindow):
         self.annotate_worker.progress_desc.connect(self._on_annotate_progress_desc)
         self.annotate_worker.error_occurred.connect(self._on_annotate_error)
         self.annotate_worker.task_finished.connect(self._on_annotate_task_finished)
+
+        # 感知区导出 worker（常驻复用）：进度驱动模态进度对话框，汇总/错误/
+        # 结束驱动收尾（信号只在此连接一次，避免重复连接导致多次弹窗）
+        self.roi_export_worker.progress_updated.connect(self._on_roi_export_progress)
+        self.roi_export_worker.progress_desc.connect(self._on_roi_export_progress_desc)
+        self.roi_export_worker.error_occurred.connect(self._on_roi_export_error)
+        self.roi_export_worker.summary_ready.connect(self._on_roi_export_finished)
+        self.roi_export_worker.task_finished.connect(self._on_roi_export_task_finished)
 
         # 单张标注 worker（当前画布图片）
         self.single_annotate_worker.progress_updated.connect(self._on_annotate_progress)
@@ -1095,10 +1184,14 @@ class MainWindow(QMainWindow):
                 try:
                     doc = labelme_io.load_document(json_path)
                     self.canvas.set_shapes(labelme_io.document_shapes(doc))
+                    # 感知区随同一标注文件加载（旧版无该键时为空列表）
+                    self.canvas.set_rois(labelme_io.document_rois(doc))
                 except Exception:
                     self.canvas.clear_shapes()
+                    self.canvas.clear_rois()
             else:
                 self.canvas.clear_shapes()
+                self.canvas.clear_rois()
             self.file_section.set_files([image_path], self._file_annotated_flags())
             self.file_section.select_file(0)
             # 文件列表重建：重启分批惰性标签填充（单文件即时读出标签）
@@ -1147,6 +1240,8 @@ class MainWindow(QMainWindow):
         self._loading = True
         try:
             self.canvas.set_shapes(labelme_io.document_shapes(doc))
+            # 感知区随同一标注文件加载（旧版无该键时为空列表）
+            self.canvas.set_rois(labelme_io.document_rois(doc))
             json_dir = str(Path(json_path).parent)
             self._work_dir = json_dir
             # 工作路径切换：清空旧路径的扫描统计缓存（新路径尚未扫描）
@@ -1299,11 +1394,15 @@ class MainWindow(QMainWindow):
                 try:
                     doc = labelme_io.load_document(json_path)
                     self.canvas.set_shapes(labelme_io.document_shapes(doc))
+                    # 感知区随同一标注文件加载（旧版无该键时为空列表）
+                    self.canvas.set_rois(labelme_io.document_rois(doc))
                 except Exception as e:
                     LOGGER.warning(f"读取标注失败 {json_path}: {e}")
                     self.canvas.clear_shapes()
+                    self.canvas.clear_rois()
             else:
                 self.canvas.clear_shapes()
+                self.canvas.clear_rois()
 
             self.file_section.select_file(index)
             self._refresh_objects()
@@ -1376,6 +1475,9 @@ class MainWindow(QMainWindow):
             self.canvas.image_height(),
         )
         labelme_io.set_document_shapes(doc, self.canvas.shapes())
+        # 感知区写入文档顶层（为空时 set_document_rois 内部删除该键，
+        # 旧版 JSON 保存后不新增 ROI 字段）
+        labelme_io.set_document_rois(doc, self.canvas.rois())
         labelme_io.save_document(doc, json_path)
         self._dirty = False
         self._update_status()
@@ -1389,6 +1491,42 @@ class MainWindow(QMainWindow):
                 if str(s.get("label", "") or "").strip()
             }
             self.file_section.set_file_tags(self._current_index, tags)
+        # 自动导出感知区：勾选且当前图片有感知区时，按刚写入的 JSON 裁剪
+        # 导出到 <工作路径>/ROI（失败/异常仅记日志与状态栏提示，不中断保存）
+        self._auto_export_rois(json_path)
+
+    def _auto_export_rois(self, json_path: str) -> None:
+        """自动导出当前图片的感知区裁剪（受 RenderConfig.roi_auto_export 控制）。
+
+        Args:
+            json_path: 本次保存写入的标注 JSON 路径（裁剪标注按此文件为准）。
+        """
+        # 开关关闭 / 无工作路径 / 无当前图片 / 无感知区：不做任何事
+        if not self._render_config.roi_auto_export:
+            return
+        image_path = self._current_image_path()
+        if not self._work_dir or not image_path or not self.canvas.rois():
+            return
+        try:
+            result = roi_export.export_image_rois(
+                image_path,
+                json_path,
+                self.canvas.rois(),
+                roi_export.roi_output_dir(self._work_dir),
+            )
+            if result.get("error"):
+                LOGGER.error(f"自动导出感知区失败: {result['error']}")
+                self.statusBar().showMessage(
+                    f"感知区自动导出失败: {result['error']}", 3000
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"已自动导出 {result.get('exported', 0)} 个感知区裁剪", 2000
+                )
+        except Exception as e:
+            # 自动导出失败不影响保存结果：仅记日志并提示原因
+            LOGGER.error(f"自动导出感知区异常: {e}")
+            self.statusBar().showMessage(f"感知区自动导出失败: {e}", 3000)
 
     # -------------------------- 编辑操作 --------------------------
     def _on_undo(self) -> None:
@@ -1480,8 +1618,10 @@ class MainWindow(QMainWindow):
         """Delete 快捷键：按当前焦点控件路由删除业务。
 
         路由顺序：文本输入控件不拦截 → 对象列表删选中对象（统一确认）
-        → 文件列表删选中图像及标注（统一确认）→ 默认删画布选中形状
-        （统一确认）。三条删除路径均经 _confirm_destructive 确认框。
+        → 感知区列表删选中感知区（统一确认）→ 文件列表删选中图像及标注
+        （统一确认）→ 感知区工具下删画布选中感知区（统一确认）→ 默认删
+        画布选中形状（统一确认）。各删除路径均经 _confirm_destructive
+        确认框。
         """
         fw = QApplication.focusWidget()
         # 焦点在文本输入控件：不拦截，保留正常文本删除行为
@@ -1494,12 +1634,23 @@ class MainWindow(QMainWindow):
             if indices:
                 self._on_delete_objects(indices)
             return
+        # 焦点在感知区列表：删除列表选中感知区（复用含确认框的删除链路）
+        roi_list = self.roi_section.list
+        if fw is roi_list or (fw is not None and roi_list.isAncestorOf(fw)):
+            roi_id = self.roi_section.selected_roi_id()
+            if roi_id is not None:
+                self._on_roi_delete(roi_id)
+            return
         # 焦点在文件列表：删除选中图像及同名标注（复用含确认框的健壮删除逻辑）
         file_list = self.file_section.list
         if fw is file_list or (fw is not None and file_list.isAncestorOf(fw)):
             cur = file_list.currentIndex()
             if self._has_workspace() and cur.isValid() and cur.row() >= 0:
                 self._on_delete_image_and_annotation()
+            return
+        # 感知区工具：Delete 删除画布中选中的感知区（不影响既有形状删除语义）
+        if self.canvas.tool() == TOOL_ROI and self.canvas.selected_roi_id() is not None:
+            self._on_roi_delete(self.canvas.selected_roi_id())
             return
         # 默认（画布或其他控件）：删除画布选中形状（统一确认链路）
         self._on_delete()
@@ -1543,6 +1694,8 @@ class MainWindow(QMainWindow):
             try:
                 self._current_index = -1
                 self.canvas.clear_shapes()
+                # 感知区随形状一并清空（避免残留上一张图片的感知区）
+                self.canvas.clear_rois()
             finally:
                 self._loading = False
         else:
@@ -1562,6 +1715,266 @@ class MainWindow(QMainWindow):
         if act is not None:
             act.setChecked(True)
         self.canvas.set_tool(None if tool == TOOL_SELECT else tool)
+
+    # -------------------------- 感知区（ROI） --------------------------
+    def _on_create_roi_from_shape(self) -> None:
+        """将画布当前选中的矩形标注逐个转换为感知区（ROI）。
+
+        非矩形形状（点/多边形）由 Canvas.add_roi_from_shape 返回 None
+        自动跳过；无选中或选中项均非矩形时提示需先选中矩形标注。
+        创建成功的感知区由画布选中并触发 rois_changed（保存状态联动）。
+        """
+        created = 0
+        for shape in self.canvas.selected_shapes():
+            if self.canvas.add_roi_from_shape(shape) is not None:
+                created += 1
+        if created == 0:
+            self.statusBar().showMessage("请先选中一个或多个矩形标注", 3000)
+            return
+        self.statusBar().showMessage(f"已创建 {created} 个感知区", 3000)
+
+    def _on_roi_selected(self, roi_id) -> None:
+        """感知区列表选中联动：画布选中同一感知区并给出状态提示。
+
+        Args:
+            roi_id: 列表选中行对应的 ROI id（无选中为 None）。
+        """
+        self.canvas.select_roi(roi_id)
+        if roi_id is not None:
+            self.statusBar().showMessage(f"已选中感知区 ROI{roi_id}", 2000)
+
+    def _on_roi_selection_changed(self, roi_id) -> None:
+        """画布感知区选中变化：回填列表选中行（程序化静默，不形成回环）。
+
+        Args:
+            roi_id: 画布当前选中的 ROI id（无选中为 None）。
+        """
+        self.roi_section.select_roi(roi_id)
+
+    def _on_roi_locate(self, roi_id) -> None:
+        """感知区列表定位请求：选中该感知区并将视图缩放定位到其区域。
+
+        Args:
+            roi_id: 请求定位的 ROI id；当前感知区列表中不存在时忽略。
+        """
+        box = self._find_roi_box(roi_id)
+        if box is None:
+            self.statusBar().showMessage(f"未找到感知区 ROI{roi_id}", 2000)
+            return
+        # 先选中（列表/画布选中态同步），再缩放定位到该区域
+        self.canvas.select_roi(roi_id)
+        self.canvas.focus_box(*box)
+
+    def _on_roi_delete(self, roi_id) -> None:
+        """感知区删除请求：经统一确认链路确认后删除该感知区。
+
+        Args:
+            roi_id: 待删除的 ROI id。
+        """
+        if roi_id is None:
+            return
+        if not self._confirm_destructive(
+            "confirm_roi_delete",
+            "确认删除感知区",
+            f"确定删除感知区 ROI{roi_id}？\n（可通过 Ctrl+Z 撤销）",
+        ):
+            return
+        if self.canvas.delete_roi(roi_id):
+            self.statusBar().showMessage(f"已删除感知区 ROI{roi_id}", 2000)
+        else:
+            self.statusBar().showMessage(f"未找到感知区 ROI{roi_id}", 2000)
+
+    def _find_roi_box(self, roi_id):
+        """在画布当前感知区中查找指定 id 的包围盒。
+
+        Args:
+            roi_id: 目标 ROI id。
+
+        Returns:
+            [x1, y1, x2, y2] 坐标列表；未找到返回 None。
+        """
+        for roi in self.canvas.rois():
+            if int(roi.get("id", 0)) == int(roi_id):
+                box = roi.get("box") or []
+                if len(box) >= 4:
+                    return box
+        return None
+
+    def _refresh_roi_list(self) -> None:
+        """按画布当前感知区重建列表，并恢复列表选中态。"""
+        self.roi_section.set_rois(self.canvas.rois())
+        self.roi_section.select_roi(self.canvas.selected_roi_id())
+
+    def _on_rois_changed(self) -> None:
+        """画布感知区数据变化：标记未保存、刷新感知区列表与状态栏。
+
+        程序性加载（打开图片/标注回填）期间 _loading 为 True，画布
+        set_rois/clear_rois 触发的本信号不置脏。
+        """
+        if not self._loading:
+            self._dirty = True
+        self._refresh_roi_list()
+        self._update_status()
+
+    # -------------------------- 感知区（ROI）导出 --------------------------
+    def _on_roi_auto_export_toggled(self, checked: bool) -> None:
+        """自动导出感知区开关切换（同步内存开关并随渲染配置持久化）。
+
+        Args:
+            checked: 是否勾选自动导出感知区。
+        """
+        # 勾选态写入渲染配置并即时落盘（下次启动恢复）
+        self._render_config.roi_auto_export = checked
+        self._save_render_config_now()
+        state = "开启" if checked else "关闭"
+        LOGGER.info(f"感知区自动导出已{state}")
+        self.statusBar().showMessage(f"已{state}感知区自动导出", 2000)
+
+    def _open_roi_export_dialog(self) -> None:
+        """手动导出感知区数据：收集参数后交后台线程批量裁剪导出。
+
+        前置检查（任一不满足直接提示并返回）：未打开工作文件夹、无当前
+        图片、导出线程正在运行（防重入）；有未保存修改时先落盘（导出按
+        磁盘 JSON 裁剪标注），落盘失败提示并中止。范围"当前图片"要求画布
+        有感知区，"全部图片"以工作目录图片列表为输入。
+        """
+        # 前置检查 1：未打开工作文件夹
+        if not self._work_dir:
+            showMessageBox(QMessageBox.Icon.Warning, "请先打开工作文件夹")
+            return
+        current = self._current_image_path()
+        # 前置检查 2：无当前图片
+        if not current:
+            showMessageBox(QMessageBox.Icon.Warning, "请先打开图片")
+            return
+        # 前置检查 3：导出线程正在运行（防重入）
+        if self.roi_export_worker.isRunning():
+            showMessageBox(
+                QMessageBox.Icon.Warning, "感知区导出任务正在执行，请等待完成或先中止"
+            )
+            return
+        # 有未保存修改：先落盘（导出以磁盘 JSON 为准）
+        if self._dirty:
+            try:
+                self._write_annotation(self._current_json_path())
+            except Exception as e:
+                showMessageBox(QMessageBox.Icon.Critical, f"保存失败: {e}")
+                return
+        # 收集导出参数（范围 + 输出目录），取消直接返回
+        settings = RoiExportDialog.get_settings(self._work_dir, current, self)
+        if settings is None:
+            return
+        scope = settings.get("scope")
+        out_dir = str(settings.get("out_dir", ""))
+        if scope == "current":
+            # 当前图片无感知区：无可导出内容
+            if not self.canvas.rois():
+                showMessageBox(
+                    QMessageBox.Icon.Information, "当前图片没有感知区，无可导出内容"
+                )
+                return
+            images = [current]
+        else:
+            # 全部图片：扫工作目录图片（非递归，不含 ROI 输出子目录）
+            images = sorted(getImageFilesInDir(self._work_dir))
+            if not images:
+                showMessageBox(
+                    QMessageBox.Icon.Warning,
+                    f"当前工作路径下未找到图片文件:\n{self._work_dir}",
+                )
+                return
+        # 启动导出线程 + 模态进度对话框（阻塞主窗口直到导出结束）
+        self.roi_export_worker.set_task(images, out_dir, self._work_dir)
+        self._roi_export_error = ""
+        dlg = AnnotateProgressDialog(
+            "导出感知区数据",
+            f"共 {len(images)} 张图片 · 输出目录: {out_dir}",
+            self,
+        )
+        self._roi_export_dlg = dlg
+        dlg.canceled.connect(self._on_roi_export_dialog_canceled)
+        # 暂停/恢复：经 BaseWorker 既有原语挂起/唤醒（run_callback 阻塞等待）
+        dlg.pause_requested.connect(
+            lambda paused: self.roi_export_worker.pause()
+            if paused
+            else self.roi_export_worker.resume()
+        )
+        self.roi_export_worker.start()
+        dlg.exec()
+
+    def _on_roi_export_dialog_canceled(self) -> None:
+        """用户中止感知区导出：停止导出线程（线程内逐图检查停止标志）。"""
+        if self.roi_export_worker.isRunning():
+            self.roi_export_worker.stop()
+        self.statusBar().showMessage("正在中止感知区导出...", 2000)
+
+    def _on_roi_export_progress(self, ratio: float) -> None:
+        """感知区导出进度更新：刷新进度对话框进度条。"""
+        if self._roi_export_dlg is not None:
+            self._roi_export_dlg.update_progress(ratio)
+
+    def _on_roi_export_progress_desc(self, msg: str) -> None:
+        """感知区导出进度描述：追加到进度对话框日志区。"""
+        if self._roi_export_dlg is not None:
+            self._roi_export_dlg.append_log(msg)
+
+    def _on_roi_export_error(self, msg: str) -> None:
+        """感知区导出线程出错：记录并写入进度日志（任务结束时弹窗提示）。"""
+        self._roi_export_error = msg
+        if self._roi_export_dlg is not None:
+            self._roi_export_dlg.append_log(f"[错误] {msg}")
+
+    def _on_roi_export_finished(self, summary) -> None:
+        """感知区导出汇总：关闭进度对话框并弹窗汇总结果。
+
+        Args:
+            summary: 导出汇总字典（total_images/processed/exported/skipped/
+                failed/no_roi_images/out_dir/errors）。
+        """
+        self._close_roi_export_dialog()
+        exported = int(summary.get("exported", 0))
+        skipped = int(summary.get("skipped", 0))
+        failed = int(summary.get("failed", 0))
+        text = (
+            f"图片总数: {summary.get('total_images', 0)}"
+            f"（已处理 {summary.get('processed', 0)}）\n"
+            f"导出感知区: {exported} 个\n"
+            f"跳过感知区: {skipped} 个\n"
+            f"无感知区图片: {summary.get('no_roi_images', 0)} 张\n"
+            f"失败图片: {failed} 张\n"
+            f"输出目录: {summary.get('out_dir', '')}"
+        )
+        errors = list(summary.get("errors") or [])
+        # 失败明细：末尾附前 3 条错误（防弹窗过长）
+        if failed and errors:
+            text += "\n\n错误明细:\n" + "\n".join(errors[:3])
+        showMessageBox(QMessageBox.Icon.Information, text)
+        self.statusBar().showMessage(
+            f"感知区导出完成: 成功 {exported}, 跳过 {skipped}, 失败 {failed}", 3000
+        )
+
+    def _on_roi_export_task_finished(self) -> None:
+        """感知区导出线程结束：无汇总（线程异常）时关闭对话框并提示错误。"""
+        # 正常路径已由汇总槽关闭对话框，这里仅兜底线程异常未发汇总的情况
+        if self._roi_export_dlg is None:
+            return
+        self._close_roi_export_dialog()
+        error = self._roi_export_error
+        self._roi_export_error = ""
+        if error:
+            showMessageBox(QMessageBox.Icon.Critical, error)
+
+    def _close_roi_export_dialog(self) -> None:
+        """关闭感知区导出进度对话框（先断开 canceled，避免误触发中止逻辑）。"""
+        if self._roi_export_dlg is None:
+            return
+        dlg = self._roi_export_dlg
+        self._roi_export_dlg = None
+        try:
+            dlg.canceled.disconnect(self._on_roi_export_dialog_canceled)
+        except RuntimeError:
+            pass  # 连接已断开（对话框已由用户关闭）
+        dlg.close()
 
     # -------------------------- 自动标注 --------------------------
     def _open_annotate_dialog(self) -> None:
@@ -2232,9 +2645,9 @@ class MainWindow(QMainWindow):
     def _on_canvas_context_menu(self, shape) -> None:
         """画布右键完整上下文菜单（空白或对象，无绘制草稿时）。
 
-        菜单项：编辑属性/删除/复制/粘贴/撤销/重做/创建矩形/创建点/
-        创建多边形/编辑模式/清空标注；按当前状态启用/禁用。
-        菜单项不绑定快捷键（避免与菜单栏动作歧义）。
+        菜单项：编辑属性/删除/复制/粘贴/转换为感知区/撤销/重做/创建矩形/
+        创建点/创建多边形/创建感知区/编辑模式/清空标注；按当前状态
+        启用/禁用。菜单项不绑定快捷键（避免与菜单栏动作歧义）。
 
         Args:
             shape: 右键命中的形状字典，空白处为 None。
@@ -2257,6 +2670,12 @@ class MainWindow(QMainWindow):
         act_copy.setEnabled(bool(selected))
         act_paste = menu.addAction("粘贴")
         act_paste.setEnabled(self.canvas.has_clipboard())
+        # 转换为感知区：仅右键命中的矩形标注可用（点/多边形无矩形包围盒语义）
+        act_to_roi = menu.addAction("转换为感知区")
+        act_to_roi.setEnabled(
+            shape is not None
+            and str(shape.get("shape_type", "")) == labelme_io.SHAPE_RECTANGLE
+        )
         menu.addSeparator()
         # 历史操作区
         act_undo = menu.addAction("撤销")
@@ -2274,6 +2693,9 @@ class MainWindow(QMainWindow):
         act_polygon = menu.addAction("创建多边形")
         act_polygon.setCheckable(True)
         act_polygon.setChecked(self.canvas.tool() == labelme_io.SHAPE_POLYGON)
+        act_roi = menu.addAction("创建感知区")
+        act_roi.setCheckable(True)
+        act_roi.setChecked(self.canvas.tool() == TOOL_ROI)
         act_edit_mode = menu.addAction("编辑模式")
         act_edit_mode.setCheckable(True)
         act_edit_mode.setChecked(self.canvas.tool() is None)
@@ -2294,6 +2716,15 @@ class MainWindow(QMainWindow):
             self.canvas.copy_selected()
         elif chosen is act_paste:
             self.canvas.paste_clipboard()
+        elif chosen is act_to_roi:
+            # 命中形状必为矩形（非矩形时该项已禁用），None 视为创建失败
+            roi = self.canvas.add_roi_from_shape(shape)
+            if roi is None:
+                self.statusBar().showMessage("该标注不是矩形，无法转换为感知区", 3000)
+            else:
+                self.statusBar().showMessage(
+                    f"已按矩形标注创建感知区 ROI{roi.get('id')}", 3000
+                )
         elif chosen is act_undo:
             self.canvas.undo()
         elif chosen is act_redo:
@@ -2304,6 +2735,8 @@ class MainWindow(QMainWindow):
             self._on_tool_selected(TOOL_POINT)
         elif chosen is act_polygon:
             self._on_tool_selected(TOOL_POLYGON)
+        elif chosen is act_roi:
+            self._on_tool_selected(TOOL_ROI)
         elif chosen is act_edit_mode:
             self._enter_edit_mode()
         elif chosen is act_clear:

@@ -6,7 +6,7 @@
 分组之间以竖分隔线区隔，全部按钮为图标按钮（QPainter 程序化矢量图标，
 语义保留在 tooltip 与 accessibleName）：
     - 文件操作：打开文件夹、打开文件、保存、另存为、删除选中、删除图片文件、适应窗口
-    - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形（互斥可选，含快捷键提示）
+    - 标注工具：编辑（V/Ctrl+E）、矩形、点、多边形、感知区（互斥可选，含快捷键提示）
 
 自动标注入口（加载模型/标注当前图片/标注所有图片/标注视频）统一收敛到
 主窗口"工具"菜单，不再提供工具栏按钮（入口唯一）。
@@ -45,6 +45,10 @@
       框 + A 字，独立于绘制互斥组，默认隐藏由主窗口按任务类型显隐）；
       新增 rec_only_toggled 信号与 set_rec_only_visible/
       set_rec_only_checked 同步方法；tooltip 随快捷键绑定与启用状态刷新
+更新: 2026-09-17 新增"感知区"工具按钮（TOOL_ROI，感知区/roi 图标：
+      虚线矩形 + 四角实心角标），并入标注工具互斥组（顺序：编辑/矩形/
+      点/多边形/感知区，默认仍选中"编辑"）；TOOL_ROI 常量由画布
+      widgets/canvas.py 定义（画布是工具语义的归属方），此处相对导入复用
 """
 
 from typing import Dict
@@ -60,6 +64,10 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+# 感知区工具常量由画布定义（canvas.py：工具语义与交互的归属方，
+# 画布不反向引用本模块，故此处相对导入无循环依赖）
+from .canvas import TOOL_ROI
+
 # 标注工具名常量（与 Canvas.set_tool 的参数一致）
 TOOL_SELECT = "select"
 TOOL_RECTANGLE = "rectangle"
@@ -72,6 +80,7 @@ _TOOL_SHORTCUT_HINTS = {
     TOOL_RECTANGLE: "R",
     TOOL_POINT: "P",
     TOOL_POLYGON: "G",
+    TOOL_ROI: "O",
 }
 
 # ===== 程序化矢量图标（QPainter 绘制，与全局 QSS 扁平风格同源配色）=====
@@ -299,6 +308,22 @@ def _paint_rec_only(p: QPainter, color: QColor) -> None:
     p.drawText(QRectF(3, 4, 18, 16), Qt.AlignmentFlag.AlignCenter, "A")
 
 
+def _paint_roi(p: QPainter, color: QColor) -> None:
+    """绘制"感知区"图标：虚线矩形 + 四角实心角标（示意区域框定/选择）。"""
+
+    # 虚线矩形主体（与画布感知区未选中态的虚线样式呼应）
+    pen = _pen(color, 1.6)
+    pen.setDashPattern([2.5, 2.0])
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRect(QRectF(4.5, 6.5, 15.0, 11.0))
+    # 四角实心角标（骑跨矩形四角，强调"区域选择"语义）
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    for cx, cy in ((2.5, 4.5), (17.5, 4.5), (2.5, 15.5), (17.5, 15.5)):
+        p.drawRect(QRectF(cx, cy, 4.0, 4.0))
+
+
 # 图标名 -> 绘制函数（按钮构造处按名取用）
 _ICON_PAINTERS = {
     "folder": _paint_folder,
@@ -311,6 +336,7 @@ _ICON_PAINTERS = {
     "rectangle": _paint_rectangle,
     "point": _paint_point,
     "polygon": _paint_polygon,
+    "roi": _paint_roi,
     "fit": _paint_fit,
     "rec_only": _paint_rec_only,
 }
@@ -441,7 +467,7 @@ class LeftToolbar(QToolBar):
         delete_requested: 请求删除选中标注（形状）。
         delete_image_requested: 请求删除当前图片及其标注文件（Shift+Delete）。
         fit_requested: 请求适应窗口（缩放视图以完整显示当前图片）。
-        tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon）。
+        tool_selected(str): 请求切换标注工具（select/rectangle/point/polygon/roi）。
         rec_only_toggled(bool): OCR 仅识别开关切换（True=启用仅识别模式）。
     """
 
@@ -515,12 +541,14 @@ class LeftToolbar(QToolBar):
             TOOL_RECTANGLE: "rectangle",
             TOOL_POINT: "point",
             TOOL_POLYGON: "polygon",
+            TOOL_ROI: "roi",
         }
         for tool, text in (
             (TOOL_SELECT, "编辑"),
             (TOOL_RECTANGLE, "矩形"),
             (TOOL_POINT, "点"),
             (TOOL_POLYGON, "多边形"),
+            (TOOL_ROI, "感知区"),
         ):
             btn = _ToolBarButton(
                 text, _TOOL_SHORTCUT_HINTS.get(tool, ""), tool_icons[tool]
@@ -595,7 +623,7 @@ class LeftToolbar(QToolBar):
         """程序化选中指定工具按钮（供菜单栏动作联动）。
 
         Args:
-            tool: 工具名（select/rectangle/point/polygon）。
+            tool: 工具名（select/rectangle/point/polygon/roi）。
         """
         btn = self._tool_buttons.get(tool)
         if btn is not None:

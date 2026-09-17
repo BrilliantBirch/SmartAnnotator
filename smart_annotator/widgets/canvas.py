@@ -79,6 +79,16 @@
       （复用既有 press 选中/拖拽路径，Ctrl/Shift 修饰键行为不变）；
       新增悬停光标反馈（端点 SizeAll、形状 OpenHand、拖动中
       ClosedHand，移出/Esc/释放复位）
+更新: 2026-09-17 新增感知区（ROI）渲染与交互：工具常量 TOOL_ROI 与
+      _ROI_PEN/_ROI_SELECTED_PEN/_ROI_COLOR/_ROI_MIN_SIZE 常量；
+      新增 rois_changed/roi_selection_changed/roi_hint 信号与
+      rois()/set_rois()/clear_rois()/selected_roi_id()/select_roi()/
+      delete_roi()/add_roi_from_shape()/focus_box()/roi_at() 接口；
+      感知区在 _render() 中先于形状渲染（虚线框 + 框外 ROI{id} 双层
+      文本，选中态加粗虚线 + 左上/右下角端点手柄），仅感知区工具下
+      可命中（框内拖动平移 / 端点缩放 / 空白拖拽新建，均钳制在图像内）；
+      撤销快照扩展为 {"shapes": [...], "rois": [...]}（undo/redo 同时
+      恢复两个列表）
 """
 
 import copy
@@ -143,6 +153,21 @@ _DESC_TRUNCATE = 32
 # 形状文本与包围盒左上角的固定垂直间隙（像素，保证文字在框外不重叠）
 _TEXT_OFFSET = 4.0
 
+# ===== 感知区（ROI）工具与样式常量 =====
+# 感知区工具名：非 labelme shape_type（与 left_toolbar 的 TOOL_* 工具常量同语义，
+# 仅用于画布工具分流），感知区数据存于文档顶层 ROI 字段而非 shapes 数组
+TOOL_ROI = "roi"
+# 感知区虚线框样式（未选中）：天蓝色细虚线，cosmetic 保证屏幕线宽恒定
+_ROI_PEN = QPen(QColor("#0EA5E9"), 1.6, Qt.PenStyle.DashLine)
+_ROI_PEN.setCosmetic(True)
+# 感知区选中态样式：加粗 + 深色（与未选中态区分）
+_ROI_SELECTED_PEN = QPen(QColor("#0284C7"), 3.6, Qt.PenStyle.DashLine)
+_ROI_SELECTED_PEN.setCosmetic(True)
+# 感知区文本与角端点手柄颜色（与 pen 同色系）
+_ROI_COLOR = QColor("#0284C7")
+# 感知区最小宽高（像素）：小于该尺寸的感知区不创建，拖动缩放时不小于该值
+_ROI_MIN_SIZE = 4.0
+
 
 def color_for_label(label: str) -> QColor:
     """按标签名稳定分配唯一颜色（进程内首次出现的标签固定同色）。
@@ -171,6 +196,9 @@ class Canvas(QGraphicsView):
         selection_changed(list): 选中形状集合变化时发射（参数为形状字典列表，可为空）。
         shape_created(object): 单个对象绘制完成时发射（参数为新建形状字典）。
         context_menu_requested: 选择/编辑模式下右键（空白或对象）请求上下文菜单。
+        rois_changed: 感知区列表发生增删改时发射（供保存状态联动）。
+        roi_selection_changed(object): 感知区选中态变化时发射（参数为 id 或 None）。
+        roi_hint(str): 感知区操作的提示文本（如绘制过小被丢弃），供主窗口转状态栏。
     """
 
     shapes_changed = Signal()
@@ -181,6 +209,12 @@ class Canvas(QGraphicsView):
     shape_created = Signal(object)
     # 空闲状态右键（无绘制草稿）：参数为命中形状字典或 None（空白处）
     context_menu_requested = Signal(object)
+    # 感知区（ROI）列表发生增删改时发射（无参数，供保存状态联动）
+    rois_changed = Signal()
+    # 感知区选中态变化时发射。必须用 object 签名承载 int/None（见 selection_changed）
+    roi_selection_changed = Signal(object)
+    # 感知区操作提示文本（参数为提示文案，主窗口接状态栏显示）
+    roi_hint = Signal(str)
 
     # 缩放步进倍率（滚轮/放大/缩小共用）
     _ZOOM_FACTOR = 1.12
@@ -260,11 +294,32 @@ class Canvas(QGraphicsView):
         # 绘制过程中已放置的顶点显示项（圆点）
         self._draft_vertex_items: List[QGraphicsItem] = []
 
-        # 撤销/重做栈（存放形状列表的深拷贝快照）
-        self._undo_stack: List[List[Dict]] = []
-        self._redo_stack: List[List[Dict]] = []
+        # 撤销/重做栈（存放 {"shapes": [...], "rois": [...]} 深拷贝快照）
+        self._undo_stack: List[Dict] = []
+        self._redo_stack: List[Dict] = []
         # 内部剪贴板（存放选中形状的深拷贝，供复制/粘贴）
         self._clipboard: List[Dict] = []
+
+        # ===== 感知区（ROI）状态 =====
+        # 感知区列表（元素形如 {"id": int, "box": [x1, y1, x2, y2]}，见 labelme_io.new_roi）
+        self._rois: List[Dict] = []
+        # 当前选中的感知区 id（None = 未选中）
+        self._selected_roi_id: Optional[int] = None
+        # 渲染关联：感知区 id -> 虚线框 QGraphicsRectItem
+        self._roi_rect_items: Dict[int, QGraphicsRectItem] = {}
+        # 感知区文本显示项（ROI{id} 双层文本，随感知区重绘重建）
+        self._roi_text_items: List[QGraphicsTextItem] = []
+        # 选中感知区的角端点手柄项：感知区 id -> [左上, 右下] item
+        self._roi_vertex_items: Dict[int, List[QGraphicsItem]] = {}
+        # 角端点手柄 item id -> (感知区 id, 角下标 0=左上/1=右下)，供拖动命中
+        # （与形状端点 _vertex_map 相互独立，避免两套命中互相干扰）
+        self._roi_vertex_map: Dict[int, Tuple[int, int]] = {}
+        # 感知区绘制草稿（虚线矩形项与起点）
+        self._roi_draft_item: Optional[QGraphicsRectItem] = None
+        self._roi_draft_start: Optional[QPointF] = None
+        # 感知区拖动状态：{"mode": "move"/"vertex", "roi_id": int,
+        # "start": QPointF, "orig_box": [...], "moved": bool, "corner": int(仅 vertex)}
+        self._roi_drag: Optional[Dict] = None
 
         # 画布渲染配置（线宽/不透明度/字号/文本开关，由主窗口视图菜单设置）
         self._render_config: RenderConfig = RenderConfig()
@@ -316,6 +371,8 @@ class Canvas(QGraphicsView):
         self._clear_draft()
         self._clear_rubber()
         self._remove_hover_mask()
+        # 感知区草稿同属场景项，须一并先于场景清空释放
+        self._clear_roi_draft()
 
         self._scene.clear()
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
@@ -342,6 +399,16 @@ class Canvas(QGraphicsView):
         self._draft_vertex_items = []
         self._edge_hint_items = []
         self._edge_hint_timer.stop()
+        # 感知区随图像切换重置（新图感知区由外部另行 set_rois）
+        self._rois = []
+        self._selected_roi_id = None
+        self._roi_rect_items = {}
+        self._roi_text_items = []
+        self._roi_vertex_items = {}
+        self._roi_vertex_map = {}
+        self._roi_draft_item = None
+        self._roi_draft_start = None
+        self._roi_drag = None
 
         self.fit_to_window()
         return True
@@ -449,12 +516,15 @@ class Canvas(QGraphicsView):
         """切换标注工具（tool 为 None 即进入编辑模式）。
 
         Args:
-            tool: 'rectangle' / 'point' / 'polygon' / None（编辑模式）。
+            tool: 'rectangle' / 'point' / 'polygon' / TOOL_ROI（感知区）/ None（编辑模式）。
         """
         self._tool = tool
         self._clear_draft()
         self._clear_guides()
         self._clear_rubber()
+        # 感知区草稿与拖动状态随工具切换一并复位（避免残留草稿框）
+        self._clear_roi_draft()
+        self._roi_drag = None
         if tool is not None:
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
@@ -503,8 +573,8 @@ class Canvas(QGraphicsView):
         """静默丢弃指定形状（用于“空 label 形状不生效”），不记录撤销快照。
 
         按对象身份（is）从形状列表移除；若撤销栈顶快照与移除后的
-        形状列表深度相等，则弹出该栈顶快照（清理“创建后即丢弃”
-        产生的无效撤销记录）。
+        状态（形状列表 + 感知区列表）深度相等，则弹出该栈顶快照
+        （清理“创建后即丢弃”产生的无效撤销记录）。
 
         Args:
             shape: 要丢弃的形状字典。
@@ -514,8 +584,9 @@ class Canvas(QGraphicsView):
             return
         # 按对象身份过滤移除
         self._shapes = [s for s in self._shapes if s is not shape]
-        # 清理无效撤销记录：栈顶快照与移除后的形状列表一致时弹出
-        if self._undo_stack and self._undo_stack[-1] == self._shapes:
+        # 清理无效撤销记录：栈顶快照与移除后的状态一致时弹出
+        # （快照为 {"shapes", "rois"} 字典，须与当前状态快照比较）
+        if self._undo_stack and self._undo_stack[-1] == self._snapshot():
             self._undo_stack.pop()
         # 同步移除选中集合中的该形状 id
         sid = id(shape)
@@ -552,48 +623,71 @@ class Canvas(QGraphicsView):
         self.shapes_changed.emit()
 
     # -------------------------- 撤销 / 重做 --------------------------
-    def _snapshot(self) -> List[Dict]:
-        """返回当前形状列表的深拷贝快照。"""
-        return copy.deepcopy(self._shapes)
+    def _snapshot(self) -> Dict:
+        """返回当前状态（形状列表 + 感知区列表）的深拷贝快照。
+
+        Returns:
+            {"shapes": [...], "rois": [...]} 深拷贝字典；形状与感知区
+            同属一次可撤销变更，故一并入栈保证撤销一致性。
+        """
+        return {
+            "shapes": copy.deepcopy(self._shapes),
+            "rois": copy.deepcopy(self._rois),
+        }
 
     def _push_undo(self) -> None:
-        """在形状变更前记录一次撤销快照，并清空重做栈。"""
+        """在变更前记录一次撤销快照，并清空重做栈。"""
         self._undo_stack.append(self._snapshot())
         if len(self._undo_stack) > _MAX_UNDO:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
 
     def undo(self) -> None:
-        """撤销上一步形状变更。"""
+        """撤销上一步变更（同时恢复形状列表与感知区列表）。"""
         if not self._undo_stack:
             return
         self._redo_stack.append(self._snapshot())
-        self._shapes = self._undo_stack.pop()
+        state = self._undo_stack.pop()
+        self._shapes = state["shapes"]
+        self._rois = state["rois"]
+        # 恢复后清空形状与感知区选中（历史状态无选中语义）
         self._selected_ids = []
+        self._set_roi_selection(None)
         self._render()
         self.shapes_changed.emit()
+        self.rois_changed.emit()
         self.selection_changed.emit([])
 
     def redo(self) -> None:
-        """重做上一步被撤销的变更。"""
+        """重做上一步被撤销的变更（同时恢复形状列表与感知区列表）。"""
         if not self._redo_stack:
             return
         self._undo_stack.append(self._snapshot())
-        self._shapes = self._redo_stack.pop()
+        state = self._redo_stack.pop()
+        self._shapes = state["shapes"]
+        self._rois = state["rois"]
+        # 恢复后清空形状与感知区选中（历史状态无选中语义）
         self._selected_ids = []
+        self._set_roi_selection(None)
         self._render()
         self.shapes_changed.emit()
+        self.rois_changed.emit()
         self.selection_changed.emit([])
 
     def is_drawing(self) -> bool:
         """返回是否处于绘制草稿进行中（供主窗口 Ctrl+Z 分流判断）。
 
-        覆盖多边形绘制（已放置顶点非空）与矩形两点式绘制（起点草稿已建）。
+        覆盖多边形绘制（已放置顶点非空）与矩形两点式绘制（起点草稿已建）
+        以及感知区绘制草稿。
 
         Returns:
             绘制草稿进行中返回 True，否则 False。
         """
-        return bool(self._draft_points) or self._draft_item is not None
+        return (
+            bool(self._draft_points)
+            or self._draft_item is not None
+            or self._roi_draft_item is not None
+        )
 
     def undo_draft_vertex(self) -> None:
         """撤销绘制草稿的最后一个顶点（供绘制中 Ctrl+Z 分流调用）。
@@ -602,6 +696,7 @@ class Canvas(QGraphicsView):
             - 多边形：弹出末顶点；弹空后取消整个草稿，否则重建预览线
               并清理已放置顶点标记（下次鼠标移动按剩余顶点重建标记）；
             - 矩形两点式：撤销起点等价取消当前草稿（直觉一致）；
+            - 感知区：取消感知区草稿（等价取消本次绘制）；
             - 非绘制状态：无操作。
         """
         # 多边形绘制中：弹出末顶点并重建预览
@@ -617,6 +712,9 @@ class Canvas(QGraphicsView):
         # 矩形两点式绘制中：撤销起点即取消草稿
         elif self._tool == labelme_io.SHAPE_RECTANGLE and self._draft_item is not None:
             self._clear_draft()
+        # 感知区绘制中：取消草稿（与矩形草稿同语义）
+        elif self._tool == TOOL_ROI and self._roi_draft_item is not None:
+            self._clear_roi_draft()
 
     def can_undo(self) -> bool:
         """返回撤销栈是否非空（是否存在可撤销的变更）。
@@ -724,6 +822,171 @@ class Canvas(QGraphicsView):
         ]
         self._render()
         self.selection_changed.emit(self.selected_shapes())
+
+    # -------------------------- 感知区（ROI）数据接口 --------------------------
+    def rois(self) -> List[Dict]:
+        """返回当前全部感知区（深拷贝，供主窗口列表/保存链路读取）。
+
+        Returns:
+            感知区字典列表（元素形如 {"id": int, "box": [x1, y1, x2, y2]}）；
+            返回深拷贝，外部修改不影响画布内部数据。
+        """
+        return copy.deepcopy(self._rois)
+
+    def set_rois(self, rois: List[Dict]) -> None:
+        """整体替换感知区列表并重新渲染（与 set_shapes 同范式）。
+
+        外部整体替换（加载 JSON/切换图片）视为新起点：清空感知区选中，
+        并清空撤销/重做历史；随后重绘并发射 rois_changed。若替换前
+        存在选中项，再补发一次 roi_selection_changed(None)。
+
+        Args:
+            rois: 新的感知区字典列表。
+        """
+        self._rois = copy.deepcopy(list(rois))
+        # 外部整体替换：复位拖动/草稿状态，清空选中（置于 _render 之前避免
+        # 旧选中态样式残留）
+        self._roi_drag = None
+        self._clear_roi_draft()
+        was_selected = self._selected_roi_id is not None
+        self._selected_roi_id = None
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._render()
+        self.rois_changed.emit()
+        if was_selected:
+            self.roi_selection_changed.emit(None)
+
+    def clear_rois(self) -> None:
+        """清空当前图像的全部感知区（等价于 set_rois([])）。"""
+        self.set_rois([])
+
+    def selected_roi_id(self) -> Optional[int]:
+        """返回当前选中的感知区 id（未选中返回 None）。
+
+        Returns:
+            感知区 id 或 None。
+        """
+        return self._selected_roi_id
+
+    def select_roi(self, roi_id: Optional[int]) -> None:
+        """程序化选中/取消感知区（仅重绘并发射 roi_selection_changed）。
+
+        不发射 rois_changed（未改变感知区数据）；roi_id 为 None 或不存在
+        于当前感知区列表时按"取消选中"处理。
+
+        Args:
+            roi_id: 目标感知区 id 或 None（取消选中）。
+        """
+        if roi_id is not None and self._find_roi_by_id(roi_id) is None:
+            roi_id = None
+        self._set_roi_selection(roi_id)
+        self._render()
+
+    def delete_roi(self, roi_id: int) -> bool:
+        """删除指定感知区（记录撤销快照并可 Ctrl+Z 恢复）。
+
+        Args:
+            roi_id: 要删除的感知区 id。
+
+        Returns:
+            删除成功返回 True；感知区不存在返回 False（无任何变更）。
+        """
+        if self._find_roi_by_id(roi_id) is None:
+            return False
+        self._push_undo()
+        self._rois = [
+            r for r in self._rois if int(r.get("id", 0)) != int(roi_id)
+        ]
+        # 被删除项正是当前选中项时清空选中并通知外部
+        was_selected = self._selected_roi_id == roi_id
+        if was_selected:
+            self._set_roi_selection(None)
+        self._render()
+        self.rois_changed.emit()
+        return True
+
+    def add_roi_from_shape(self, shape: Dict) -> Optional[Dict]:
+        """按矩形形状的包围盒新建一个感知区（供"由标注框创建感知区"入口）。
+
+        仅接受 shape_type 为 rectangle 的形状（多边形/点返回 None），
+        取全部顶点的包围盒并钳制在图像显示区内，id 按现有最大值自增；
+        新建的感知区立即成为选中项。操作记录撤销快照。
+
+        Args:
+            shape: 形状字典（labelme 格式）。
+
+        Returns:
+            新建的感知区字典；非矩形形状、无顶点或未加载图像时返回 None。
+        """
+        # 未加载图像时无有效图像边界，直接拒绝
+        if self._image_width <= 0 or self._image_height <= 0:
+            return None
+        if str(shape.get("shape_type", "")) != labelme_io.SHAPE_RECTANGLE:
+            return None
+        bbox = self._points_bbox(shape.get("points") or [])
+        if bbox is None:
+            return None
+        # 包围盒钳制在图片显示区内（与绘制创建口径一致）
+        rect = self._scene.sceneRect()
+        x1 = min(max(bbox.left(), rect.left()), rect.right())
+        y1 = min(max(bbox.top(), rect.top()), rect.bottom())
+        x2 = min(max(bbox.right(), rect.left()), rect.right())
+        y2 = min(max(bbox.bottom(), rect.top()), rect.bottom())
+        self._push_undo()
+        roi = self._append_new_roi([x1, y1, x2, y2])
+        self._set_roi_selection(roi["id"])
+        self._render()
+        self.rois_changed.emit()
+        return roi
+
+    def focus_box(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        """缩放视图定位到指定矩形区域（供感知区列表"定位"联动）。
+
+        以矩形外扩少量边距后 fitInView（保持宽高比），并把结果作为
+        基准视图（不受缩放档位钳制）；缩放后重算关键点圆点尺寸，
+        保证与 fit_to_window 一致的联动行为。
+
+        Args:
+            x1: 矩形左边界（图像像素坐标）。
+            y1: 矩形上边界。
+            x2: 矩形右边界。
+            y2: 矩形下边界。
+        """
+        rect = QRectF(QPointF(x1, y1), QPointF(x2, y2)).normalized()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        # 外扩 10% 边距（下限 4px），避免目标区域紧贴视口边缘
+        margin_x = max(rect.width() * 0.1, 4.0)
+        margin_y = max(rect.height() * 0.1, 4.0)
+        self.fitInView(
+            rect.adjusted(-margin_x, -margin_y, margin_x, margin_y),
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        # 关键点反向联动：缩放后按新比例重算圆点尺寸
+        self._update_point_items()
+
+    def roi_at(self, pos: QPointF) -> Optional[int]:
+        """返回包含指定场景点的感知区 id（内部辅助兼公开命中测试）。
+
+        采用几何包含判定而非 QGraphicsItem 命中：感知区框为无填充
+        虚线矩形，图形项命中区仅覆盖描边，无法覆盖框内区域。
+        倒序遍历（后添加者优先），与渲染层级一致。
+
+        Args:
+            pos: 场景坐标点。
+
+        Returns:
+            命中的感知区 id；未命中任何感知区返回 None。
+        """
+        for roi in reversed(self._rois):
+            box = roi.get("box") or []
+            if len(box) < 4:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in box[:4])
+            if x1 <= pos.x() <= x2 and y1 <= pos.y() <= y2:
+                return int(roi.get("id", 0))
+        return None
 
     # -------------------------- 缩放 --------------------------
     def zoom_in(self) -> None:
@@ -869,6 +1132,9 @@ class Canvas(QGraphicsView):
         # 清除 hover 掩码（形状可能已被删除/修改）
         self._remove_hover_mask()
 
+        # 感知区先于形状创建：同 z 值下位于形状下层（底图之上），不遮挡标注
+        self._render_rois()
+
         for shape in self._shapes:
             # 隐藏形状（复选框取消勾选）不创建图形项与文本
             if not shape.get("_visible", True):
@@ -886,6 +1152,121 @@ class Canvas(QGraphicsView):
         # 编辑模式（工具为 None）：渲染可拖动编辑端点
         self._render_vertices()
         self._highlight_selection()
+
+    # -------------------------- 感知区（ROI）渲染 --------------------------
+    def _render_rois(self) -> None:
+        """重建全部感知区图形项（虚线框 + ROI{id} 文本 + 选中态角端点）。
+
+        由 _render 在形状之前调用，故同 z 值（默认 0，位于底图之上）下
+        感知区渲染在形状下层，不遮挡标注对象。选中态（_selected_roi_id）
+        使用加粗深色虚线，并仅在感知区工具（TOOL_ROI）下渲染左上/右下
+        两个角端点手柄——非感知区工具下感知区不可命中，不显示手柄。
+        """
+        # 清理旧的感知区项引用（scene() 判断兜底：item 可能已随场景清除，
+        # 直接访问已删除的 C++ 对象会触发 RuntimeError）
+        for item in list(self._roi_rect_items.values()):
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._roi_rect_items = {}
+        for items in list(self._roi_vertex_items.values()):
+            for item in items:
+                if item.scene() is self._scene:
+                    self._scene.removeItem(item)
+        self._roi_vertex_items = {}
+        self._roi_vertex_map = {}
+        for item in list(self._roi_text_items):
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._roi_text_items = []
+
+        for roi in self._rois:
+            box = roi.get("box") or []
+            if len(box) < 4:
+                continue
+            roi_id = int(roi.get("id", 0))
+            x1, y1, x2, y2 = (float(v) for v in box[:4])
+            rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+            selected = roi_id == self._selected_roi_id
+            item = QGraphicsRectItem(rect)
+            # 无填充虚线描边（cosmetic 保证屏幕线宽恒定，不随缩放变粗）
+            item.setPen(_ROI_SELECTED_PEN if selected else _ROI_PEN)
+            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self._scene.addItem(item)
+            self._roi_rect_items[roi_id] = item
+            # 文本与角端点
+            self._add_roi_text(roi_id, rect)
+            if selected and self._tool == TOOL_ROI:
+                self._render_roi_vertices(roi_id, rect)
+
+    def _add_roi_text(self, roi_id: int, rect: QRectF) -> None:
+        """渲染感知区编号文本 ROI{id}（框左上角外侧，双层文本自绘阴影）。
+
+        阴影实现与形状文本一致（禁用 QGraphicsDropShadowEffect，避免
+        缩放重绘下的 native 崩溃）：底层黑色文本 setOpacity 承载
+        text_shadow_opacity，顶层同色系彩色文本，偏移 (1,1)。
+        文本项不可交互（ItemIsSelectable=False 且不接受鼠标按键），
+        不影响画布上的绘制/编辑/感知区交互。
+
+        Args:
+            roi_id: 感知区 id。
+            rect: 感知区矩形（场景坐标）。
+        """
+        cfg = self._render_config
+        text = f"ROI{roi_id}"
+        font = QFont()
+        font.setPointSizeF(float(cfg.font_size))
+
+        shadow_item = QGraphicsTextItem()
+        shadow_item.setFont(font)
+        shadow_item.setHtml(f'<span style="color:#000000;">{text}</span>')
+        shadow_item.setOpacity(max(0.0, min(1.0, cfg.text_shadow_opacity / 100.0)))
+
+        text_item = QGraphicsTextItem()
+        text_item.setFont(font)
+        text_item.setHtml(
+            f'<span style="color:{_ROI_COLOR.name()};">{text}</span>'
+        )
+        # 锚点：框左上角外侧（上移文本高度 + _TEXT_OFFSET 间隙），与框体不重叠
+        base_pos = QPointF(
+            rect.left(),
+            rect.top() - text_item.boundingRect().height() - _TEXT_OFFSET,
+        )
+        shadow_item.setPos(base_pos + QPointF(1.0, 1.0))
+        text_item.setPos(base_pos)
+        for item in (shadow_item, text_item):
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._scene.addItem(item)
+            self._roi_text_items.append(item)
+
+    def _render_roi_vertices(self, roi_id: int, rect: QRectF) -> None:
+        """为选中的感知区渲染两个角端点手柄（左上/右下）。
+
+        样式与拖动命中机制参照形状编辑端点（_render_vertices）：白描边
+        + 感知区色填充、z 值 10（位于其余项之上）；端点注册进独立映射
+        _roi_vertex_map（item id -> (感知区 id, 角下标)），与形状端点
+        _vertex_map 互不干扰。
+
+        Args:
+            roi_id: 感知区 id。
+            rect: 感知区矩形（场景坐标）。
+        """
+        r = _EDIT_VERTEX_RADIUS
+        items: List[QGraphicsItem] = []
+        # 角下标 0 = 左上（rect 左上角）、1 = 右下（rect 右下角）
+        for corner, point in enumerate((rect.topLeft(), rect.bottomRight())):
+            item = QGraphicsEllipseItem(
+                point.x() - r, point.y() - r, r * 2, r * 2
+            )
+            item.setPen(QPen(QColor("#ffffff"), 2))
+            item.setBrush(QBrush(QColor(_ROI_COLOR)))
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setZValue(10)
+            self._scene.addItem(item)
+            items.append(item)
+            self._roi_vertex_map[id(item)] = (roi_id, corner)
+        self._roi_vertex_items[roi_id] = items
 
     def _maybe_add_shape_text(self, shape: Dict) -> None:
         """按渲染配置在形状包围盒左上方渲染文本（标签/组号/描述，多行）。
@@ -1338,6 +1719,253 @@ class Canvas(QGraphicsView):
         shape["points"][point_idx] = new_pt
         self._render()
 
+    # -------------------------- 感知区（ROI）交互 --------------------------
+    def _find_roi_by_id(self, roi_id: Optional[int]) -> Optional[Dict]:
+        """按 id 查找感知区字典。
+
+        Args:
+            roi_id: 感知区 id。
+
+        Returns:
+            感知区字典；未找到（含 roi_id 为 None）返回 None。
+        """
+        if roi_id is None:
+            return None
+        for roi in self._rois:
+            if int(roi.get("id", 0)) == int(roi_id):
+                return roi
+        return None
+
+    def _set_roi_selection(self, roi_id: Optional[int]) -> None:
+        """设置感知区选中态，仅在选中态变化时发射 roi_selection_changed。
+
+        仅更新内部状态与信号，不重绘（调用方按需自行 _render）。
+
+        Args:
+            roi_id: 目标感知区 id 或 None（取消选中）。
+        """
+        if self._selected_roi_id == roi_id:
+            return
+        self._selected_roi_id = roi_id
+        self.roi_selection_changed.emit(roi_id)
+
+    def _append_new_roi(self, box) -> Dict:
+        """按现有感知区 id 最大值自增新建感知区并追加（不含撤销与信号）。
+
+        Args:
+            box: 边界框 [x1, y1, x2, y2]（图像像素坐标）。
+
+        Returns:
+            新建的感知区字典（id = 现有最大值 + 1，空列表时为 1）。
+        """
+        new_id = max((int(r.get("id", 0)) for r in self._rois), default=0) + 1
+        roi = labelme_io.new_roi(new_id, box)
+        self._rois.append(roi)
+        return roi
+
+    def _hit_roi_vertex(self, scene: QPointF) -> Optional[Tuple[int, int]]:
+        """返回命中测试所得感知区角端点 (感知区 id, 角下标)。
+
+        Args:
+            scene: 场景坐标点。
+
+        Returns:
+            (感知区 id, 角下标 0=左上/1=右下) 元组；未命中返回 None。
+        """
+        for item in self._scene.items(scene):
+            vertex = self._roi_vertex_map.get(id(item))
+            if vertex is not None:
+                return vertex
+        return None
+
+    def _update_roi_cursor(self, scene: QPointF) -> None:
+        """感知区工具空闲移动时的悬停光标反馈。
+
+        角端点上为 SizeAll（可拖端点缩放）、框内为 OpenHand（可拖拽
+        移动）、空白处为 CrossCursor（可拖拽新建）；拖动进行中的光标
+        由按下/释放分支单独控制，不经过本方法。
+
+        Args:
+            scene: 当前鼠标场景坐标。
+        """
+        if self._hit_roi_vertex(scene) is not None:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self.roi_at(scene) is not None:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _roi_press(self, scene: QPointF) -> None:
+        """感知区工具按下：端点拖动 / 框内移动 / 空白新建草稿。
+
+        优先顺序：选中感知区的角端点 → 框内（选中并进入移动拖动）→
+        空白（取消选中并开始虚线草稿）。仅感知区工具走本方法，其他
+        工具下感知区不参与命中，不影响既有形状交互。
+
+        Args:
+            scene: 按下点场景坐标（已钳制在图片区内）。
+        """
+        # 1) 命中选中感知区的角端点：进入端点拖动（缩放感知区）
+        vertex = self._hit_roi_vertex(scene)
+        if vertex is not None:
+            roi_id, corner = vertex
+            roi = self._find_roi_by_id(roi_id)
+            if roi is not None and len(roi.get("box") or []) >= 4:
+                self._roi_drag = {
+                    "mode": "vertex",
+                    "roi_id": roi_id,
+                    "corner": corner,
+                    "start": scene,
+                    "orig_box": [float(v) for v in roi["box"][:4]],
+                    "moved": False,
+                }
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                return
+        # 2) 命中感知区框内：选中并进入移动拖动
+        hit_id = self.roi_at(scene)
+        if hit_id is not None:
+            roi = self._find_roi_by_id(hit_id)
+            if roi is None or len(roi.get("box") or []) < 4:
+                return
+            if hit_id != self._selected_roi_id:
+                # 选中态变化：重绘以更新虚线样式与角端点手柄
+                self._set_roi_selection(hit_id)
+                self._render()
+            self._roi_drag = {
+                "mode": "move",
+                "roi_id": hit_id,
+                "start": scene,
+                "orig_box": [float(v) for v in roi["box"][:4]],
+                "moved": False,
+            }
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        # 3) 空白处：取消选中并开始虚线草稿（拖拽释放后创建感知区）
+        if self._selected_roi_id is not None:
+            self._set_roi_selection(None)
+            self._render()
+        self._clear_roi_draft()
+        self._start_roi_draft(scene)
+
+    def _start_roi_draft(self, scene: QPointF) -> None:
+        """开始感知区绘制：以起点创建临时虚线草稿矩形。
+
+        Args:
+            scene: 起点场景坐标（已钳制在图片区内）。
+        """
+        item = QGraphicsRectItem(QRectF(scene, scene))
+        item.setPen(_ROI_PEN)
+        item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self._scene.addItem(item)
+        self._roi_draft_item = item
+        self._roi_draft_start = scene
+
+    def _update_roi_draft(self, scene: QPointF) -> None:
+        """更新感知区草稿矩形大小（无按键移动时跟随光标预览，行为同矩形工具）。
+
+        Args:
+            scene: 当前场景坐标点（对角点，已钳制在图片区内）。
+        """
+        if self._roi_draft_item is None or self._roi_draft_start is None:
+            return
+        self._roi_draft_item.setRect(
+            QRectF(self._roi_draft_start, scene).normalized()
+        )
+
+    def _move_roi_drag(self, scene: QPointF) -> None:
+        """感知区拖动中：平移框体或调整单个角（钳制在图片边界内）。
+
+        移动：按相对起始点的位移整体平移，位移按"框体不越出图片"钳制
+        （参照 _clamp_move_delta 的思路，感知区不做阻力衰减）；
+        端点：调整对应角后归一为左上/右下，各轴间距不小于 _ROI_MIN_SIZE。
+        首次实际变化前懒记录撤销快照（仅点击不拖动不污染撤销栈）。
+
+        Args:
+            scene: 当前鼠标场景坐标（已钳制在图片区内）。
+        """
+        drag = self._roi_drag
+        if drag is None:
+            return
+        roi = self._find_roi_by_id(drag["roi_id"])
+        if roi is None:
+            return
+        rect = self._scene.sceneRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        ox1, oy1, ox2, oy2 = drag["orig_box"]
+        if drag["mode"] == "move":
+            # 平移：按框体与图片边界的剩余空间钳制位移（不改变尺寸）
+            dx = scene.x() - drag["start"].x()
+            dy = scene.y() - drag["start"].y()
+            dx = min(max(dx, rect.left() - ox1), rect.right() - ox2)
+            dy = min(max(dy, rect.top() - oy1), rect.bottom() - oy2)
+            new_box = [ox1 + dx, oy1 + dy, ox2 + dx, oy2 + dy]
+        else:
+            # 端点：移动角与固定角（另一对角）重新归一为左上/右下
+            if drag["corner"] == 0:
+                mx, my = scene.x(), scene.y()
+                fx, fy = ox2, oy2
+            else:
+                mx, my = scene.x(), scene.y()
+                fx, fy = ox1, oy1
+            # 最小尺寸约束：移动角与固定角各轴间距不小于 _ROI_MIN_SIZE
+            if abs(mx - fx) < _ROI_MIN_SIZE:
+                mx = fx - _ROI_MIN_SIZE if mx <= fx else fx + _ROI_MIN_SIZE
+            if abs(my - fy) < _ROI_MIN_SIZE:
+                my = fy - _ROI_MIN_SIZE if my <= fy else fy + _ROI_MIN_SIZE
+            new_box = [min(mx, fx), min(my, fy), max(mx, fx), max(my, fy)]
+        # 无实际变化（钳制后与原框一致）：不视为移动、不记撤销快照
+        if new_box == roi["box"]:
+            return
+        # 首次实际变化前记录撤销快照
+        if not drag["moved"]:
+            self._push_undo()
+            drag["moved"] = True
+        roi["box"] = new_box
+        self._render()
+
+    def _roi_release(self) -> None:
+        """感知区工具释放：完成新建草稿或结束拖动。
+
+        草稿：宽高均 >= _ROI_MIN_SIZE 时记录撤销快照后创建感知区并选中
+        （发射 rois_changed + roi_selection_changed）；否则丢弃草稿并
+        发射 roi_hint 提示。拖动：仅实际移动时发射 rois_changed
+        （撤销快照已在首次移动前入栈）。
+        """
+        # 拖动结束（移动/端点调整）
+        if self._roi_drag is not None:
+            moved = bool(self._roi_drag.get("moved"))
+            self._roi_drag = None
+            self.unsetCursor()
+            if moved:
+                self.rois_changed.emit()
+            return
+        # 无草稿：无操作
+        if self._roi_draft_item is None:
+            return
+        rect = self._roi_draft_item.rect()
+        self._clear_roi_draft()
+        # 过小丢弃：宽或高不足最小尺寸时不创建，仅提示
+        if rect.width() < _ROI_MIN_SIZE or rect.height() < _ROI_MIN_SIZE:
+            self.roi_hint.emit("感知区过小已丢弃（最小 4×4 像素）")
+            return
+        self._push_undo()
+        roi = self._append_new_roi(
+            [rect.left(), rect.top(), rect.right(), rect.bottom()]
+        )
+        self._set_roi_selection(roi["id"])
+        self._render()
+        self.rois_changed.emit()
+
+    def _clear_roi_draft(self) -> None:
+        """清理感知区绘制草稿（若有）。"""
+        if self._roi_draft_item is not None:
+            if self._roi_draft_item.scene() is self._scene:
+                self._scene.removeItem(self._roi_draft_item)
+            self._roi_draft_item = None
+        self._roi_draft_start = None
+
     # -------------------------- 绘制状态清理 --------------------------
     def _clear_draft(self) -> None:
         """清理绘制中的临时图形与顶点缓存。"""
@@ -1355,6 +1983,8 @@ class Canvas(QGraphicsView):
 
         矩形工具为两点式：首次左键点击落起点建虚线草稿，第二次左键
         点击完成创建（创建不由按住拖拽/释放触发）。
+        感知区工具（TOOL_ROI）为拖拽式：按下未命中任何 ROI 时起虚线
+        草稿，释放时创建（见 _roi_press/_roi_release）。
         """
         pos = event.position().toPoint()
         scene = self._scene_pos(pos)
@@ -1370,6 +2000,9 @@ class Canvas(QGraphicsView):
             elif self._draft_item is not None or self._press_scene is not None:
                 # 矩形两点式绘制中：取消当前草稿
                 self._clear_draft()
+            elif self._roi_draft_item is not None:
+                # 感知区绘制中：取消当前草稿
+                self._clear_roi_draft()
             else:
                 # 空白或对象上右键（绘制工具空闲或编辑模式）：请求上下文菜单
                 hit = self._find_shape_by_id(self._hit_shape_id(scene))
@@ -1379,6 +2012,12 @@ class Canvas(QGraphicsView):
         # ===== 绘制工具激活 =====
         # 绘制类创建的坐标统一钳制在图片显示区内（禁止在图片外创建标注）
         scene = self._clamp_to_image(scene)
+
+        # 感知区工具：端点拖动 / 框内移动 / 空白拖拽新建（不进入既有形状分支）
+        if self._tool == TOOL_ROI:
+            self._roi_press(scene)
+            return
+
         if self._tool == labelme_io.SHAPE_POINT:
             self._add_point_shape(scene)
             return
@@ -1452,7 +2091,7 @@ class Canvas(QGraphicsView):
             self._dragging = False
 
     def mouseMoveEvent(self, event) -> None:
-        """鼠标移动：更新顶点标记/绘制/框选/端点拖动/批量移动/hover 掩码。"""
+        """鼠标移动：更新顶点标记/绘制/框选/端点拖动/批量移动/hover 掩码/感知区。"""
         scene = self._scene_pos(event.position().toPoint())
 
         # 绘制模式：预览/顶点标记坐标钳制在图片区内（创建不越界的视觉联动）
@@ -1462,6 +2101,16 @@ class Canvas(QGraphicsView):
         # 绘制模式：更新绘制辅助（延长线 + 已放置顶点标记）
         if self._tool is not None:
             self._update_guides(scene)
+
+        # 感知区工具：草稿跟随光标 / 拖动中平移或缩放 / 空闲光标反馈
+        if self._tool == TOOL_ROI:
+            if self._roi_drag is not None:
+                self._move_roi_drag(scene)
+            elif self._roi_draft_item is not None:
+                self._update_roi_draft(scene)
+            else:
+                self._update_roi_cursor(scene)
+            return
 
         # 矩形两点式：草稿存在时无按键按下也跟随光标更新预览
         if self._tool == labelme_io.SHAPE_RECTANGLE and self._draft_item is not None:
@@ -1494,11 +2143,16 @@ class Canvas(QGraphicsView):
             self._update_hover_cursor(scene)
 
     def mouseReleaseEvent(self, event) -> None:
-        """鼠标释放：结束框选/端点拖动/拖拽移动。
+        """鼠标释放：结束框选/端点拖动/拖拽移动/感知区绘制或拖动。
 
         矩形为两点式：按下/释放不改变草稿状态（草稿预览由无按键移动
         驱动），创建仅由第二次左键点击触发，故矩形工具下直接返回。
         """
+        # 感知区工具：释放完成草稿创建或结束拖动（见 _roi_release）
+        if self._tool == TOOL_ROI:
+            self._roi_release()
+            return
+
         # 矩形两点式：无按住拖拽状态，释放无需清理
         if self._tool == labelme_io.SHAPE_RECTANGLE:
             return
@@ -1534,8 +2188,10 @@ class Canvas(QGraphicsView):
             return
 
     def keyPressEvent(self, event) -> None:
-        """快捷键：Esc 取消当前绘制/框选/端点拖动。
+        """快捷键：Esc 取消当前绘制/框选/端点拖动/感知区草稿或选中。
 
+        感知区工具下优先取消感知区绘制草稿，其次取消感知区选中；
+        其余 Esc 语义（取消形状绘制草稿/框选/端点拖动）保持不变。
         Delete 由主窗口按焦点上下文路由处理（对象列表/文件列表/画布选中删除），
         画布不拦截。
         """
@@ -1550,6 +2206,23 @@ class Canvas(QGraphicsView):
                 if moved:
                     self.undo()
                 return
+            # 感知区工具：取消草稿 → 取消选中 → 兜底走既有清理
+            if self._tool == TOOL_ROI:
+                if self._roi_drag is not None:
+                    # 拖动中：结束拖动（已发生的修改按释放语义提交并置脏）
+                    moved = bool(self._roi_drag.get("moved"))
+                    self._roi_drag = None
+                    self.unsetCursor()
+                    if moved:
+                        self.rois_changed.emit()
+                    return
+                if self._roi_draft_item is not None:
+                    self._clear_roi_draft()
+                    return
+                if self._selected_roi_id is not None:
+                    self._set_roi_selection(None)
+                    self._render()
+                    return
             self._clear_draft()
             self._clear_rubber()
             # Esc 同步清理悬停掩码/端点并复位光标

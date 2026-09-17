@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-右侧信息栏控件 - 三个独立分区控件（LabelSection / ObjectSection /
-FileSection）
+右侧信息栏控件 - 独立分区控件（LabelSection / ObjectSection /
+FileSection / RoiSection）
 
-主窗口右侧以三个独立 QDockWidget 分别承载三个分区控件（纵向堆叠）——
+主窗口右侧以独立 QDockWidget 分别承载各分区控件（纵向堆叠）——
     - LabelSection（标签列表）：工作路径下全部标签（单击/双击设为当前
       绘制标签）
     - ObjectSection（对象列表，标题"对象"）：当前图片上的全部标注对象
@@ -12,6 +12,9 @@ FileSection）
     - FileSection（文件列表）：工作路径下全部图片，顶部检索框
       （FileSearchProxyModel 按文件名/标签/已标注状态实时过滤）与
       "无匹配文件"空态提示
+    - RoiSection（感知区列表）：当前图片上的全部感知区（ROI 裁剪框），
+      单击选中与画布联动，双击/右键"定位"请求视图缩放定位，右键
+      "删除"经主窗口统一确认链路删除（Dock 装配由主窗口完成）
 
 Dock 纵向堆叠时高度由 Dock 间分隔条拖拽调节；挂靠左右边界时宽度由
 Dock 与中央控件间分隔条拖拽调节。每个分区构造时强制 96px 最小高度与
@@ -61,9 +64,14 @@ Dock 与中央控件间分隔条拖拽调节。每个分区构造时强制 96px 
       两步重排）；形状下标改存条目 UserRole 数据（拖放副本经 mime
       编解码保留），收尾按 UserRole 重建行号映射，重排经新增
       objects_reordered 信号通知主窗口同步重排画布形状
+更新: 2026-09-17 新增 RoiSection 感知区列表分区（单选 QListWidget，
+      行文本 ROI{id} (x1, y1) - (x2, y2) w×h，行号 → ROI id 映射且
+      id 存条目 UserRole；roi_selected / roi_locate_requested /
+      roi_delete_requested 三个 object 签名信号，程序化选中全程
+      blockSignals 静默避免回环）
 """
 
-from typing import List
+from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal, QEvent, QItemSelectionModel, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
@@ -658,4 +666,217 @@ class FileSection(_Section):
                 proxy_index,
                 QAbstractItemView.ScrollHint.PositionAtCenter,
             )
+
+
+class RoiSection(_Section):
+    """感知区列表分区：当前图片上的全部感知区（ROI 裁剪框）。
+
+    每行文本形如 `ROI1  (120, 80) - (640, 480)  520×400`（坐标为四舍五入
+    后的整数像素，宽高为 x2-x1 / y2-y1）；列表为单选，行号经 _roi_ids
+    映射到 ROI 的 id，id 同时存于条目 UserRole 数据（不依赖条目文本解析）。
+    单击/切换选中行与画布联动；双击或右键"定位"请求主窗口将视图缩放定位
+    到该感知区；右键"删除"请求主窗口走统一确认链路删除。
+
+    Signals:
+        roi_selected(object): 用户单击/切换选中行（参数为 ROI 的 id，
+            无选中时发射 None）。
+        roi_locate_requested(object): 双击条目或右键"定位"（参数为 ROI
+            的 id；主窗口将视图缩放定位到该感知区）。
+        roi_delete_requested(object): 右键"删除"（参数为 ROI 的 id；
+            主窗口走统一确认链路删除）。
+    """
+
+    # 参数为 ROI 的 id（object 签名避免 QVariant 转换；无选中为 None）
+    roi_selected = Signal(object)
+    # 参数为 ROI 的 id（双击/右键"定位"请求视图缩放定位）
+    roi_locate_requested = Signal(object)
+    # 参数为 ROI 的 id（右键"删除"请求，由主窗口统一确认后删除）
+    roi_delete_requested = Signal(object)
+
+    def __init__(self, parent=None):
+        """初始化感知区列表分区（单选 + 双击定位 + 右键定位/删除）。"""
+        super().__init__("感知区", parent)
+        self.setObjectName("roiSection")
+        # 行号 → ROI id 映射（选中/定位/删除交互均经此映射到真实 id，
+        # 避免依赖条目文本解析）
+        self._roi_ids: List[int] = []
+
+        # 感知区列表：单选即可（同一图片的感知区定位/删除均为单目标操作）
+        self.list = QListWidget()
+        self.list.setStyleSheet(
+            "QListWidget { background-color: #fafafa; border: 0; }"
+        )
+        # 双击条目：请求视图缩放定位到该感知区
+        self.list.itemDoubleClicked.connect(self._on_roi_double_clicked)
+        # 选中行变化：发射当前选中 ROI id（无选中发射 None）
+        self.list.itemSelectionChanged.connect(
+            self._on_roi_selection_changed
+        )
+        # 右键上下文菜单：定位 / 删除
+        self.list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.list.customContextMenuRequested.connect(
+            self._on_roi_context_menu
+        )
+        self.lay.addWidget(self.list, 1)
+
+    def set_rois(self, rois) -> None:
+        """填充感知区列表（清空并重建），每行显示 id 与归一化后的坐标。
+
+        重建全程屏蔽信号：clear() 与逐行插入会触发 itemSelectionChanged
+        → 误发 roi_selected（反向清空画布中已选中的感知区）。重建后清空
+        选中，当前选中感知区仍存在时由主窗口随后调用 select_roi 恢复。
+        非法条目（缺 id、box 长度不足 4、坐标非数值）跳过而不抛异常。
+
+        Args:
+            rois: ROI 字典列表，形如 {"id": int, "box": [x1, y1, x2, y2]}
+                （图像像素坐标，已归一为左上/右下）。
+        """
+        lst = self.list
+        lst.blockSignals(True)
+        # 清空列表并同步重置行号 → ROI id 映射
+        lst.clear()
+        self._roi_ids = []
+        for roi in rois or []:
+            parsed = self._parse_roi(roi)
+            if parsed is None:
+                continue  # 非法条目：跳过（不中断整个列表重建）
+            roi_id, x1, y1, x2, y2 = parsed
+            item = QListWidgetItem(
+                f"ROI{roi_id}  ({x1}, {y1}) - ({x2}, {y2})  "
+                f"{x2 - x1}×{y2 - y1}"
+            )
+            # ROI id 存入 UserRole：供调试定位与后续扩展读取（行号映射
+            # 与之保持一致，文本解析不作为数据来源）
+            item.setData(Qt.ItemDataRole.UserRole, roi_id)
+            lst.addItem(item)
+            self._roi_ids.append(roi_id)
+        # 重建后清空选中（当前选中 ROI 仍存在时由主窗口随后 select_roi 恢复）
+        lst.clearSelection()
+        lst.setCurrentRow(-1)
+        lst.blockSignals(False)
+
+    @staticmethod
+    def _parse_roi(roi):
+        """解析单条 ROI 数据（非法条目返回 None，由调用方跳过）。
+
+        Args:
+            roi: 待解析的 ROI 数据（期望 {"id": int, "box": [x1, y1, x2, y2]}）。
+
+        Returns:
+            (id, x1, y1, x2, y2) 五元组（坐标为四舍五入后的整数）；
+            非字典、缺 id/box、box 长度不足 4 或坐标非数值时返回 None。
+        """
+        if not isinstance(roi, dict):
+            return None
+        roi_id = roi.get("id")
+        box = roi.get("box")
+        if roi_id is None or not isinstance(box, (list, tuple)) or len(box) < 4:
+            return None
+        try:
+            roi_id = int(roi_id)
+            # 坐标四舍五入为整数像素（宽高由整数坐标相减得到）
+            x1, y1, x2, y2 = (int(round(float(box[i]))) for i in range(4))
+        except (TypeError, ValueError):
+            return None
+        return roi_id, x1, y1, x2, y2
+
+    def select_roi(self, roi_id) -> None:
+        """程序化选中指定感知区行（不发射信号）。
+
+        全程 blockSignals 静默设置：避免与主窗口形成"列表选中 → 画布
+        联动 → 回填列表选中"的回环。roi_id 为 None 或未命中当前列表时
+        清空选中。
+
+        Args:
+            roi_id: 目标 ROI 的 id（None 或未命中时清空选中）。
+        """
+        lst = self.list
+        # 行号 → ROI id 映射中查找目标行（未命中为 -1）
+        row = -1
+        if roi_id is not None:
+            for index, current_id in enumerate(self._roi_ids):
+                if current_id == roi_id:
+                    row = index
+                    break
+        lst.blockSignals(True)
+        if row < 0:
+            # 无选中行：清空选中并重置当前项
+            lst.clearSelection()
+            lst.setCurrentRow(-1)
+        else:
+            # 单选列表：设置当前行即完成选中
+            lst.setCurrentRow(row)
+        lst.blockSignals(False)
+
+    def selected_roi_id(self) -> Optional[int]:
+        """返回当前选中行对应的 ROI id（无选中返回 None）。
+
+        Returns:
+            选中 ROI 的 id；列表为空、无选中或行号越界时为 None。
+        """
+        rows = [idx.row() for idx in self.list.selectedIndexes()]
+        if not rows:
+            return None
+        row = rows[0]
+        if 0 <= row < len(self._roi_ids):
+            return self._roi_ids[row]
+        return None
+
+    def roi_count(self) -> int:
+        """返回当前感知区列表行数（供主窗口状态提示）。
+
+        Returns:
+            列表行数（ROI 数量）。
+        """
+        return self.list.count()
+
+    def _on_roi_selection_changed(self) -> None:
+        """感知区列表选中行变化：发射当前选中 ROI id（无选中发 None）。"""
+        self.roi_selected.emit(self.selected_roi_id())
+
+    def _on_roi_double_clicked(self, item: QListWidgetItem) -> None:
+        """双击条目：请求主窗口将视图缩放定位到该感知区。
+
+        Args:
+            item: 被双击的列表项。
+        """
+        row = self.list.row(item)
+        if 0 <= row < len(self._roi_ids):
+            self.roi_locate_requested.emit(self._roi_ids[row])
+
+    def _on_roi_context_menu(self, pos) -> None:
+        """感知区列表右键菜单：定位（双击链路复用）/ 删除（统一确认链路）。
+
+        右键未选中的项时先将其设为唯一选中（与对象列表交互一致）；右键
+        空白处无命中项时两个动作均不可用，弹出菜单不产生任何操作。
+
+        Args:
+            pos: 右键位置（列表部件局部坐标）。
+        """
+        lst = self.list
+        # 右键命中的项若不在当前选中集合中，改为单选该项
+        item = lst.itemAt(pos)
+        if item is not None and not item.isSelected():
+            lst.clearSelection()
+            item.setSelected(True)
+            lst.setCurrentRow(lst.row(item))
+        # 仅右键命中条目时才有可操作目标（空白处为 None）
+        row = lst.row(item) if item is not None else -1
+        roi_id = self._roi_ids[row] if 0 <= row < len(self._roi_ids) else None
+
+        menu = QMenu(self)
+        act_locate = menu.addAction("定位")
+        act_delete = menu.addAction("删除")
+        # 无命中项时两个动作均禁用（菜单仍弹出，符合常规交互）
+        act_locate.setEnabled(roi_id is not None)
+        act_delete.setEnabled(roi_id is not None)
+        chosen = menu.exec(lst.mapToGlobal(pos))
+        if roi_id is None:
+            return  # 右键空白处：无操作
+        if chosen is act_locate:
+            self.roi_locate_requested.emit(roi_id)
+        elif chosen is act_delete:
+            self.roi_delete_requested.emit(roi_id)
 

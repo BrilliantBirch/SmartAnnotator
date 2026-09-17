@@ -62,6 +62,14 @@
       检测对已标注区域识别，纳入 to_dict 序列化）；DEFAULT_SHORTCUTS
       新增 ocr_rec_only 默认键 Ctrl+R（旧 shortcuts.json 经白名单合并
       自动补齐默认绑定）
+更新: 2026-09-17 感知区（ROI）快捷键：DEFAULT_SHORTCUTS 新增
+      tool_roi（感知区工具，默认键 O）与 roi_from_shape（从选中矩形
+      标注创建感知区，默认键 Ctrl+Shift+R），旧 shortcuts.json 经
+      白名单合并自动补齐默认绑定
+更新: 2026-09-17 感知区（ROI）导出：DEFAULT_SHORTCUTS 新增 roi_export
+      （手动导出感知区数据，默认键 Ctrl+Shift+E）；RenderConfig 新增
+      roi_auto_export 自动导出开关（默认关闭），纳入 to_dict 序列化与
+      from_dict 非 bool 容错（非法值回字段默认）
 """
 
 from dataclasses import dataclass, field
@@ -313,6 +321,9 @@ class RenderConfig:
         auto_scan_labels: 是否打开文件夹后自动启动标签扫描统计。
         auto_save: 自动保存（文件菜单勾选）默认开启，切换图片时自动
             落盘当前标注。
+        roi_auto_export: 自动导出感知区（感知区菜单勾选）默认关闭，
+            勾选后保存标注时自动把当前图片的感知区裁剪输出到
+            `<工作路径>/ROI`。
     """
 
     show_label: bool = True
@@ -328,6 +339,9 @@ class RenderConfig:
     # ===== 行为偏好（统计菜单"自动扫描"开关 / 文件菜单"自动保存"开关）=====
     auto_scan_labels: bool = False  # 打开文件夹后自动启动标签扫描统计
     auto_save: bool = True  # 自动保存（默认开启），切换图片时自动落盘当前标注
+    # 自动导出感知区（默认关闭）：勾选后保存标注时自动导出当前图片的
+    # 感知区裁剪到 <工作路径>/ROI
+    roi_auto_export: bool = False
 
     def to_dict(self) -> dict:
         """序列化为字典（JSON 持久化用）。
@@ -347,6 +361,7 @@ class RenderConfig:
             "dock_state": self.dock_state,
             "auto_scan_labels": self.auto_scan_labels,
             "auto_save": self.auto_save,
+            "roi_auto_export": self.roi_auto_export,
         }
 
     @classmethod
@@ -383,6 +398,8 @@ class RenderConfig:
             cfg.auto_scan_labels = data["auto_scan_labels"]
         if isinstance(data.get("auto_save"), bool):
             cfg.auto_save = data["auto_save"]
+        if isinstance(data.get("roi_auto_export"), bool):
+            cfg.roi_auto_export = data["roi_auto_export"]
 
         # ===== 浮点字段校验（接受 int，排除 bool；越界钳制） =====
         pen_width = data.get("pen_width")
@@ -428,6 +445,7 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "tool_rectangle": "R",
     "tool_point": "P",
     "tool_polygon": "G",
+    "tool_roi": "O",  # 感知区工具
     "delete": "Delete",
     "delete_image": "Shift+Delete",
     "prev_image": "A",
@@ -438,6 +456,9 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "annotate_all": "Ctrl+2",  # 标注所有图片
     "clear_shapes": "Ctrl+Shift+C",  # 清空当前标注
     "ocr_rec_only": "Ctrl+R",  # OCR 仅识别（当前图片已标注区域）
+    # 感知区（ROI）：由选中矩形标注创建感知区
+    "roi_from_shape": "Ctrl+Shift+R",
+    "roi_export": "Ctrl+Shift+E",  # 手动导出感知区数据（批处理）
 }
 
 

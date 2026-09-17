@@ -31,6 +31,9 @@
         驱动（rec_only + existing_shapes 由调用方传入画布实时形状深拷贝，
         不再读磁盘 JSON——未保存的删除/新增不再被磁盘旧状态覆盖）；
         无可识别形状返回 None 哨兵（调用侧不回填画布，防止清空标注）
+    14. 2026-09-17 覆盖写盘保留感知区（ROI）：_label_rec_only、OCR 分支与
+        普通分支写 JSON 前读取磁盘既有 ROI 并回写（读取失败静默跳过），
+        重新标注不再丢失感知区；refresh 相关行为与跳过判断不变
 """
 
 import cv2
@@ -48,6 +51,8 @@ from smart_annotator.core.labelme_io import (
     save_document,
     load_document,
     document_shapes,
+    document_rois,
+    set_document_rois,
 )
 from .predictor_cache import get_predictor
 from .formatters import FormatterFactory, BaseFormatter
@@ -66,6 +71,23 @@ def _load_image(image_path: Path) -> np.ndarray:
     """
     image_data = np.fromfile(image_path, dtype=np.uint8)
     return cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+
+
+def _restore_rois(doc: Dict[str, Any], json_path: Path) -> None:
+    """覆盖写盘前把磁盘既有感知区（ROI）回写到待写文档。
+
+    自动标注为覆盖式写盘（重建 shapes 后整篇写出），若不在写盘前回写
+    ROI，磁盘上既有的感知区会丢失。读取失败（文件不存在/JSON 损坏）
+    静默跳过，不影响既有标注行为。
+
+    Args:
+        doc: 待写入的 labelme 文档字典（就地更新）。
+        json_path: 目标 labelme JSON 路径（即被覆盖的同名旧文件）。
+    """
+    try:
+        set_document_rois(doc, document_rois(load_document(json_path)))
+    except Exception:
+        pass
 
 
 class Annotator:
@@ -356,6 +378,8 @@ class Annotator:
                     continue
                 # rec 会话识别并回写 description/score（label/points 不变）
                 doc["shapes"] = self.model.recognize_shapes(img, shapes)
+                # 覆盖写盘前回写磁盘既有感知区（ROI），防止重新识别丢失感知区
+                _restore_rois(doc, json_path)
                 save_document(doc, json_path)
             except Exception as e:
                 LOGGER.error(f"仅识别处理失败: {path.name}，{e}")
@@ -441,9 +465,10 @@ class Annotator:
                 if lines:
                     doc = empty_document(image_path.name, img_w, img_h)
                     doc["shapes"] = lines
-                    save_document(
-                        doc, self.output / f"{image_path.stem}.json"
-                    )
+                    json_path = self.output / f"{image_path.stem}.json"
+                    # 覆盖写盘前回写磁盘既有感知区（ROI）：空文档不含 ROI
+                    _restore_rois(doc, json_path)
+                    save_document(doc, json_path)
             else:
                 annotations = yolo_to_labelme(
                     lines,
@@ -454,6 +479,17 @@ class Annotator:
                     kpt_shape,
                 )
 
+                json_path = self.output / f"{image_path.stem}.json"
+                # 覆盖写盘前取出磁盘既有感知区（ROI）：generate_labelme_file
+                # 重建整篇文档（不含 ROI），需在写盘后回写，否则重新标注丢失
+                # 感知区。空结果时 generate_labelme_file 不写文件，无需回写
+                old_rois: List[Dict[str, Any]] = []
+                if annotations:
+                    try:
+                        old_rois = document_rois(load_document(json_path))
+                    except Exception:
+                        old_rois = []
+
                 # 生成 labelme 格式文件
                 generate_labelme_file(
                     annotations,
@@ -461,8 +497,17 @@ class Annotator:
                     image_path.name,
                     img_w,
                     img_h,
-                    self.output / f"{image_path.stem}.json",
+                    json_path,
                 )
+
+                # 回写感知区（写盘后读取刚生成的文档再补 ROI 字段）
+                if old_rois:
+                    try:
+                        doc = load_document(json_path)
+                        set_document_rois(doc, old_rois)
+                        save_document(doc, json_path)
+                    except Exception:
+                        pass
 
             # 复制原图到输出目录（避免重复复制）
             dest_path = self.output / image_path.name
