@@ -1,314 +1,342 @@
-# AGENTS.md — BrilliantAnnotator AI 编码助手项目规则
+# AGENTS.md — BrilliantAnnotator Project Rules for AI Coding Agents
 
-> 本文档是 AI 编码助手（Trae / Cursor / Copilot 等）操作本项目的**强制性规则文件**。
-> 助手在本项目内执行任何任务前，必须先完整阅读本文档并严格遵守。
-> 文档中的所有路径均相对项目根目录 `e:\VAI_E\BrilliantAnnotator`。
-> **禁止自动更新本文档**：助手不得在任务执行过程中主动修改本文档（包括追加修订记录、同步变更说明等），仅当用户明确要求修改时方可变更。
-
----
-
-## 1. 概述
-
-| 项       | 内容                                                                              |
-| -------- | --------------------------------------------------------------------------------- |
-| 项目名称 | BrilliantAnnotator                                                                |
-| 产品版本 | 1.2.0（固定），文件版本 `年.月.日.构建次数` 自动递增                              |
-| 定位     | 基于 PySide6 的智能数据标注工具：LabelMe ↔ YOLO 格式转换 + ONNX/TensorRT 自动标注 |
-| 语言     | Python 3.12.10（严格锁定，禁止其他版本）                                          |
-| GUI 框架 | PySide6 6.11.1（Qt for Python）                                                   |
-| 推理后端 | ONNX Runtime（CPU）/ TensorRT 10.x（GPU，经 `cuda-python` 绑定）                  |
-| 平台     | Windows 10/11 x64                                                                 |
-| 作者     | BaiBinnan                                                                         |
-
-**核心功能**：
-- 自动标注：加载 ONNX/TensorRT 模型批量推理，输出 LabelMe 格式标注（DETECT/POSE/SEGMENT）
-- 检测类别选择：模型加载后解析元数据类别，支持全选/取消全选与按类别过滤
-- 格式转换：LabelMe(JSON) ↔ YOLO(TXT) 双向转换，含数据集划分与目录结构导出
+> This document is the **mandatory rule set** for AI coding agents (Trae / Cursor / Copilot, etc.) working in this repository.
+> Read it in full and follow it strictly before executing any task.
+> All paths are relative to the project root `e:\VAI_E\BrilliantAnnotator`.
+> **Do not update this document automatically**: modifications require an explicit user request.
+> Scoped sub-rules: [docs/AGENTS.md](docs/AGENTS.md) covers the documentation tree (README, `docs/`, the in-app manual);
+> read it whenever a change touches documentation or user-facing text.
 
 ---
 
-## 2. 配置说明
+## 1. Overview
 
-### 2.1 Python 环境与虚拟环境
+| Item              | Content                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| Project name      | BrilliantAnnotator                                                                                             |
+| Product version   | Single source of truth: `__version__` in [smart_annotator/__init__.py](smart_annotator/__init__.py); file version `year.month.day.build` auto-increments |
+| Positioning       | PySide6-based smart annotation tool: LabelMe ↔ YOLO conversion + ONNX auto-annotation (CPU / GPU)              |
+| Language          | Python 3.12.10 (strictly locked; other versions, patch versions included, are not allowed)                     |
+| GUI framework     | PySide6 6.11.1 (Qt for Python)                                                                                 |
+| Inference backend | ONNX Runtime 1.28.0 — CPU (`CPUExecutionProvider`) / GPU (`CUDAExecutionProvider` from `onnxruntime-gpu`)       |
+| Platform          | Windows 10/11 x64                                                                                              |
+| Author            | BaiBinnan                                                                                                      |
 
-**环境要求**（不限定具体环境名与路径，任何满足以下条件的 conda/venv 虚拟环境均可）：
+**Core capabilities**: canvas annotation editor (rectangle / point / polygon), perceptual region (ROI) drawing and
+cropped-dataset export, ONNX auto-annotation for images and videos, class selection from model metadata, and
+LabelMe ↔ YOLO (incl. PaddleOCR) format conversion.
 
-| 项                       | 要求                                                                                                           |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Python 解释器            | **3.12.10**（严格锁定，含补丁版本也不允许）                                                                    |
-| CPU 依赖                 | [requirements.txt](requirements.txt) 全量安装                                                                  |
-| GPU 构建（`--mode gpu`） | 额外满足 [requirements-gpu.txt](requirements-gpu.txt)：TensorRT **10.x**（10.13 验证通过）+ `cuda-python` 绑定 |
+---
 
-**创建环境示例**（conda）：
+## 2. Core Principles (CRITICAL)
+
+**Less is more. The simplest complete solution is the best solution.**
+The action hierarchy for every change is **Delete > Replace > Add**.
+
+1. **Solve at the owner.** Put behavior in the code path that owns or observes it. For fixes, never guard a symptom with
+   a flag, a staleness check, a skip-first-call branch or a `try/except` wrapped around broken logic — relocate the
+   trigger and delete the wrong path. For features, extend the existing owner instead of adding a parallel abstraction
+   (example: ROI normalization lives in `labelme_io`; never re-implement it in UI code).
+2. **Search and reuse first.** Search the repository before creating a component, helper, workflow or utility. Reuse or
+   adapt what exists and consolidate in-scope duplication in its owner. Three similar lines beat a helper nobody calls.
+3. **Delete or modify existing code before creating new code.** A new file must first prove it cannot fit cleanly in an
+   existing owner. Bug fixes are net-negative by default unless relocation is demonstrably impossible.
+4. **Keep scope minimal.** Implement only the simplest complete solution: no speculative flags, impossible-state
+   handling, compatibility shims, policy scaffolding or unrelated cleanup. Tests are out of scope unless the user asks
+   for them (project rule since 2026-08-25) — rely on focused manual verification and existing coverage.
+5. **Ship zero-regression, production-ready changes.** Understand what you remove instead of keeping broken code as
+   insurance; delete unused imports, functions, files and stale comments; validate the changed owner end to end. Do not
+   break existing features or workflows.
+
+**Review gate:** for every addition, first answer "would deleting, relocating or extending existing code have solved
+this?" If yes, that is the required approach — a new abstraction must justify itself explicitly.
+
+---
+
+## 3. Git, Branch and Delivery Rules
+
+- **NEVER** run `git commit`, `git push`, `git tag` or any release step unless the user explicitly requests it.
+- **NEVER** force-push, rewrite history, amend pushed commits, or revert/delete commits you did not author.
+- **NEVER** run destructive commands (`git reset --hard`, `git checkout --`, `git clean -f`, `git branch -D`) unless the
+  user explicitly asks; when in doubt, ask first.
+- Keep commits free of residue: temporary scripts, debug dumps, generated artifacts, local configs and `tests/` (which is
+  git-ignored) must never be committed; never commit `build/` outputs or user data.
+- Development happens on feature branches created from `main` (`feat_*` / `fix_*` / `docs_*` / `refactor_*`, underscore
+  style). Do not perform experimental work directly on `main`.
+- Two remotes exist (`VAI_E_SmartAnnotator` internal server, `github`); pushing requires an explicit instruction, tags
+  included.
+- Commit messages follow `<type>(<scope>): <subject>` with `feat | fix | refactor | docs | chore | release`.
+- Fix review feedback on the same branch; never open replacement branches or follow-up rewrites for reviewed work.
+- End every task with a short report: what changed (files), how it was verified (commands / evidence), and what was
+  intentionally left out.
+
+---
+
+## 4. Configuration
+
+### 4.1 Python environment and virtual environment
+
+- Interpreter: **Python 3.12.10** (strictly locked). Environment name and path are free (conda or venv).
+- Create and populate an environment:
 
 ```bash
-# 创建满足要求的新环境（环境名自定，此处以 vai_annotator 为例）
 conda create -n vai_annotator python=3.12.10
 conda activate vai_annotator
-
-# 离线安装依赖（GPU 构建另需安装 requirements-gpu.txt）
 pip install --no-index --find-links=./VAI_Packages -r requirements.txt
 ```
 
-**注意**：
-- 禁止使用 TensorRT 8.x 的环境构建 GPU 版（与本项目 TRT 10.x API 不兼容，如 `set_tensor_address`）
-- GPU 模式构建必须在含 TensorRT 10.x + cuda-python 的环境中执行（需收集该环境的 TensorRT/cuda DLL）
-- 环境是否满足要求可通过以下命令自检：
+- GPU inference runs on the ONNX Runtime CUDA Execution Provider. Packaged GPU builds do **not** bundle CUDA runtime
+  DLLs: the machine must provide **CUDA Toolkit 12.9 + cuDNN 9.x** with the cuDNN `bin` directory on `PATH`.
+- There is **no TensorRT / `.engine` path anymore**. Never reintroduce a TensorRT dependency or assume `.engine` files.
+- Self-check: `python --version` (must print 3.12.10) and
+  `python -c "import onnxruntime as ort; print(ort.get_available_providers())"`.
 
-```bash
-python --version                    # 应输出 3.12.10
-python -c "import tensorrt; print(tensorrt.__version__)"   # GPU 构建：应 >= 10.0
-```
+### 4.2 Dependency lock
 
-### 2.2 依赖锁定（禁止自行升级/降级）
+- Single source of truth: [requirements.txt](requirements.txt) (CPU) and [requirements-gpu.txt](requirements-gpu.txt)
+  (replaces `onnxruntime` with `onnxruntime-gpu`). Never upgrade, downgrade or hand-edit versions outside those files —
+  read them for the authoritative list.
+- Offline install: `pip install --no-index --find-links=./VAI_Packages -r requirements.txt`.
 
-完整列表见 [requirements.txt](requirements.txt)，GPU 额外依赖见 [requirements-gpu.txt](requirements-gpu.txt)。
+### 4.3 Runtime files
 
-| 依赖          | 版本      | 用途                                         |
-| ------------- | --------- | -------------------------------------------- |
-| PySide6       | 6.11.1    | GUI 框架                                     |
-| numpy         | 2.4.6     | 数值计算                                     |
-| opencv-python | 4.13.0.92 | 图像/视频处理                                |
-| onnxruntime   | 1.28.0    | CPU 推理（GPU 版为 onnxruntime-gpu==1.28.0） |
-| onnx          | 1.19.0    | 模型元数据轻量解析                           |
-| pywin32       | 312       | Windows API                                  |
-| pyinstaller   | 6.21.0    | 打包                                         |
+| File                   | Managed by            | Description                                                              |
+| ---------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `annotate_config.json` | User import / export  | Auto-annotation configuration (`AnnotateConfig.to_dict()`)               |
+| `convert_config.json`  | User import / export  | Format conversion configuration (`ConvertConfig.to_dict()`)              |
+| `download_config.ini`  | `build.py`            | Release download URLs and part counts for the online installer           |
+| `VAI_Packages/`        | Maintained manually   | Offline dependency wheels                                                |
 
-离线安装方式：`pip install --no-index --find-links=./VAI_Packages -r requirements.txt`
-
-### 2.3 运行期配置文件
-
-| 文件                   | 管理者                    | 说明                                                        |
-| ---------------------- | ------------------------- | ----------------------------------------------------------- |
-| `annotate_config.json` | 用户导入/导出             | 自动标注配置（`AnnotateConfig.to_dict()` 产物，见下文 3.2） |
-| `convert_config.json`  | 用户导入/导出             | 格式转换配置（`ConvertConfig.to_dict()` 产物）              |
-| `download_config.ini`  | `build.py` 构建时自动写入 | Gitee Release 下载 URL 与分卷数，供在线安装器使用           |
-| `VAI_Packages/`        | 人工维护                  | 离线依赖包目录                                              |
+User preferences (layout, shortcuts, feature switches) persist under `%APPDATA%/BrilliantAnnotator/`.
 
 ---
 
-## 3. 接口定义（代码库地图）
+## 5. Interfaces (codebase map)
 
-### 3.1 目录结构与模块职责
+### 5.1 Directory structure and owners
 
 ```
 smart_annotator/
-├── main.py / __main__.py        # QApplication 入口（无 CLI 子命令）
-├── app.py                       # MainWindow 主窗口（侧边栏/底部标签栏响应式切换）
-├── config.py                    # dataclass 配置 + 枚举（全部配置的唯一定义处）
-├── version_manager.py           # VersionManager：文件版本号生成
-├── styles.py                    # 全局 QSS 样式表
-├── pages/                       # 页面层（继承 base_page.BasePage）
-│   ├── welcome_page.py          # 欢迎页（功能入口）
-│   ├── convert_page.py          # 格式转换页
-│   └── annotate_page.py         # 自动标注页（6 卡片布局）
-├── widgets/                     # 公共控件
-│   ├── class_selector.py        # ClassSelectorWidget：类别复选列表 + 全选/取消全选
-│   ├── drag_list.py             # DragDropListWidget：拖拽排序列表（保留 itemWidget）
-│   ├── fields.py / buttons.py / cards.py / dialogs.py / preview.py
-├── workers/                     # QThread 工作线程（任务运行期禁用导航）
-│   ├── base_worker.py           # 工作线程基类（进度/日志/错误信号）
-│   ├── annotate_worker.py       # AnnotationWorker → Annotator
-│   ├── convert_worker.py        # ConvertWorker → Converter
-│   └── analyze_worker.py        # AnalyzeWorker → analyze_dataset（数据集一键分析）
-├── core/                        # 业务逻辑（无 Qt 依赖）
-│   ├── annotate/
-│   │   ├── annotator.py         # Annotator：批量推理 + 类别过滤 + 输出
-│   │   ├── vision/
-│   │   │   ├── yolo.py          # YoloV8Predictor 等预测器（metadata["names"] 解析）
-│   │   │   ├── onnxbackend.py   # ONNXInfer：onnxruntime CPU 会话
-│   │   │   ├── tensorrtbackend.py # TensorRTInfer：TRT 10.x（set_tensor_address）
-│   │   │   └── onnx2engine.py   # Onnx2Engine：ONNX→engine 转换（含 metadata 写入）
-│   │   ├── formatters/          # 策略模式：base/detect/pose/segment/factory
-│   │   └── video_processor.py   # 视频抽帧（cv2.VideoCapture，依赖 ffmpeg DLL）
-│   └── convert/
-│       ├── converter.py         # Converter：格式转换编排（策略模式工厂）
-│       ├── dataset_analyzer.py  # analyze_dataset：数据集一键分析（标签/任务/方向）
-│       ├── json_converter.py    # LabelMe JSON → YOLO TXT
-│       └── txt_converter.py     # YOLO TXT → LabelMe JSON
-└── utils/                       # 工具（logger/files/paths/colors/tool/qt_logger）
-    └── files.py                 # getModelClasses()：onnx/engine 类别元数据解析
+├── main.py / __main__.py      # QApplication entry points (no CLI sub-commands)
+├── app.py                     # MainWindow: menus, toolbar, docks, shortcuts registry, save/load pipeline, ROI wiring
+├── config.py                  # Dataclass configs + enums — the single definition point for all configuration
+├── version_manager.py         # File version generation
+├── styles.py                  # Global QSS
+├── pages/                     # base_page / convert_page (export+import) / annotate_page (model + params)
+├── widgets/                   # canvas, left_toolbar, right_panel (4 sections), *_dialog, class_selector,
+│                              # drag_list, file_list_model, preview, fields, buttons, cards
+├── workers/                   # QThread workers: base_worker (pause/resume/stop) + annotate / single_annotate /
+│                              # convert / analyze / label_scan / model_load / roi_export / update
+├── core/                      # Business logic — NO Qt imports allowed
+│   ├── labelme_io.py          # LabelMe JSON I/O, shape helpers, ROI field helpers
+│   ├── roi_export.py          # ROI cropping: clamp/translate shapes, write cropped images + JSON
+│   ├── updater.py             # Release/version checking
+│   ├── annotate/              # annotator, predictor_cache, vision/ (yolo, ocr, onnxbackend),
+│   │                          # formatters/ (strategy factory), utils/, video_processor
+│   └── convert/               # converter, dataset_analyzer, json_converter, txt_converter,
+│                              # ppocr_converter, validator
+└── utils/                     # logger, files, paths, colors, render_store, tool, qt_logger
 ```
 
-### 3.2 关键数据结构（smart_annotator/config.py）
+### 5.2 Key data structures (config.py)
 
 ```python
-# AnnotateConfig 字段（to_dict() 序列化为 annotate_config.json）
-device: DEVICE            # CPU / GPU
-model_path: str           # .onnx 或 .engine
-selected_classes: list    # 选定类别 id；空列表 = 不过滤（检测所有类别）
-conf / nms / kpt_conf     # 置信度 / NMS / 关键点阈值
-frame_interval / diff_threshold  # 视频抽帧参数
-task_type: MODE           # DETECT / POSE / SEGMENT / OCR
+# AnnotateConfig (serialized to annotate_config.json)
+device: DEVICE                  # CPU / GPU
+model_path / rec_model_path / rec_dict_path   # main model / OCR recognition model + dictionary
+selected_classes: list          # selected class ids; empty = no filtering (detect all)
+conf / nms / kpt_conf           # bbox / NMS / keypoint thresholds
+ocr_thresh / ocr_box_thresh / ocr_unclip_ratio  # OCR DB postprocess parameters
+ocr_rec_only: bool              # OCR "recognize only" mode
+frame_interval / diff_threshold # video frame extraction
+task_type: MODE                 # DETECT / POSE / SEGMENT / OCR
 ```
 
-枚举定义：`MODE`（L25-31）、`DEVICE`、`Format` 均在 config.py，是**唯一定义处**，禁止在他处重复定义。
+Enums `MODE`, `DEVICE` and `Format` are defined **only** in `config.py`; never redefine them elsewhere.
 
-### 3.3 关键链路（修改前必读）
+### 5.3 Critical chains (read before modifying)
 
-**类别选择链路**（2026-08-26 实现）：
+**Class selection** — model path change → `utils/files.getModelClasses()` (parses `metadata_props["names"]`) →
+`ClassSelectorWidget.set_classes()` → `AnnotateConfig.selected_classes` → `Annotator._filter_by_classes()`
+(filters bboxs / scores / labels / keypoints and boundary_points in sync).
 
-```
-模型路径变化 → utils/files.py:getModelClasses()
-    ├─ .onnx: onnx.load(load_external_data=False) 解析 metadata_props["names"]
-    └─ .engine: 解析文件头 [4字节长度][metadata JSON]（onnx2engine 写入），
-                失败回退同名 .onnx
-→ widgets/class_selector.py:ClassSelectorWidget.set_classes()（默认全选）
-→ AnnotateConfig.selected_classes
-→ core/annotate/annotator.py:Annotator._filter_by_classes()
-    （同步过滤 bboxs/scores/labels/keypoints ndarray 与 boundary_points list）
-```
+**OCR role and task detection** — `utils/files.getOcrModelRole()` classifies detection vs recognition models
+(static input size, input height 48, single-channel output, metadata keys); `getModelTaskType()` resolves the task with
+the chain: explicit `task` key → `kpt_shape` (POSE) → multi-output (SEGMENT) → OCR structural features → `names` table (DETECT).
 
-**engine 文件格式**（onnx2engine.py 写入、tensorrtbackend.py / files.py 读取）：
+**GPU inference** — always the ONNX Runtime CUDA EP (`core/annotate/vision/onnxbackend.py`). Availability is decided by
+the packaged build flag (`build_mode.txt`, written by `build.py`, read via `utils/paths.get_build_mode()`) plus
+`onnxruntime.get_available_providers()` in `pages/annotate_page.py:_cuda_available()`. Never depend on TensorRT,
+`cuda-python` or an engine conversion step. CPU builds skip CUDA detection and always disable the GPU option.
 
-```
-[4 字节小端有符号长度][metadata JSON 字节][TensorRT 序列化数据]
-```
+**ROI (perceptual region)** — canvas drawing / rectangle conversion → `Canvas._rois` (undo snapshots contain shapes and
+rois) → save via `labelme_io.set_document_rois` (top-level `ROI` field, removed when empty) → export via
+`core/roi_export.export_image_rois` (crop image, clamp/translate annotations) driven manually (`RoiExportDialog` +
+`RoiExportWorker`) or automatically after a successful save (`RenderConfig.roi_auto_export`). Output:
+`<work_dir>/ROI/{stem}_ROI{id}{ext}` plus a labelme JSON without the ROI field. Batch auto-annotation preserves existing
+ROI through `annotator._restore_rois`. ROI data must never enter `shapes` or take part in conversion / label scanning.
 
-注意：metadata 中 `"names"` 的值经过一次 `json.dumps`，是双层字符串，解析时需先 `json.loads` 解开一层。
+**Shortcut action registry** — `_ACTION_DEFS` (app.py) and `DEFAULT_SHORTCUTS` (config.py) must always hold the **same
+key set**; adding an action requires both, otherwise shortcut resolution raises `KeyError` and the shortcut dialog
+misbehaves.
 
-**GPU 推理链路**：GPU 模式完全走 TensorRT 引擎（`tensorrtbackend.py`），**不依赖** onnxruntime CUDA Execution Provider——CUDA 检测逻辑（`annotate_page.py:_cuda_available()`）只检查 tensorrt + cuda-python 导入，不得添加对 `CUDAExecutionProvider` 的依赖。
+### 5.4 Build system invariants (build.py)
 
-### 3.4 打包体系（build.py）
-
-| 函数                                       | 职责                                                                        |
-| ------------------------------------------ | --------------------------------------------------------------------------- |
-| `_build_package(vm, mode, ...)`            | 单模式打包主流程（PyInstaller + 清理 + zip + 配置）                         |
-| `_remove_dlls_by_patterns(root, patterns)` | 按前缀递归删除 DLL（CPU/GPU 清理共用）                                      |
-| `_cleanup_cpu_redundant_dlls(exe_dir)`     | CPU 模式：清理全部 CUDA DLL（模式表 `CPU_REDUNDANT_DLL_PATTERNS`）          |
-| `_cleanup_gpu_redundant_dlls(exe_dir)`     | GPU 模式：清理 CUDA EP/cuDNN/cuBLAS/cuFFT（保留 cudart/nvinfer）            |
-| `_fix_gpu_native_packages(packages_dir)`   | GPU 模式：完整复制 cuda/tensorrt 原生包 + nvinfer DLL 移入 `tensorrt.libs/` |
-| `_split_zip / _create_zip`                 | zip 分卷（Gitee 100MB 限制）                                                |
-| `_compile_installer`                       | 调用 Inno Setup（ISCC.exe）编译安装器                                       |
-
-**DLL 清理铁律**：清理必须以 **exe 目录为根**递归遍历（PyInstaller 会把 CUDA 传递依赖放在 exe 根目录，只遍历依赖子目录会漏删——CPU 包曾因此混入 1GB 冗余 DLL）。
-
-**不得删除的 DLL**（GPU 模式）：`cudart64_*.dll`、`nvinfer*.dll`、`nvonnxparser*.dll`。
-
-### 3.5 文档体系
-
-| 文件                                                                             | 说明                            |
-| -------------------------------------------------------------------------------- | ------------------------------- |
-| [README.md](README.md)                                                           | 项目说明（结构/配置/打包/架构） |
-| [docs/manual.md](docs/manual.md)                                                 | 用户说明书源文件（Markdown）    |
-| [docs/generate_manual_pdf.py](docs/generate_manual_pdf.py)                       | 说明书 PDF 生成脚本             |
-| [docs/BrilliantAnnotator_用户说明书.pdf](docs/BrilliantAnnotator_用户说明书.pdf) | 最终 PDF（5 页）                |
-
-**修改 manual.md 后必须重新生成 PDF**：
-`python docs/generate_manual_pdf.py`（在满足 2.1 节要求的环境中执行）。
+- Modes: `python build.py --mode cpu|gpu|all|online` — run `--help` for the authoritative description instead of
+  duplicating it here.
+- Both modes isolate the PyInstaller subprocess environment (`_build_isolated_env`): CUDA environment variables and CUDA
+  paths are stripped so host CUDA installations cannot leak into artifacts.
+- **Cleanup invariant:** DLL cleanup must recurse with the **exe directory as the root** — PyInstaller places CUDA
+  transitive dependencies next to the exe, and traversing only dependency sub-directories missed them (this once leaked
+  ~1 GB into the CPU package). CPU mode removes every CUDA DLL (`_cleanup_cpu_redundant_dlls`); GPU mode removes TensorRT
+  leftovers (`_cleanup_gpu_redundant_dlls`) and the bundled CUDA runtime (`_cleanup_gpu_cuda_runtime_dlls`).
+- **Must never be deleted (GPU build):** `onnxruntime_providers_cuda.dll` — end users supply the rest of the CUDA runtime.
+- `_resolve_download_config()` rewrites `download_config.ini` after zips are rebuilt; keep `.part` suffixes and
+  `*_parts` values consistent. `_compile_installer()` drives Inno Setup via `_find_iscc()`.
 
 ---
 
-## 4. 使用示例（常用命令）
+## 6. Where to look (symptom → owner)
 
-### 4.1 运行程序
+| Symptom / task                                              | Owner                                                                                   |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Shape or ROI drawing, dragging, hit-testing, cursors         | `widgets/canvas.py` (`mousePressEvent`, `_roi_press`, `_roi_at`, `_hit_roi_vertex`, `_clamp_to_image`) |
+| ROI data lost or written incorrectly                         | `core/labelme_io.py` (`document_rois` / `set_document_rois`), `app.py:_write_annotation`  |
+| ROI lost after re-annotation                                 | `core/annotate/annotator.py:_restore_rois`                                              |
+| Cropped image or truncated annotation is wrong               | `core/roi_export.py` (`clamp_shapes_to_box`, `export_image_rois`)                        |
+| Shortcut does nothing / shortcut dialog reports a conflict   | `app.py:_ACTION_DEFS` vs `config.DEFAULT_SHORTCUTS` (must match), `_apply_shortcuts`     |
+| Menu entry or toolbar button missing                         | `app.py:_build_menubar`, `widgets/left_toolbar.py` (`_ICON_PAINTERS`, `_button_texts`)   |
+| Saving / loading / dirty-state bugs                          | `app.py:_write_annotation`, `_load_image_by_index`, `_on_shapes_changed` (`_loading` guard) |
+| Delete key deletes the wrong thing                           | `app.py:_on_delete_shortcut` (focus-based routing)                                      |
+| Dock/toolbar layout not restored                             | `objectName` on QDockWidget/QToolBar, `app.py:_apply_panel_sizes`, `RenderConfig.dock_state` |
+| Model class list empty or task type wrong                    | `utils/files.py` (`getModelClasses`, `getModelTaskType`, `getOcrModelRole`)             |
+| GPU not used / inference slow                                | `pages/annotate_page.py:_cuda_available`, `core/annotate/vision/onnxbackend.py`, `utils/paths.get_build_mode` |
+| Model reloaded on every task                                 | `core/annotate/predictor_cache.py`                                                      |
+| Batch/video progress, pause, abort                           | `workers/base_worker.py`, `widgets/annotate_dialogs.py`                                 |
+| Conversion (YOLO / PaddleOCR) failures                       | `core/convert/` (`json_converter`, `txt_converter`, `ppocr_converter`, `validator`)     |
+| Label scan or statistics                                     | `workers/label_scan_worker.py`, `core/labelme_io.collect_labels_from_files`, `widgets/scan_stats_dialog.py` |
+| In-app manual or README out of date                          | `docs/manual.md` + [docs/AGENTS.md](docs/AGENTS.md) (regenerate the PDF)                 |
+| Packaging size / missing DLL                                 | `build.py` cleanup chain (see 5.4)                                                      |
+| Online update check or download                              | `core/updater.py`, `workers/update_worker.py`                                           |
+
+---
+
+## 7. Commands and their pitfalls
 
 ```bash
-# 在满足 2.1 节要求的虚拟环境中，项目根目录执行
+# Run the application (from the project root, compliant environment)
 python -m smart_annotator
-```
 
-### 4.2 构建（项目根目录执行）
-
-```bash
-python build.py --mode all      # CPU + GPU 离线安装器 + 在线安装器（默认）
-python build.py --mode cpu      # 仅 CPU 离线安装器
-python build.py --mode gpu      # 仅 GPU 离线安装器（必须在含 TensorRT 10.x 的环境，见 2.1 节）
-python build.py --mode online   # 仅在线安装器（上传 zip 到 Gitee 后）
-```
-
-产物位置：
-- 打包目录：`build/dist_{cpu|gpu}/BrilliantAnnotator/`
-- 安装器：`build/installer_output/BrilliantAnnotator_Setup_{CPU|GPU}.exe`
-- zip 分卷：`build/packages/`
-
-体积基线（2026-08-26）：CPU 安装器 61.6MB，GPU 安装器 220MB，CPU 打包目录 244.6MB，GPU 737MB。
-
-### 4.3 验证命令
-
-```bash
-# 模块导入验证（代码修改后的最低验证要求）
+# Minimum verification after any code change
+python -m py_compile <modified files>
 python -c "import smart_annotator"
 
-# 语法检查
-python -m py_compile <修改的文件>
+# Optional test suite (not mandatory; run only when the user asks)
+python -m pytest tests/ -v --tb=short
 ```
 
-测试**不强制运行**（项目规则，2026-08-25 起生效），仅用户明确要求时执行：
-`python -m pytest tests/ -v --tb=short`
+- **GUI verification must run headless**: set `QT_QPA_PLATFORM=offscreen`. In offscreen smoke tests, stub every modal
+  dialog (`_confirm_destructive`, `showMessageBox`, `QDialog.exec`) or the run hangs forever.
+- **Redirect `APPDATA` to a temporary directory** for any run that touches user preferences, so the real
+  `%APPDATA%/BrilliantAnnotator` configuration is never modified by verification runs.
+- Temporary scripts and generated data must live in the system temp directory and be deleted afterwards — never leave
+  artifacts in the repository (report `git status` as evidence when asked).
+- The manual PDF must be generated with the **default Windows platform plugin** — `QT_QPA_PLATFORM=offscreen` has no font
+  database and renders Chinese as boxes (see [docs/AGENTS.md](docs/AGENTS.md)).
+- `tests/` is git-ignored; never commit it, and never point pytest at `smart_annotator/` (module doctests are not part of CI).
+- Building installers is a maintainer activity; do not run `build.py` to verify documentation or UI-only changes.
 
 ---
 
-## 5. 引用规范（编码强制规则）
+## 8. Coding rules (mandatory)
 
-### 5.1 反幻觉编程（最高优先级）
+> This rule set is written in English, but **code artifacts stay Chinese** (see 8.3).
 
-1. **先读后写**：修改任何文件前必须先用 Read 工具读取当前内容，禁止凭记忆修改
-2. **禁止编造 API**：类名/方法名/属性名/配置键名必须在代码库中 Grep 确认存在，或从已读文件中明确看到定义
-3. **禁止假设文件路径**：所有路径必须 Glob/Grep 确认存在后再使用
-4. **禁止假设依赖行为**：第三方库 API 以 `VAI_Packages/` 实际版本为准
+### 8.1 Anti-hallucination (highest priority)
 
-### 5.2 文件头注释（每个 .py 文件强制）
+1. **Read before write**: always read a file with the Read tool before modifying it; never edit from memory.
+2. **Never invent APIs**: class / method / attribute / config-key names must be confirmed by Grep in this repository or
+   seen explicitly in a file you have read.
+3. **Never assume file paths**: confirm every path with Glob/Grep before using it.
+4. **Never assume dependency behaviour**: third-party APIs follow the versions installed from `VAI_Packages/`.
+
+### 8.2 File header comment (every .py file)
 
 ```python
 # -*- coding: utf-8 -*-
 """
-<文件功能描述>
+<file purpose>
 
-作者: BaiBinnan
-创建日期: YYYY-MM-DD
-更新: YYYY-MM-DD <本次修改内容摘要>
+Author: BaiBinnan
+Created: YYYY-MM-DD
+Updated: YYYY-MM-DD <summary of this change>
 """
 ```
 
-已有文件修改时必须追加"更新"行；新建文件必须完整包含上述头。
+- Every modification appends an `Updated:` line; new files must contain the complete header.
+- Header content (purpose, change summary) is written in Chinese.
 
-### 5.3 代码风格
+### 8.3 Code style
 
-- 全部代码注释、docstring、日志、UI 提示信息使用**中文**
-- 函数必须带 docstring，包含 Args / Returns / Raises（有异常时）
-- 代码块的开始、结束、关键步骤需有注释
-- 禁用 Python 3.12 已弃用的语法与标准库特性
+- All code comments, docstrings, log messages and UI strings are written in **Chinese**.
+- Every function needs a docstring covering Args / Returns / Raises (when exceptions are possible).
+- Add comments at block starts, block ends and key steps.
+- Do not use syntax or standard-library features deprecated in Python 3.12.
 
-### 5.4 架构约定
+### 8.4 Architecture conventions
 
-- **配置唯一定义处**：`config.py` 的 dataclass；页面 `collect_config()` 收集 / `apply_config()` 回填
-- **线程模型**：耗时任务放 `workers/` 的 QThread 子类，经信号回传（禁止在 UI 线程执行推理/转换）
-- **core 无 Qt 依赖**：`smart_annotator/core/` 下禁止 import PySide6
-- **策略模式**：标注格式化经 `formatters/factory.py` 分发，新增任务类型时扩展而非 if-else
-- **完整采纳新机制**：重构时禁止保留向前兼容的过渡方案
-- **清理**：开发完成后必须清理冗余代码、注释、临时测试文件与未用依赖
+- **Single config definition point**: dataclasses in `config.py`; pages collect via `collect_config()` and restore via
+  `apply_config()`.
+- **Threading model**: long-running work belongs to `QThread` subclasses in `workers/` reporting back through signals —
+  never run inference or conversion on the UI thread.
+- **`core/` stays Qt-free**: no `PySide6` import under `smart_annotator/core/`.
+- **Adopt new mechanisms completely**: no forward-compatibility shims or transitional code paths during refactors.
+- **Cleanup**: remove redundant code, comments, temporary test files and unused dependencies before finishing a task.
 
-### 5.5 禁止事项
+### 8.5 Extension boundaries
 
-- 禁止更新 `optimize=2`（-OO）打包选项（会剥离 numpy 依赖的 docstring）
-- 禁止对 nvinfer DLL 使用 UPX（破坏 NVIDIA 签名，触发杀软误报）
-- 禁止排除标准库 urllib/email/socket/inspect/zipfile（PyInstaller 运行时钩子依赖）
-- 禁止将 `tests/` 提交到 git（已设置忽略）
+- New task type → extend `core/annotate/formatters/` (+ factory) and `MODE` in `config.py`; never add `if/else` task
+  branches to shared code.
+- New config field → the dataclass in `config.py` plus `to_dict` / `from_dict`; nothing else may define configuration.
+- New long-running task → a `workers/` subclass following `BaseWorker`, surfaced through the existing modal progress
+  dialog pattern.
+- New configurable shortcut action → `_ACTION_DEFS` + `DEFAULT_SHORTCUTS` + the `_apply_shortcuts` map + a menu QAction.
+- Do not fork the canvas rendering/interaction pipeline: extend the existing tool branches, `_render_rois` and vertex
+  handling instead of duplicating them.
+- ROI data lives outside `shapes`; keep the labelme JSON contract (`labelme_io`) as the single normalization point.
+
+### 8.6 Prohibitions
+
+- Do not enable the `optimize=2` (-OO) packaging option (it strips docstrings numpy depends on).
+- Do not apply UPX to `nvinfer*.dll` (breaks NVIDIA signatures, triggers antivirus false positives).
+- Do not exclude the standard-library modules `urllib` / `email` / `socket` / `inspect` / `zipfile` (PyInstaller runtime hooks).
+- Do not commit `tests/`.
+- Do not reintroduce TensorRT / `.engine` conversion paths.
 
 ---
 
-## 6. 故障排除
+## 9. Troubleshooting (build, packaging, tooling)
 
-| 症状                                             | 原因                                                                                                   | 解决                                                                                                              |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| 打包后 GPU 版报 `Could not find: nvinfer_10.dll` | TRT 10.x 的 `find_lib` 只搜索 PATH 与 `tensorrt/../tensorrt.libs`；PyInstaller 把 DLL 收集到了错误位置 | 确认 `_fix_gpu_native_packages` 将 nvinfer DLL 移入 `tensorrt.libs/`；必要时同时搜索 exe 目录与 contents 目录两处 |
-| 打包后报 `No module named 'cuda.bindings'`       | PyInstaller 静态分析收集不全 cuda-python 的 Cython 子模块                                              | `_fix_gpu_native_packages` 从 site-packages 完整复制；确认 `GPU_EXTRA_HIDDEN_IMPORTS` 含 `ctypes.wintypes`        |
-| CPU 安装包体积异常大（>300MB）                   | PyInstaller 为 onnxruntime-gpu 收集的 CUDA 传递依赖落在 exe 根目录                                     | 确认 `_cleanup_cpu_redundant_dlls(exe_dir)` 以 exe 目录为根执行                                                   |
-| Intel oneMKL 报错                                | 构建环境不对（numpy 依赖的 mkl_*.dll 未被收集）                                                        | 在满足 2.1 节要求、且已安装全部运行依赖的环境中运行 PyInstaller                                                   |
-| 生成的 PDF 中文显示为方块                        | 脚本设置了 `QT_QPA_PLATFORM=offscreen`，该平台无字体数据库                                             | `generate_manual_pdf.py` 必须用默认 windows 平台运行                                                              |
-| 安装器编译被跳过（提示 Inno Setup 脚本不存在）   | 在错误分支上构建                                                                                       | 确认在 `pyside_dev` 分支；ISCC.exe 位置见 `_find_iscc()`                                                          |
-| inno 编译在线安装器 URL 不对                     | 分卷数变化后 `download_config.ini` 未同步                                                              | 重建 zip 后检查 `cpu_url`/`gpu_url` 的 `.part` 后缀与 `*_parts` 数值一致性                                        |
-| zip 分卷删除失败                                 | 杀毒/索引服务锁定                                                                                      | `_split_zip` 已内置 5 次重试；仍失败仅告警，可手动删除                                                            |
+| Symptom                                                       | Cause                                                                                            | Fix                                                                                                      |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| CPU installer is abnormally large (>300 MB)                   | PyInstaller collected CUDA transitive dependencies of `onnxruntime-gpu` next to the exe            | Ensure `_cleanup_cpu_redundant_dlls(exe_dir)` runs with the exe directory as root                         |
+| GPU build is abnormally large                                 | CUDA runtime DLLs (cuDNN / cuBLAS / cuFFT) were not removed                                        | Ensure `_cleanup_gpu_cuda_runtime_dlls(exe_dir)` ran and `onnxruntime_providers_cuda.dll` was kept        |
+| GPU option is greyed out                                      | No CUDA EP available (CPU build flag or CPU-only onnxruntime), or no NVIDIA driver                 | Install `onnxruntime-gpu` plus CUDA Toolkit 12.9 + cuDNN 9.x on `PATH`, or use the GPU installer package  |
+| Intel oneMKL errors                                           | Incomplete build environment (numpy `mkl_*.dll` not collected)                                     | Run PyInstaller in an environment satisfying 4.1 with all runtime dependencies installed                   |
+| Manual PDF shows Chinese as boxes                             | The script ran with `QT_QPA_PLATFORM=offscreen` (no font database)                                 | Run `docs/generate_manual_pdf.py` with the default Windows platform plugin                                 |
+| Installer compilation skipped ("Inno Setup script not found") | Building from an unexpected branch                                                                 | Confirm the checked-out branch and the `ISCC.exe` path returned by `_find_iscc()`                          |
+| Online installer downloads the wrong package                  | `download_config.ini` out of sync with the new part count                                          | After rebuilding zips, verify `cpu_url` / `gpu_url` `.part` suffixes match `*_parts`                        |
+| Zip part deletion fails                                       | Antivirus / indexing service holds a lock                                                          | `_split_zip` retries 5 times; on failure it only warns and the files can be deleted manually                |
 
 ---
 
-## 7. 修改后验证清单
+## 10. Post-change verification checklist
 
-任何代码修改完成后（不强制跑测试，但需通过以下最低验证）：
+After any code change (running tests is optional, but the following minimum verification is not):
 
-1. `python -m py_compile <修改的文件>` —— 语法通过
-2. `python -c "import <修改的模块>"` —— 导入通过（在满足 2.1 节要求的环境中）
-3. 涉及 UI 的修改：确认 `import smart_annotator.pages.<页面模块>` 通过
-4. 涉及打包的修改：确认 `python build.py --mode cpu` 构建成功且体积符合基线
-5. 涉及 manual.md 的修改：重新运行 `python docs/generate_manual_pdf.py`
+1. `python -m py_compile <modified files>` — syntax passes.
+2. `python -c "import <modified module>"` — import passes (inside an environment satisfying 4.1).
+3. UI-related changes: confirm importing the touched `smart_annotator.pages.*` / `smart_annotator.widgets.*` modules succeeds,
+   and run an offscreen smoke check for the affected window (see section 7).
+4. Packaging-related changes: confirm `python build.py --mode cpu` succeeds and the artifact size matches the baseline.
+5. Documentation changes: regenerate the PDF after editing `docs/manual.md` and follow [docs/AGENTS.md](docs/AGENTS.md).
